@@ -103,7 +103,7 @@ All bindings are remappable from the touch menu (INPUT tab).
 
 - **[inspectredc's F-Zero X decompilation](https://github.com/inspectredc/fzerox)** —
   the matching decomp this port is built on, and the work of every decomp contributor
-- **G-Diffuser** — the PC port foundation (libultraship-based runtime)
+- **[G-Diffuser](https://github.com/Zorkats/G-Diffuser)** — the PC port foundation (libultraship-based runtime)
 - **[libultraship](https://github.com/Kenix3/libultraship)** (Kenix3 & contributors) —
   the N64 runtime/renderer framework
 - **[devkitPro](https://devkitpro.org)** — toolchain; **citro3d** (fincs) — PICA200
