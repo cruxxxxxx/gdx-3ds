@@ -1,0 +1,243 @@
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -138,8 +138,38 @@
+ static Interpreter* sGfxInstanceRaw = nullptr;
+ // [perf-s7] Compiled-in S7 interpreter optimizations, surfaced to the port's one-shot
+ // [perf-s7] log line (weak-referenced there so unpatched trees still link).
+-// bit0 = raw-instance dispatch, bit1 = gated geometry diagnostics.
+-extern "C" const unsigned int gdx_s7_lus_optmask = 0x3u;
++// bit0 = raw-instance dispatch, bit1 = gated geometry diagnostics, bit2 = tri draw-state memo.
++extern "C" const unsigned int gdx_s7_lus_optmask = 0x7u;
++
++// [perf-s7] Per-triangle draw-state memo. GfxSpTri1 re-derived the texture-unit extents
++// (several integer divides per unit), re-queried the backend for ShaderGetInfo and
++// GetClipParameters (two virtual calls), and re-walked the sampler guards for EVERY triangle,
++// even though consecutive triangles overwhelmingly share identical RDP/RSP draw state (a course
++// chunk is one material followed by a long VTX/TRI run). gfx_step marks the state dirty on any
++// opcode that can touch draw state (conservative whitelist of pure geometry/flow commands,
++// F3DEX2 family only); while clean, GfxSpTri1 reuses the memo below instead of re-deriving.
++// Invalidation: any non-whitelisted opcode, SpReset (per task), texture/shader cache clears.
++struct GfxS7TriStateMemo {
++    bool valid = false;
++    const void* comb = nullptr; // ColorCombiner the tile-extent block was derived under
++    uint32_t tm = 0;
++    uint32_t tex_width[2] = {};
++    uint32_t tex_height[2] = {};
++    uint32_t tex_width2[2] = {};
++    uint32_t tex_height2[2] = {};
++    uint32_t effective_tile[2] = {};
++    const void* prg = nullptr; // ShaderProgram the cached info below belongs to
++    uint8_t numInputs = 0;
++    bool usedTextures[2] = {};
++    GfxClipParameters clip_parameters = {};
++};
++static GfxS7TriStateMemo sGfxS7TriMemo;
++static bool sGfxS7DrawStateDirty = true;
++
++static inline void GfxS7InvalidateTriMemo() {
++    sGfxS7TriMemo.valid = false;
++    sGfxS7DrawStateDirty = true;
++}
+ 
+ // [perf-s7] Compute gate for the per-vertex / per-triangle geometry diagnostics (NDC min/max
+ // divides, isfinite sweeps, big-tri extent scans, fog-factor ranges). Every consumer of those
+@@ -559,6 +589,7 @@
+ }
+ 
+ void Interpreter::TextureCacheClear() {
++    GfxS7InvalidateTriMemo(); // [perf-s7] mRenderingState.mTextures nulled below
+     for (const auto& entry : mTextureCache.map) {
+         mTextureCache.free_texture_ids.push_back(entry.second.texture_id);
+     }
+@@ -752,6 +783,7 @@
+ }
+ 
+ void Interpreter::TextureCacheDelete(const uint8_t* origAddr) {
++    GfxS7InvalidateTriMemo(); // [perf-s7] may null mRenderingState.mTextures / re-arm imports
+ #ifdef __3DS__
+     unsigned gdxDeleted = 0;
+ #endif
+@@ -800,6 +832,7 @@
+     if (paletteAddr == nullptr || mSeenPaletteAddrs.find(paletteAddr) == mSeenPaletteAddrs.end()) {
+         return;
+     }
++    GfxS7InvalidateTriMemo(); // [perf-s7] same rationale as TextureCacheDelete
+ 
+     static const bool sDiagPaletteEvict = std::getenv("GDX_DIAG_PALETTE_EVICT") != nullptr;
+     size_t evicted = 0;
+@@ -3475,9 +3508,27 @@
+     }
+ 
+     uint32_t tm = 0;
+-    uint32_t tex_width[2], tex_height[2], tex_width2[2], tex_height2[2];
+-    uint32_t effective_tile[2];
++    uint32_t tex_width[2] = {}, tex_height[2] = {}, tex_width2[2] = {}, tex_height2[2] = {};
++    uint32_t effective_tile[2] = {};
+ 
++    // [perf-s7] Reuse the tile-extent derivation while the draw state is clean (see
++    // GfxS7OpcodePreservesDrawState / sGfxS7DrawStateDirty). The comb identity check pins the
++    // memo to the combiner it was derived under (usedTextures gates the per-unit work), and the
++    // live textures_changed probe closes the cache-eviction hole: an eviction inside an import
++    // can re-arm textures_changed without an intervening state opcode.
++    const bool s7TexMemoHit = !is_rect && !sGfxS7DrawStateDirty && sGfxS7TriMemo.valid &&
++                              sGfxS7TriMemo.comb == static_cast<const void*>(comb) &&
++                              !mRdp->textures_changed[0] && !mRdp->textures_changed[1];
++    if (s7TexMemoHit) {
++        tm = sGfxS7TriMemo.tm;
++        for (int i = 0; i < 2; i++) {
++            tex_width[i] = sGfxS7TriMemo.tex_width[i];
++            tex_height[i] = sGfxS7TriMemo.tex_height[i];
++            tex_width2[i] = sGfxS7TriMemo.tex_width2[i];
++            tex_height2[i] = sGfxS7TriMemo.tex_height2[i];
++            effective_tile[i] = sGfxS7TriMemo.effective_tile[i];
++        }
++    } else {
+     for (int i = 0; i < 2; i++) {
+         uint32_t tile = (i == 1) ? texel1Tile : texel0Tile;
+         effective_tile[i] = tile;
+@@ -3667,6 +3718,25 @@
+             }
+         }
+     }
++    // [perf-s7] slow path taken: bank the tile-extent derivation and mark the state clean.
++    // Clearing the dirty flag here (after imports/samplers ran) is what lets the next
++    // same-state triangle take the fast path above. Never banked from rect draws:
++    // GfxDrawRectangle wraps its GfxSpTri1 calls in temporary othermode/viewport/geometry
++    // mutations that it restores afterwards, which would leave a stale memo marked clean.
++    if (!is_rect) {
++        sGfxS7TriMemo.comb = comb;
++        sGfxS7TriMemo.tm = tm;
++        for (int i = 0; i < 2; i++) {
++            sGfxS7TriMemo.tex_width[i] = tex_width[i];
++            sGfxS7TriMemo.tex_height[i] = tex_height[i];
++            sGfxS7TriMemo.tex_width2[i] = tex_width2[i];
++            sGfxS7TriMemo.tex_height2[i] = tex_height2[i];
++            sGfxS7TriMemo.effective_tile[i] = effective_tile[i];
++        }
++        sGfxS7TriMemo.valid = true;
++        sGfxS7DrawStateDirty = false;
++    }
++    }
+ 
+     if (!is_rect) {
+         mGeometryDiagnostics.lastShaderId0 = comb->shader_id0;
+@@ -3721,10 +3791,26 @@
+     }
+     uint8_t numInputs;
+     bool usedTextures[2];
++    struct GfxClipParameters clip_parameters;
+ 
+-    mRapi->ShaderGetInfo(prg, &numInputs, usedTextures);
+-
+-    struct GfxClipParameters clip_parameters = mRapi->GetClipParameters();
++    // [perf-s7] Both calls are virtual round trips into the backend that only depend on prg and
++    // the bound framebuffer, and every opcode that can switch either invalidates the memo.
++    if (s7TexMemoHit && sGfxS7TriMemo.prg == static_cast<const void*>(prg)) {
++        numInputs = sGfxS7TriMemo.numInputs;
++        usedTextures[0] = sGfxS7TriMemo.usedTextures[0];
++        usedTextures[1] = sGfxS7TriMemo.usedTextures[1];
++        clip_parameters = sGfxS7TriMemo.clip_parameters;
++    } else {
++        mRapi->ShaderGetInfo(prg, &numInputs, usedTextures);
++        clip_parameters = mRapi->GetClipParameters();
++        if (!is_rect) {
++            sGfxS7TriMemo.prg = prg;
++            sGfxS7TriMemo.numInputs = numInputs;
++            sGfxS7TriMemo.usedTextures[0] = usedTextures[0];
++            sGfxS7TriMemo.usedTextures[1] = usedTextures[1];
++            sGfxS7TriMemo.clip_parameters = clip_parameters;
++        }
++    }
+ 
+     // [pit-uv-probe]: the PIT strip imports and draws with correct state yet renders
+     // flat tan. Log per-vertex (s,t) plus the tile window for tiles 1-4 so a flat
+@@ -5043,6 +5129,10 @@
+     if (cycle_type == G_CYC_COPY) {
+         mRdp->other_mode_h = saved_other_mode_h;
+     }
++    // [perf-s7] the temporary othermode/viewport/geometry scope above ran draws through
++    // GfxSpTri1; whatever sampler/render state they left behind must not be carried into
++    // the next game triangle's memo fast path.
++    GfxS7InvalidateTriMemo();
+ }
+ 
+ void Interpreter::GfxDpTextureRectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lry, uint8_t tile, int16_t uls,
+@@ -7273,10 +7363,52 @@
+     }
+ }
+ 
++// [perf-s7] True for opcodes that can never change per-draw state (combiner, othermodes, tile
++// descriptors, textures, viewport/scissor, colors): pure geometry and control flow. Everything
++// else conservatively invalidates the tri draw-state memo. F3DEX2-family values only — the
++// caller additionally requires ucode_handler_index == ucode_f3dex2, so colliding F3D/S2DEX
++// encodings (e.g. F3D G_MOVEMEM == 0x03) can never slip through the whitelist.
++static inline bool GfxS7OpcodePreservesDrawState(int8_t opcode) {
++    switch (opcode) {
++        case F3DEX2_G_NOOP:          // OPEN/CLOSE_DISPS bookkeeping only
++        case F3DEX2_G_VTX:
++        case F3DEX2_G_MODIFYVTX:
++        case F3DEX2_G_CULLDL:
++        case F3DEX2_G_BRANCH_Z:
++        case F3DEX2_G_TRI1:
++        case F3DEX2_G_TRI2:
++        case F3DEX2_G_QUAD:
++        case F3DEX2_G_MTX:           // vertex-transform state only
++        case F3DEX2_G_POPMTX:
++        case F3DEX2_G_DL:
++        case F3DEX2_G_ENDDL:
++        case OTR_G_VTX_OTR_FILEPATH:
++        case OTR_G_TRI1_OTR:
++        case OTR_G_DL_OTR_FILEPATH:
++        case OTR_G_MTX_OTR_FILEPATH:
++        case OTR_G_DL_OTR_HASH:
++        case OTR_G_VTX_OTR_HASH:
++        case OTR_G_MARKER:
++        case OTR_G_BRANCH_Z_OTR:
++        case OTR_G_MTX_OTR:
++        case OTR_G_DL_INDEX:
++        case RDP_G_VTX_WIDE:
++        case RDP_G_TRI1_WIDE:
++            return true;
++        default:
++            return false;
++    }
++}
++
+ static void gfx_step() {
+     auto& cmd = g_exec_stack.currCmd();
+     auto cmd0 = cmd;
+     int8_t opcode = (int8_t)(cmd->words.w0 >> 24);
++
++    // [perf-s7] tri draw-state memo: see GfxS7OpcodePreservesDrawState above.
++    if (ucode_handler_index != ucode_f3dex2 || !GfxS7OpcodePreservesDrawState(opcode)) {
++        sGfxS7DrawStateDirty = true;
++    }
+ 
+ #ifdef USE_GBI_TRACE
+     if (cmd->words.trace.valid &&
+@@ -7348,6 +7480,7 @@
+ }
+ 
+ void Interpreter::SpReset() {
++    GfxS7InvalidateTriMemo(); // [perf-s7] per-task boundary
+     while (!mShaderStack.empty()) {
+         mShaderStack.pop();
+     }
+@@ -7476,6 +7609,9 @@
+ static bool sGameFbMsaaResolvedSized = false;
+ 
+ void Interpreter::StartFrame() {
++    // [perf-s7] backend clip parameters / framebuffer bindings can change between frames
++    // without an opcode in between (resize, present) — never carry the memo across frames.
++    GfxS7InvalidateTriMemo();
+     mWapi->GetDimensions(&mGfxCurrentWindowDimensions.width, &mGfxCurrentWindowDimensions.height, &mCurWindowPosX,
+                          &mCurWindowPosY);
+     if (mCurDimensions.height == 0) {
+@@ -8029,6 +8165,7 @@
+ }
+ 
+ extern "C" void gfx_shader_cache_clear() {
++    Fast::GfxS7InvalidateTriMemo(); // [perf-s7] comb/prg pointers freed below
+     auto instance = Fast::mInstance.lock().get();
+     instance->mColorCombinerPool.clear();
+     instance->mPrevCombiner = Fast::mInstance.lock().get()->mColorCombinerPool.end();

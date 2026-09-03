@@ -1,0 +1,23 @@
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -8532,7 +8532,19 @@
+     Flush();
+ 
+     mGfxFrameBuffer = 0;
+-    currentDir = std::stack<std::string>();
++    // LEAK-HARDENING (3DS first hardware OOM): this reset was spelled
++    // `currentDir = std::stack<std::string>()`, which constructs a brand-new backing
++    // deque — libstdc++ allocates its node map plus one 504-byte node buffer
++    // (512 / sizeof(std::string) = 21 slots on ILP32) — and frees the old one, EVERY
++    // task. The failing allocation of the first on-hardware OOM was exactly that
++    // 504-byte node (std::deque<std::string>::_M_create_nodes) once session-long heap
++    // fragmentation could no longer serve it. Pop in place instead: zero allocations
++    // when the stack is already empty (this port's o2r command stream never emits
++    // OTR_G_PUSHCD, so it always is), pure deallocation otherwise, and the stack is
++    // empty afterwards either way.
++    while (!currentDir.empty()) {
++        currentDir.pop();
++    }
+ 
+     if (mRendersToFb) {
+         // Recompute from the caches as they stand at task end: the prologue re-latch

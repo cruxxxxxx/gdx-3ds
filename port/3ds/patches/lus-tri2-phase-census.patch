@@ -1,0 +1,266 @@
+Subject: [tri2] per-phase census of GfxSpTri1 (LOCKED-60 Task C)
+
+Pure delta on top of the full README stack (after lus-3ds-triloop-packed-vbo.patch).
+Phase timers + counters in the tri path, gated on gputrace AND the bridge-mirrored
+verbose gate; drained by the port bridge as the [tri2] line on the [race-dl] cadence.
+---
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -790,6 +790,84 @@
+ #else
+ #define GDX_PROF_SCOPE(sec) \
+     do {                    \
++    } while (0)
++#endif
++
++#ifdef __3DS__
++// [tri2] Per-phase census of GfxSpTri1 (LOCKED-60 Task C). Answers WHERE the ~8 us per
++// triangle of the hardware [profop] 06 bucket goes: screening, state resolve, s7 memo,
++// shader select, packed batch begin, vertex emission, tail. Gated on gputrace
++// (gdx3ds_prof_active) AND the bridge-mirrored verbose gate (gdx_tri2_census_on), so a
++// plain gputrace run pays one int load + branch per site. Ticks are svcGetSystemTick and
++// EXCLUSIVE of every [prof]-scoped child (DRW inside Flush, IMP, nested clip-fan TRI)
++// through the same child-tick ledger GdxProfScope keeps. Accumulators are drained and
++// printed by the port bridge on the [race-dl] cadence as the `[tri2]` line.
++extern "C" {
++enum {
++    kGdxTri2PhPre = 0, // entry -> reject box / clip pre-scan / clip_rej / cull screening
++    kGdxTri2PhState,   // depth+decal+viewport probes, cc option derivation, combiner lookup
++    kGdxTri2PhMemo,    // s7 tile-extent memo: hit copy-out or full re-derivation (+samplers)
++    kGdxTri2PhPrg,     // shader program select/load + ShaderGetInfo/clip-parameter memo
++    kGdxTri2PhBegin,   // packed batch begin + aux record (first tri of every batch only)
++    kGdxTri2PhPack,    // clamp resolve + three-vertex emission (packed or legacy)
++    kGdxTri2PhTail,    // emitted counters + batch-full flush check
++    kGdxTri2PhCount
++};
++enum {
++    kGdxTri2CntCalls = 0,
++    kGdxTri2CntRect,
++    kGdxTri2CntEarly,    // screened out (reject box, degenerate clip, clip_rej, cull)
++    kGdxTri2CntFan,      // clipped: re-entered as a fan (nested calls counted separately)
++    kGdxTri2CntMemoHit,
++    kGdxTri2CntMemoMiss,
++    kGdxTri2CntBatch,    // batches begun (== packed draws when the pool accepts)
++    kGdxTri2CntPacked,   // tris emitted through the packed path
++    kGdxTri2CntLegacy,   // tris emitted through the legacy variable-stride path
++    kGdxTri2CntCount
++};
++uint64_t gdx_tri2_phase_ticks[kGdxTri2PhCount];
++uint32_t gdx_tri2_cnt[kGdxTri2CntCount];
++int gdx_tri2_census_on = 0;
++}
++namespace {
++struct GdxTri2Phaser {
++    bool on;
++    uint64_t t;
++    uint64_t child;
++    GdxTri2Phaser() : on(gdx3ds_prof_active != 0 && gdx_tri2_census_on != 0) {
++        if (on) {
++            child = gdx3ds_prof_child_ticks;
++            t = (uint64_t)gdx3ds_prof_now();
++        }
++    }
++    inline void lap(int phase) {
++        if (on) {
++            const uint64_t now = (uint64_t)gdx3ds_prof_now();
++            const uint64_t childNow = gdx3ds_prof_child_ticks;
++            gdx_tri2_phase_ticks[phase] += (now - t) - (childNow - child);
++            t = now;
++            child = childNow;
++        }
++    }
++    inline void count(int c) {
++        if (on) {
++            gdx_tri2_cnt[c]++;
++        }
++    }
++};
++} // namespace
++#define GDX_TRI2_BEGIN() GdxTri2Phaser gdxTri2
++#define GDX_TRI2_LAP(ph) gdxTri2.lap(kGdxTri2Ph##ph)
++#define GDX_TRI2_CNT(c) gdxTri2.count(kGdxTri2Cnt##c)
++#else
++#define GDX_TRI2_BEGIN() \
++    do {                 \
++    } while (0)
++#define GDX_TRI2_LAP(ph) \
++    do {                 \
++    } while (0)
++#define GDX_TRI2_CNT(c) \
++    do {                \
+     } while (0)
+ #endif
+ 
+@@ -3261,6 +3339,11 @@
+     // DrawTriangles, ImportTexture, or clip-fan re-entry into this function nested
+     // inside this call subtracts itself via the child counter.
+     GDX_PROF_SCOPE(TRI);
++    GDX_TRI2_BEGIN(); // [tri2] per-phase census (gputrace+verbose only)
++    GDX_TRI2_CNT(Calls);
++    if (is_rect) {
++        GDX_TRI2_CNT(Rect);
++    }
+     // A/B isolation: skip every triangle drawn with the combine mode given in
+     // GDX_DIAG_SKIP_COMBINE (hex). Whatever vanishes from the frame identifies
+     // the mesh that owns that material.
+@@ -3359,6 +3442,8 @@
+             if (vertex->w <= 0.0f || vertex->x < -w2 || vertex->x > w2 || vertex->y < -w2 ||
+                 vertex->y > w2 || vertex->z < -vertex->w) {
+                 mGeometryDiagnostics.trianglesClipRejected++;
++                GDX_TRI2_CNT(Early);
++                GDX_TRI2_LAP(Pre);
+                 return;
+             }
+         }
+@@ -3429,6 +3514,8 @@
+ 
+         if (inputCount < 3) {
+             mGeometryDiagnostics.trianglesClipRejected++;
++            GDX_TRI2_CNT(Early);
++            GDX_TRI2_LAP(Pre);
+             return;
+         }
+ 
+@@ -3456,6 +3543,8 @@
+         for (size_t i = 0; i < 3; ++i) {
+             mRsp->loaded_vertices[MAX_VERTICES + i] = saved[i];
+         }
++        GDX_TRI2_CNT(Fan);
++        GDX_TRI2_LAP(Pre);
+         return;
+     }
+ 
+@@ -3464,6 +3553,8 @@
+         if (!is_rect) {
+             mGeometryDiagnostics.trianglesClipRejected++;
+         }
++        GDX_TRI2_CNT(Early);
++        GDX_TRI2_LAP(Pre);
+         return;
+     }
+ 
+@@ -3497,6 +3588,8 @@
+                 if (!is_rect) {
+                     mGeometryDiagnostics.trianglesCullRejected++;
+                 }
++                GDX_TRI2_CNT(Early);
++                GDX_TRI2_LAP(Pre);
+                 return;
+             }
+         } else if (cull_type == cull_back) {
+@@ -3504,6 +3597,8 @@
+                 if (!is_rect) {
+                     mGeometryDiagnostics.trianglesCullRejected++;
+                 }
++                GDX_TRI2_CNT(Early);
++                GDX_TRI2_LAP(Pre);
+                 return;
+             }
+         } else if (cull_type == cull_both) {
+@@ -3511,9 +3606,12 @@
+             if (!is_rect) {
+                 mGeometryDiagnostics.trianglesCullRejected++;
+             }
++            GDX_TRI2_CNT(Early);
++            GDX_TRI2_LAP(Pre);
+             return;
+         }
+     }
++    GDX_TRI2_LAP(Pre);
+ 
+     // Capture the first oversized triangle that survives Reject-variant screening each frame.
+     // Legit machine-select geometry stays under ~0.2 NDC extent, so anything near the reject-box
+@@ -3751,6 +3849,7 @@
+     key.options = cc_options;
+ 
+     ColorCombiner* comb = LookupOrCreateColorCombiner(key);
++    GDX_TRI2_LAP(State);
+ 
+     // GDX_DIAG_EFFECTDRAW: the PIT/HEAL strip draws flat tan despite a proven TMEM identity. Log
+     // the combine id and the texel slots the combiner uses, to confirm or rule out two-cycle
+@@ -3816,6 +3915,7 @@
+                               (!is_rect || s7Memo.first_tile == mRdp->first_tile_index) &&
+                               !mRdp->textures_changed[0] && !mRdp->textures_changed[1];
+     if (s7TexMemoHit) {
++        GDX_TRI2_CNT(MemoHit);
+         tm = s7Memo.tm;
+         for (int i = 0; i < 2; i++) {
+             tex_width[i] = s7Memo.tex_width[i];
+@@ -3825,6 +3925,7 @@
+             effective_tile[i] = s7Memo.effective_tile[i];
+         }
+     } else {
++    GDX_TRI2_CNT(MemoMiss);
+     for (int i = 0; i < 2; i++) {
+         uint32_t tile = (i == 1) ? texel1Tile : texel0Tile;
+         effective_tile[i] = tile;
+@@ -4036,6 +4137,7 @@
+         sGfxS7DirtyMask &= static_cast<uint8_t>(~s7DirtyBit);
+     }
+     }
++    GDX_TRI2_LAP(Memo);
+ 
+     if (!is_rect) {
+         mGeometryDiagnostics.lastShaderId0 = comb->shader_id0;
+@@ -4109,6 +4211,7 @@
+         s7Memo.usedTextures[1] = usedTextures[1];
+         s7Memo.clip_parameters = clip_parameters;
+     }
++    GDX_TRI2_LAP(Prg);
+ 
+     // [pit-uv-probe]: the PIT strip imports and draws with correct state yet renders
+     // flat tan. Log per-vertex (s,t) plus the tile window for tiles 1-4 so a flat
+@@ -4147,8 +4250,11 @@
+     if (mBufVboNumTris == 0) {
+         sGdxPackDst = gdx_s7_geo_diag_enabled ? nullptr : gdx3ds_vbopack_begin(&sGdxPackParams);
+         sGdxPackBatch = (sGdxPackDst != nullptr);
++        GDX_TRI2_CNT(Batch);
++        GDX_TRI2_LAP(Begin);
+     }
+     if (sGdxPackBatch) {
++        GDX_TRI2_CNT(Packed);
+         // Combiner-input evaluation, verbatim from the legacy loop's switch (the
+         // uint8 RGBA truncations included). isShade flags the SHADE case for the
+         // standard-fog alpha substitution (legacy: color == &v_arr[i]->color).
+@@ -4259,6 +4365,7 @@
+                 }
+             }
+         }
++        GDX_TRI2_LAP(Pack);
+ 
+         // Batch aux record (first tri only): the vertex-0 value of every
+         // combiner input plus the draw-constant fog rgb/factor — everything the
+@@ -4291,6 +4398,7 @@
+                 sGdxPackAux.fogRgb[0] = sGdxPackAux.fogRgb[1] = sGdxPackAux.fogRgb[2] = 0.0f;
+                 sGdxPackAux.fogFactor0 = 0.0f;
+             }
++            GDX_TRI2_LAP(Begin);
+         }
+ 
+         float* gdxOut = sGdxPackDst + (size_t)mBufVboNumTris * (3 * GDX3DS_VBOPACK_STRIDE);
+@@ -4383,7 +4491,9 @@
+             }
+         }
+         mBufVboLen += 3 * GDX3DS_VBOPACK_STRIDE;
++        GDX_TRI2_LAP(Pack);
+     } else {
++    GDX_TRI2_CNT(Legacy);
+ #endif
+     for (int i = 0; i < 3; i++) {
+         float z = v_arr[i]->z, w = v_arr[i]->w;
+@@ -4671,6 +4781,7 @@
+         // mBufVbo[mBufVboLen++] = color->a / 255.0f;
+     }
+ #ifdef __3DS__
++    GDX_TRI2_LAP(Pack);
+     } // [triloop] legacy variable-stride append (packed batches wrote above)
+ #endif
+ 
+@@ -4681,6 +4792,7 @@
+         // if (++mBufVbo_num_tris == 1) {
+         Flush();
+     }
++    GDX_TRI2_LAP(Tail);
+ }
+ 
+ void Interpreter::GfxSpGeometryMode(uint32_t clear, uint32_t set) {

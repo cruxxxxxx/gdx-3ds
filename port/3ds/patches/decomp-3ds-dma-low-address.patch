@@ -1,0 +1,31 @@
+--- a/src/sys/dma.c
++++ b/src/sys/dma.c
+@@ -38,6 +38,28 @@
+     *capacity = 0;
+ 
+     if (full < (unsigned long long)GDX_DMA_RDRAM_SIZE) {
++#ifdef GDX_PLATFORM_3DS
++        /* 3DS userland maps the process image from 0x00100000 -- INSIDE the raw
++           RDRAM-offset range this branch assumes cannot be a host pointer (on
++           64-bit hosts pointer width alone rules it out; ILP32 loses that
++           distinction). EXE globals below 16MB (gCourseCtx at ~0x0038xxxx) were
++           rerouted into the RDRAM shadow, so course-data DMAs never reached
++           them: controlPointCount stayed 0 and Course_SegmentLengthsInit spun
++           forever on the unlinked segment list -- the mode+difficulty
++           race-entry freeze (and its unmapped-access storm). Preferring a
++           registered host range (the EXE image is registered at boot via
++           gdx_register_main_module_range) restores the 64-bit semantics, where
++           real pointers always resolve through the registry; only unclaimed
++           addresses stay raw RDRAM offsets. Below 0x00100000 nothing is mapped
++           on the 3DS, so those remain unambiguous. */
++        if (low >= 0x00100000u) {
++            u8* host3ds = (u8*)gdx_resolve_registered_host_address(low);
++            if (host3ds != NULL) {
++                *capacity = gdx_registered_host_capacity(host3ds);
++                return host3ds;
++            }
++        }
++#endif
+         *capacity = GDX_DMA_RDRAM_SIZE - (size_t)full;
+         return gdx_rdram + (size_t)full;
+     }

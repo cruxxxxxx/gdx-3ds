@@ -1,0 +1,152 @@
+--- a/include/fast/interpreter.h
++++ b/include/fast/interpreter.h
+@@ -247,6 +247,12 @@
+     float u, v;
+     struct RGBA color;
+     uint8_t clip_rej;
++    // [traffic] 7-bit homogeneous-clip OUTSIDE mask, one bit per clip plane of GfxSpTri1's
++    // clipper (bit0 = w<minW, then -x/+x/-y/+y/-z/+z), computed once at vertex-transform time
++    // with the clipper's EXACT plane arithmetic. GfxSpTri1's per-triangle clip pre-scan
++    // (formerly 7 planes x 3 vertices through a switch-lambda, even for fully-inside
++    // triangles) is a 3-byte OR-test against this. Fits the struct's existing tail padding.
++    uint8_t clip_out;
+ };
+ 
+ struct RawTexMetadata {
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -2774,6 +2774,40 @@
+     }
+ }
+ 
++// [traffic] Shared with GfxSpTri1's clipper: plane 0 of the homogeneous clipper is w >= this.
++static constexpr float kGdxMinClipW = 1.0e-5f;
++
++// [traffic] Recompute the per-vertex clip OUTSIDE mask with the clipper's exact plane
++// arithmetic (clipDistance(v, plane) < 0, same expressions and order). Every producer of a
++// LoadedVertex that can reach the non-rect GfxSpTri1 path must keep this in sync with
++// x/y/z/w — GfxSpVertex inlines the same tests, UpdateLoadedVertexClipFlags calls this for
++// the clip-fan vertices, and GfxSpLine3DGdx calls it for its screen-space quad.
++static inline uint8_t GdxComputeClipOutMask(const LoadedVertex& vertex) {
++    uint8_t mask = 0;
++    if (vertex.w - kGdxMinClipW < 0.0f) {
++        mask |= 1u << 0;
++    }
++    if (vertex.x + vertex.w < 0.0f) {
++        mask |= 1u << 1;
++    }
++    if (vertex.w - vertex.x < 0.0f) {
++        mask |= 1u << 2;
++    }
++    if (vertex.y + vertex.w < 0.0f) {
++        mask |= 1u << 3;
++    }
++    if (vertex.w - vertex.y < 0.0f) {
++        mask |= 1u << 4;
++    }
++    if (vertex.z + vertex.w < 0.0f) {
++        mask |= 1u << 5;
++    }
++    if (vertex.w - vertex.z < 0.0f) {
++        mask |= 1u << 6;
++    }
++    return mask;
++}
++
+ void Interpreter::GfxSpVertex(size_t n_vertices, size_t dest_index, const F3DVtx* vertices) {
+     GDX_PROF_SCOPE(VTX); // [prof] per-vertex matrix transform + lighting + fog bake
+ #ifdef __3DS__
+@@ -3030,6 +3064,36 @@
+             d->clip_rej |= 32; // CLIP_FAR
+         }
+ 
++        // [traffic] Clip OUTSIDE mask for GfxSpTri1's pre-scan, using the clipper's exact
++        // plane arithmetic (x + w < 0, not x < -w: the two can disagree by one rounding step
++        // and the pre-scan must reproduce clipDistance() bit-for-bit). Inlined rather than
++        // calling GdxComputeClipOutMask so x/y/z/w stay in registers on this hot loop.
++        {
++            uint8_t clipOut = 0;
++            if (w - kGdxMinClipW < 0.0f) {
++                clipOut |= 1u << 0;
++            }
++            if (x + w < 0.0f) {
++                clipOut |= 1u << 1;
++            }
++            if (w - x < 0.0f) {
++                clipOut |= 1u << 2;
++            }
++            if (y + w < 0.0f) {
++                clipOut |= 1u << 3;
++            }
++            if (w - y < 0.0f) {
++                clipOut |= 1u << 4;
++            }
++            if (z + w < 0.0f) {
++                clipOut |= 1u << 5;
++            }
++            if (w - z < 0.0f) {
++                clipOut |= 1u << 6;
++            }
++            d->clip_out = clipOut;
++        }
++
+         d->x = x;
+         d->y = y;
+         d->z = z;
+@@ -3104,6 +3168,7 @@
+ }
+ 
+ static void UpdateLoadedVertexClipFlags(LoadedVertex& vertex) {
++    vertex.clip_out = GdxComputeClipOutMask(vertex);
+     vertex.clip_rej = 0;
+     if (vertex.x < -vertex.w) {
+         vertex.clip_rej |= 1;
+@@ -3246,7 +3311,7 @@
+     // Clip in homogeneous space before culling or perspective division. F3DEX/F3DFLX display
+     // lists routinely straddle the eye and frustum planes, and a modern backend renders those as
+     // giant wedges instead of the RSP-clipped polygons.
+-    constexpr float kMinClipW = 1.0e-5f;
++    constexpr float kMinClipW = kGdxMinClipW;
+     const auto clipDistance = [=](const LoadedVertex& vertex, uint32_t plane) {
+         switch (plane) {
+             case 0:
+@@ -3265,19 +3330,15 @@
+                 return vertex.w - vertex.z;
+         }
+     };
++    // [traffic] The old pre-scan evaluated clipDistance() for up to 7 planes x 3 vertices
++    // through the switch-lambda on EVERY triangle, fully-inside ones included (~860 race tris
++    // per traffic frame paid the whole 21-test walk). The per-vertex clip_out mask holds the
++    // same 7 outside-tests, computed once at vertex-transform time with identical arithmetic,
++    // so the pre-scan collapses to a 3-byte OR. requiresClipping is bit-for-bit the old value:
++    // clip_out bit p is set iff clipDistance(v, p) < 0.
+     bool requiresClipping = false;
+     if (!is_rect && sClipFanDepth == 0) {
+-        for (const LoadedVertex* vertex : v_arr) {
+-            for (uint32_t plane = 0; plane < 7; ++plane) {
+-                if (clipDistance(*vertex, plane) < 0.0f) {
+-                    requiresClipping = true;
+-                    break;
+-                }
+-            }
+-            if (requiresClipping) {
+-                break;
+-            }
+-        }
++        requiresClipping = ((v1->clip_out | v2->clip_out | v3->clip_out) != 0);
+     }
+ 
+     if (requiresClipping) {
+@@ -4354,6 +4415,12 @@
+     quad[1].clip_rej = 0;
+     quad[2].clip_rej = 0;
+     quad[3].clip_rej = 0;
++    // [traffic] x/y were rewritten above, so the copied clip_out masks are stale; the quads go
++    // through the non-rect GfxSpTri1 path whose clip pre-scan now reads clip_out.
++    quad[0].clip_out = GdxComputeClipOutMask(quad[0]);
++    quad[1].clip_out = GdxComputeClipOutMask(quad[1]);
++    quad[2].clip_out = GdxComputeClipOutMask(quad[2]);
++    quad[3].clip_out = GdxComputeClipOutMask(quad[3]);
+ 
+     // Hardware lines never face-cull; suppress culling for the quad only.
+     const uint32_t savedGeometryMode = mRsp->geometry_mode;

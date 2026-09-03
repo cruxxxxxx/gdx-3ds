@@ -1,0 +1,358 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index 475ff1c..f0b9faf 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -46,6 +46,14 @@
+ #include <windows.h>
+ #endif
+ 
++#ifdef __3DS__
++// [triloop] Direct PICA-layout vertex emission: pack-parameter / batch-aux
++// contract with the citro3d backend (port/3ds/gfx/gdx3ds_vbopack.h; the port's
++// gdx3ds_lus_carve target adds that directory to this TU's include path).
++// Desktop builds never see this include or the packed path.
++#include "gdx3ds_vbopack.h"
++#endif
++
+ std::stack<std::string> currentDir;
+ 
+ // Run-log shim from the port (port_log.h), used by the env-gated diagnostics below.
+@@ -139,8 +147,10 @@ static Interpreter* sGfxInstanceRaw = nullptr;
+ // [perf-s7] Compiled-in S7 interpreter optimizations, surfaced to the port's one-shot
+ // [perf-s7] log line (weak-referenced there so unpatched trees still link).
+ // bit0 = raw-instance dispatch, bit1 = gated geometry diagnostics, bit2 = tri draw-state memo,
+-// bit3 = rect-run draw-state memo ([texrect]).
+-extern "C" const unsigned int gdx_s7_lus_optmask = 0xFu;
++// bit3 = rect-run draw-state memo ([texrect]), bit4 = [triloop] packed vertex emission
++// (3DS builds only — the packed path is __3DS__-gated, but the bit advertises the
++// compiled-in capability like the others).
++extern "C" const unsigned int gdx_s7_lus_optmask = 0x1Fu;
+ 
+ // [perf-s7] Per-triangle draw-state memo. GfxSpTri1 re-derived the texture-unit extents
+ // (several integer divides per unit), re-queried the backend for ShaderGetInfo and
+@@ -234,6 +244,23 @@ void GfxSetInstance(std::shared_ptr<Interpreter> gfx) {
+ // N64 prim_depth is 15-bit (0 near, 0x7FFF far).
+ static constexpr float N64_PRIM_DEPTH_MAX = 32767.0f;
+ 
++#ifdef __3DS__
++// [triloop] Per-batch packed-emission state (single interpreter instance — the same
++// assumption sGfxInstanceRaw already makes). A batch chooses its mode at its FIRST
++// tri append (mBufVboNumTris == 0): gdx3ds_vbopack_begin either hands back a write
++// cursor into the backend's linear VBO pool plus the batch's pack parameters, or
++// refuses (killswitch, no shader, frame inactive, pool nearly exhausted), in which
++// case the WHOLE batch takes the legacy variable-stride path. The mode can never
++// need to change mid-batch: every state mutation that feeds the pack parameters
++// (shader, texture binds/samplers, prim/env/fog/blend colours, fog line) already
++// splits the batch with a Flush() — the same invariant the s7 memo, the vertex-0
++// stage constants and the fog latch rely on.
++static float* sGdxPackDst = nullptr;
++static bool sGdxPackBatch = false;
++static Gdx3dsVboPackParams sGdxPackParams;
++static Gdx3dsVboPackAux sGdxPackAux;
++#endif
++
+ void Interpreter::Flush() {
+     if (mBufVboLen > 0) {
+         mGeometryDiagnostics.gpuDrawCalls++;
+@@ -241,7 +268,19 @@ void Interpreter::Flush() {
+         mRapi->SetCurrentPrimDepth((float)mRdp->prim_depth / N64_PRIM_DEPTH_MAX);
+         // G_AC_THRESHOLD compares against the SETBLENDCOLOR alpha register, not a constant.
+         mRapi->SetCurrentAlphaCompareThreshold((float)mRdp->blend_color.a / 255.0f);
++#ifdef __3DS__
++        // [triloop] Packed batches were emitted straight into the linear VBO pool in
++        // the final PICA layout; submit repack-free with the batch aux record.
++        if (sGdxPackBatch) {
++            gdx3ds_vbopack_draw(mBufVboNumTris, &sGdxPackAux);
++            sGdxPackBatch = false;
++            sGdxPackDst = nullptr;
++        } else {
++            mRapi->DrawTriangles(mBufVbo, mBufVboLen, mBufVboNumTris);
++        }
++#else
+         mRapi->DrawTriangles(mBufVbo, mBufVboLen, mBufVboNumTris);
++#endif
+         mBufVboLen = 0;
+         mBufVboNumTris = 0;
+     }
+@@ -4081,6 +4120,271 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+         ++sPitUvProbeTris;
+     }
+ 
++#ifdef __3DS__
++    // [triloop] Fold the backend repack into the first write (precedent:
++    // Wyatt-James/sm64-3ds-port tri-loop optimization, ~0.8 ms measured there).
++    // Legacy shape: this loop appended a VARIABLE-stride vertex (pos + uv +
++    // per-vertex clamp limits + fog rgba + grayscale + EVERY combiner input) to
++    // mBufVbo, then DrawTriangles re-walked the whole batch repacking it into
++    // the fixed 12-float PICA layout — every vertex copied twice, with the
++    // per-vertex work for constant-spill inputs (prim/env/key/convert) computed
++    // and then discarded down to a single vertex-0 read.
++    //
++    // Packed shape: the batch's first append latches the backend pack
++    // parameters (gdx3ds_vbopack_begin — refusal falls back to the legacy path
++    // for the whole batch) and each vertex is written ONCE, in final layout,
++    // straight into the backend's linear VBO pool: UV scale + both clamp
++    // families applied here, only the vtxColorInput computed per vertex, and
++    // the constant-spill inputs computed once per batch into the aux record
++    // (sGdxPackAux) that replaces the backend's vertex-0 reads. All values are
++    // bit-identical to legacy-append-then-repack by construction (same
++    // expressions, same float op order); the flush invariant (any pack-input
++    // state change splits the batch) makes batch-begin latching exact.
++    //
++    // gdx_s7_geo_diag_enabled forces legacy: the verbose geometry diagnostics
++    // ([geodiag]/[pit-uv-probe]/uvprobe UV ranges) live in the legacy loop, so
++    // armed diagnostics keep full fidelity. Killswitch: [debug] triloop=0.
++    if (mBufVboNumTris == 0) {
++        sGdxPackDst = gdx_s7_geo_diag_enabled ? nullptr : gdx3ds_vbopack_begin(&sGdxPackParams);
++        sGdxPackBatch = (sGdxPackDst != nullptr);
++    }
++    if (sGdxPackBatch) {
++        // Combiner-input evaluation, verbatim from the legacy loop's switch (the
++        // uint8 RGBA truncations included). isShade flags the SHADE case for the
++        // standard-fog alpha substitution (legacy: color == &v_arr[i]->color).
++        struct GdxPackInput {
++            RGBA c;
++            bool isShade;
++        };
++        const auto gdxInput = [&](int j, int k, int i) -> GdxPackInput {
++            RGBA* color;
++            RGBA tmp;
++            bool isShade = false;
++            switch (comb->shader_input_mapping[k][j]) {
++                case G_CCMUX_PRIMITIVE:
++                    color = &mRdp->prim_color;
++                    break;
++                case G_CCMUX_SHADE:
++                    color = &v_arr[i]->color;
++                    isShade = true;
++                    break;
++                case G_CCMUX_SHADE_ALPHA: {
++                    tmp.r = tmp.g = tmp.b = tmp.a = v_arr[i]->color.a;
++                    color = &tmp;
++                    break;
++                }
++                case G_CCMUX_ENVIRONMENT:
++                    color = &mRdp->env_color;
++                    break;
++                case G_CCMUX_PRIMITIVE_ALPHA: {
++                    tmp.r = tmp.g = tmp.b = mRdp->prim_color.a;
++                    color = &tmp;
++                    break;
++                }
++                case G_CCMUX_ENV_ALPHA: {
++                    tmp.r = tmp.g = tmp.b = mRdp->env_color.a;
++                    color = &tmp;
++                    break;
++                }
++                case G_CCMUX_PRIM_LOD_FRAC: {
++                    tmp.r = tmp.g = tmp.b = mRdp->prim_lod_fraction;
++                    color = &tmp;
++                    break;
++                }
++                case G_CCMUX_LOD_FRACTION: {
++                    if (mRdp->other_mode_l & G_TL_LOD) {
++                        // "Hack" that works for Bowser - Peach painting
++                        float distance_frac = (v1->w - 3000.0f) / 3000.0f;
++                        if (distance_frac < 0.0f) {
++                            distance_frac = 0.0f;
++                        }
++                        if (distance_frac > 1.0f) {
++                            distance_frac = 1.0f;
++                        }
++                        tmp.r = tmp.g = tmp.b = tmp.a = distance_frac * 255.0f;
++                    } else {
++                        tmp.r = tmp.g = tmp.b = tmp.a = 255.0f;
++                    }
++                    color = &tmp;
++                    break;
++                }
++                case G_CCMUX_KEY_CENTER:
++                    color = &mRdp->key_center;
++                    break;
++                case G_CCMUX_KEY_SCALE:
++                    color = &mRdp->key_scale;
++                    break;
++                case G_CCMUX_CONVERT_K4: {
++                    tmp.r = tmp.g = tmp.b = mRdp->convert_k[4];
++                    color = &tmp;
++                    break;
++                }
++                case G_CCMUX_CONVERT_K5: {
++                    tmp.r = tmp.g = tmp.b = mRdp->convert_k[5];
++                    color = &tmp;
++                    break;
++                }
++                case G_ACMUX_PRIM_LOD_FRAC:
++                    tmp.a = mRdp->prim_lod_fraction;
++                    color = &tmp;
++                    break;
++                default:
++                    memset(&tmp, 0, sizeof(tmp));
++                    color = &tmp;
++                    break;
++            }
++            return { *color, isShade };
++        };
++
++        // Final clamp limits, resolved once per tri from this draw's tm bits and
++        // the batch pack parameters. Shader-clamp axes carry the interpreter's
++        // own limit ((tileExtent - 0.5) / texExtent — the value the legacy path
++        // appended per vertex) scaled into padded UV space; other axes use the
++        // backend's content-edge limit. Both are what DrawTriangles' repack
++        // derived, gated identically on the sky_clamp_fix flag.
++        float gdxClampU[2] = { 1e30f, 1e30f };
++        float gdxClampV[2] = { 1e30f, 1e30f };
++        for (int t = 0; t < 2; t++) {
++            if (!usedTextures[t]) {
++                continue;
++            }
++            gdxClampU[t] = sGdxPackParams.wrapClampU[t];
++            gdxClampV[t] = sGdxPackParams.wrapClampV[t];
++            if (sGdxPackParams.shaderClampGate) {
++                if (tm & (1 << 2 * t)) {
++                    gdxClampU[t] = ((tex_width2[t] - 0.5f) / tex_width[t]) * sGdxPackParams.uScale[t];
++                }
++                if (tm & (1 << 2 * t + 1)) {
++                    gdxClampV[t] = ((tex_height2[t] - 0.5f) / tex_height[t]) * sGdxPackParams.vScale[t];
++                }
++            }
++        }
++
++        // Batch aux record (first tri only): the vertex-0 value of every
++        // combiner input plus the draw-constant fog rgb/factor — everything the
++        // lossy fixed layout no longer carries but the backend's vertex-0 reads
++        // consumed (RefreshStageConstants, UpdateFogState).
++        if (mBufVboNumTris == 0) {
++            sGdxPackAux.numInputs = (uint8_t)(numInputs < 7 ? numInputs : 7);
++            for (int j = 0; j < sGdxPackAux.numInputs; j++) {
++                const GdxPackInput cv = gdxInput(j, 0, 0);
++                sGdxPackAux.inputRgba[j][0] = cv.c.r / 255.0f;
++                sGdxPackAux.inputRgba[j][1] = cv.c.g / 255.0f;
++                sGdxPackAux.inputRgba[j][2] = cv.c.b / 255.0f;
++                if (use_alpha) {
++                    const GdxPackInput av = gdxInput(j, 1, 0);
++                    sGdxPackAux.inputRgba[j][3] =
++                        (use_fog && !use_blend_color && av.isShade) ? 1.0f : av.c.a / 255.0f;
++                } else {
++                    sGdxPackAux.inputRgba[j][3] = 1.0f;
++                }
++            }
++            sGdxPackAux.hasFog = use_fog ? 1 : 0;
++            if (use_fog) {
++                const RGBA& fogSrc = use_blend_color ? mRdp->blend_color : mRdp->fog_color;
++                sGdxPackAux.fogRgb[0] = fogSrc.r / 255.0f;
++                sGdxPackAux.fogRgb[1] = fogSrc.g / 255.0f;
++                sGdxPackAux.fogRgb[2] = fogSrc.b / 255.0f;
++                sGdxPackAux.fogFactor0 =
++                    use_blend_color ? mRdp->fog_color.a / 255.0f : v_arr[0]->color.a / 255.0f;
++            } else {
++                sGdxPackAux.fogRgb[0] = sGdxPackAux.fogRgb[1] = sGdxPackAux.fogRgb[2] = 0.0f;
++                sGdxPackAux.fogFactor0 = 0.0f;
++            }
++        }
++
++        float* gdxOut = sGdxPackDst + (size_t)mBufVboNumTris * (3 * GDX3DS_VBOPACK_STRIDE);
++        for (int i = 0; i < 3; i++) {
++            float* out = gdxOut + i * GDX3DS_VBOPACK_STRIDE;
++            float z = v_arr[i]->z, w = v_arr[i]->w;
++            if (clip_parameters.z_is_from_0_to_1) {
++                z = (z + w) / 2.0f;
++            }
++            out[0] = v_arr[i]->x;
++            out[1] = clip_parameters.invertY ? -v_arr[i]->y : v_arr[i]->y;
++            out[2] = z;
++            out[3] = w;
++
++            for (int t = 0; t < 2; t++) {
++                const int slot = (t == 0) ? 4 : 10;
++                if (!usedTextures[t]) {
++                    out[slot] = 0.0f;
++                    out[slot + 1] = 0.0f;
++                    continue;
++                }
++                float u = v_arr[i]->u / 32.0f;
++                float v = v_arr[i]->v / 32.0f;
++
++                const uint32_t uv_tile = effective_tile[t];
++                const int shifts = mRdp->texture_tile[uv_tile].shifts;
++                const int shiftt = mRdp->texture_tile[uv_tile].shiftt;
++                if (shifts != 0) {
++                    if (shifts <= 10) {
++                        u /= 1 << shifts;
++                    } else {
++                        u *= 1 << (16 - shifts);
++                    }
++                }
++                if (shiftt != 0) {
++                    if (shiftt <= 10) {
++                        v /= 1 << shiftt;
++                    } else {
++                        v *= 1 << (16 - shiftt);
++                    }
++                }
++
++                u -= mRdp->texture_tile[uv_tile].uls / 4.0f;
++                v -= mRdp->texture_tile[uv_tile].ult / 4.0f;
++
++                // Must agree with the sampler filter policy (only G_TF_BILERP is linear).
++                if ((mRdp->other_mode_h & (3U << G_MDSFT_TEXTFILT)) == G_TF_BILERP) {
++                    if (!is_rect || !sGdxRectHalfTexelDisabled) {
++                        u += 0.5f;
++                        v += 0.5f;
++                    }
++                }
++
++                // normalized UV * pow2-padding scale, clamped — the exact repack
++                // expression (fminf keeps the NaN policy identical).
++                out[slot] = fminf((u / tex_width[t]) * sGdxPackParams.uScale[t], gdxClampU[t]);
++                out[slot + 1] = fminf((v / tex_height[t]) * sGdxPackParams.vScale[t], gdxClampV[t]);
++            }
++
++            if (sGdxPackParams.vtxColorInput > 0) {
++                const GdxPackInput cv = gdxInput(sGdxPackParams.vtxColorInput - 1, 0, i);
++                out[6] = cv.c.r / 255.0f;
++                out[7] = cv.c.g / 255.0f;
++                out[8] = cv.c.b / 255.0f;
++            } else {
++                out[6] = out[7] = out[8] = 1.0f;
++            }
++
++            // out[9] policy mirrors the repack: fog factor for fog-blend draws
++            // (fog slot +3: constant fog alpha in shroud mode, baked per-vertex
++            // factor otherwise), else the vtxAlphaInput's per-vertex alpha with
++            // the standard-fog shade substitution, else opaque.
++            if (sGdxPackParams.fogFactorToAlpha) {
++                out[9] = use_blend_color ? mRdp->fog_color.a / 255.0f : v_arr[i]->color.a / 255.0f;
++            } else if (sGdxPackParams.wantVtxAlpha) {
++                const GdxPackInput av = gdxInput(sGdxPackParams.vtxAlphaInput - 1, 1, i);
++                out[9] = (use_fog && !use_blend_color && av.isShade) ? 1.0f : av.c.a / 255.0f;
++            } else {
++                out[9] = 1.0f;
++            }
++
++            // Fog-line mirror, same cadence as the legacy append (the moveword
++            // handlers flush on a line change, so the latch is batch-exact).
++            if (use_fog) {
++                if (use_blend_color) {
++                    gdx3ds_fog_note_params(0, 0, 0); // constant factor: backend must fit, not use the line
++                } else {
++                    gdx3ds_fog_note_params(mRsp->fog_mul, mRsp->fog_offset, 1);
++                }
++            }
++        }
++        mBufVboLen += 3 * GDX3DS_VBOPACK_STRIDE;
++    } else {
++#endif
+     for (int i = 0; i < 3; i++) {
+         float z = v_arr[i]->z, w = v_arr[i]->w;
+         if (clip_parameters.z_is_from_0_to_1) {
+@@ -4366,6 +4670,9 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+         // mBufVbo[mBufVboLen++] = color->b / 255.0f;
+         // mBufVbo[mBufVboLen++] = color->a / 255.0f;
+     }
++#ifdef __3DS__
++    } // [triloop] legacy variable-stride append (packed batches wrote above)
++#endif
+ 
+     if (!is_rect) {
+         mGeometryDiagnostics.trianglesEmitted++;

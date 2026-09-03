@@ -1,0 +1,321 @@
+diff --git a/src/game/course.c b/src/game/course.c
+index a7de7b7..3f60196 100644
+--- a/src/game/course.c
++++ b/src/game/course.c
+@@ -84,6 +84,13 @@ f32 D_800F89E0;
+ f32 D_800F89E4;
+ f32 D_800F89E8;
+ 
++#ifdef PORT
++/* C3-COURSE-CULL: one-frame arm flag + line budget for the chunk-group tessellator walk
++   logging ([grp] lines in the two DrawChunkGroup functions). Armed by the bounded [cull]
++   census in Course_Draw, so the walk log rides the same every-64th-call/64-burst schedule. */
++s32 gGdxGrpLogArmed = 0;
++s32 gGdxGrpLogBudget = 0;
++#endif
+ s32 D_800CF500 = 0;
+ s16 gLastRandomCourseIndex = -1;
+ s32 sCourseFogStartDistance = 990;
+@@ -4263,6 +4270,17 @@ void Course_DrawBackwardChunkGroup(SegmentChunkGroup* chunkGroup) {
+     u32 trackShape;
+     unk_800CF528* temp_a1;
+ 
++#ifdef PORT
++    {
++        extern void gdx_dbg_logf(const char* fmt, ...);
++        if (gGdxGrpLogArmed && (gGdxGrpLogBudget-- > 0)) {
++            gdx_dbg_logf("[grp] BWD start=%d end=%d st=%d avgD=%.0f\n",
++                         (s32) (chunkGroup->startChunk - gSegmentChunks),
++                         (s32) (chunkGroup->endChunk - gSegmentChunks), chunkGroup->drawState,
++                         chunkGroup->averageDepth);
++        }
++    }
++#endif
+     sWorkingSegmentChunk = chunkGroup->startChunk;
+     sWorkingNextSegmentChunk = chunkGroup->startChunk + 1;
+ 
+@@ -4333,6 +4351,17 @@ void Course_DrawBackwardChunkGroup(SegmentChunkGroup* chunkGroup) {
+         sWorkingChunkJoinInfo =
+             sWorkingSegmentChunk->trackSegmentInfo &
+             (TRACK_JOIN_MASK | TRACK_CHUNK_JOIN_TRANSITION_END_MASK | TRACK_CHUNK_JOIN_TRANSITION_START_MASK);
++#ifdef PORT
++        {
++            extern void gdx_dbg_logf(const char* fmt, ...);
++            if (gGdxGrpLogArmed && (gGdxGrpLogBudget-- > 0)) {
++                gdx_dbg_logf("[grp]  bwd span %d->%d shape=%d d=%.0f dn=%.0f\n",
++                             (s32) (sWorkingSegmentChunk - gSegmentChunks),
++                             (s32) (sWorkingNextSegmentChunk - gSegmentChunks), (s32) trackShape,
++                             sWorkingSegmentChunk->depth, sWorkingNextSegmentChunk->depth);
++            }
++        }
++#endif
+         sBackwardChunkGroupDrawFuncs[trackShape]();
+ 
+         sWorkingSegmentChunk = sWorkingNextSegmentChunk++;
+@@ -4349,6 +4378,17 @@ void Course_DrawForwardChunkGroup(SegmentChunkGroup* chunkGroup) {
+     unk_800CF528* temp_a2;
+     SegmentChunk* firstChunk = gSegmentChunks;
+ 
++#ifdef PORT
++    {
++        extern void gdx_dbg_logf(const char* fmt, ...);
++        if (gGdxGrpLogArmed && (gGdxGrpLogBudget-- > 0)) {
++            gdx_dbg_logf("[grp] FWD start=%d end=%d st=%d avgD=%.0f\n",
++                         (s32) (chunkGroup->startChunk - gSegmentChunks),
++                         (s32) (chunkGroup->endChunk - gSegmentChunks), chunkGroup->drawState,
++                         chunkGroup->averageDepth);
++        }
++    }
++#endif
+     sWorkingSegmentChunk = chunkGroup->endChunk - 1;
+     if (sWorkingSegmentChunk < firstChunk) {
+         sWorkingSegmentChunk = sLastSegmentChunk - 1;
+@@ -4416,6 +4456,17 @@ void Course_DrawForwardChunkGroup(SegmentChunkGroup* chunkGroup) {
+         sWorkingChunkJoinInfo =
+             sWorkingSegmentChunk->trackSegmentInfo &
+             (TRACK_JOIN_MASK | TRACK_CHUNK_JOIN_TRANSITION_END_MASK | TRACK_CHUNK_JOIN_TRANSITION_START_MASK);
++#ifdef PORT
++        {
++            extern void gdx_dbg_logf(const char* fmt, ...);
++            if (gGdxGrpLogArmed && (gGdxGrpLogBudget-- > 0)) {
++                gdx_dbg_logf("[grp]  fwd span %d->%d shape=%d d=%.0f dn=%.0f\n",
++                             (s32) (sWorkingSegmentChunk - gSegmentChunks),
++                             (s32) (sWorkingNextSegmentChunk - gSegmentChunks), (s32) trackShape,
++                             sWorkingSegmentChunk->depth, sWorkingNextSegmentChunk->depth);
++            }
++        }
++#endif
+         sForwardChunkGroupDrawFuncs[trackShape]();
+ 
+         sWorkingNextSegmentChunk = sWorkingSegmentChunk--;
+@@ -4679,8 +4730,168 @@ Gfx* Course_Draw(Gfx* gfx, s32 cameraIndex) {
+         }
+         chunk++;
+     } while (chunk != sLastSegmentChunk);
++#ifdef PORT
++    /* C3 diagnostic kill-switch (gdx-nocull.txt at the SD root, checked once): force-pass
++       every depth-in-range chunk, bypassing both NDC tests. Discriminates "cull wrongly
++       rejects the road" from "loss is downstream of the cull" with one visual capture. */
++    {
++        extern int gdx_nocull_test_enabled(void);
++        if (gdx_nocull_test_enabled() != 0) {
++            for (chunk = gSegmentChunks; chunk != sLastSegmentChunk; chunk++) {
++                if ((chunk->depth >= 0.0f) &&
++                    (chunk->depth <= (sCourseFarRenderDistance * gdxFarRenderDistanceScale))) {
++                    chunk->drawState = 1;
++                }
++            }
++        }
++    }
++#endif
+     sLastSegmentChunk->depth = gSegmentChunks->depth;
+     sLastSegmentChunk->drawState = gSegmentChunks->drawState;
++#ifdef PORT
++    /* C2-COURSE-CULL diagnostics (bounded, read-only): census of the raw cull pass plus the
++       operands feeding it, to localize the "almost no track geometry in races" bug. Logs every
++       64th call, 64 bursts max, then goes silent. Pure logging: no game state is written.
++       An armed frame emits ~75 formatted log lines (this census + [cull2] + the [grp] walk it
++       arms), which measurably costs fps — the whole family sits behind the GDX_DIAG_CULL gate
++       (port/n64_sched.c gdx_diag_cull_enabled; F1 > Dev Tools > Course/racer cull census). */
++    {
++        extern void gdx_dbg_logf(const char* fmt, ...);
++        extern int gdx_diag_cull_enabled(void);
++        static u32 sGdxCullCalls = 0;
++        static u32 sGdxCullBursts = 0;
++        gGdxGrpLogArmed = 0;
++        if (gdx_diag_cull_enabled() && ((sGdxCullCalls++ & 63) == 0) && (sGdxCullBursts < 64)) {
++            gGdxGrpLogArmed = 1;
++            gGdxGrpLogBudget = 40;
++            SegmentChunk* gdxC;
++            s32 gdxPass = 0;
++            s32 gdxNeg = 0;
++            s32 gdxFar = 0;
++            sGdxCullBursts++;
++            for (gdxC = gSegmentChunks; gdxC != sLastSegmentChunk; gdxC++) {
++                if (gdxC->drawState != 0) {
++                    gdxPass++;
++                } else if (gdxC->depth < 0.0f) {
++                    gdxNeg++;
++                } else if ((sCourseFarRenderDistance * gdxFarRenderDistanceScale) < gdxC->depth) {
++                    gdxFar++;
++                }
++            }
++            gdx_dbg_logf("[cull] cam=%d cnt=%d pass=%d neg=%d far=%d farDist=%.1f origDist=%.1f "
++                         "eye=(%.1f %.1f %.1f) bx=(%.3f %.3f %.3f) near=%.1f cfar=%.1f fov=%.1f\n",
++                         cameraIndex, gSegmentChunkCount, gdxPass, gdxNeg, gdxFar,
++                         sCourseFarRenderDistance, sCourseRenderOriginDistance,
++                         camera->eye.x, camera->eye.y, camera->eye.z,
++                         camera->basis.x.x, camera->basis.x.y, camera->basis.x.z,
++                         camera->near, camera->far, camera->fov);
++            gdx_dbg_logf("[cull] col2=(%g %g %g) m32=%g m33=%g col3=(%g %g %g) p22=%g p32=%g "
++                         "v22=%g pv22=%g\n",
++                         sp60.m[0][2], sp60.m[1][2], sp60.m[2][2], sp60.m[3][2], sp60.m[3][3],
++                         sp60.m[0][3], sp60.m[1][3], sp60.m[2][3],
++                         camera->projectionMtx.m[2][2], camera->projectionMtx.m[3][2],
++                         camera->viewMtx.m[2][2], camera->projectionViewMtx.m[2][2]);
++            {
++                s32 gdxIdx;
++                for (gdxIdx = 0; gdxIdx < 4; gdxIdx++) {
++                    s32 gdxN = (gSegmentChunkCount * gdxIdx) / 4;
++                    SegmentChunk* gdxS = &gSegmentChunks[gdxN];
++                    f32 gdxW = ((sp60.m[0][3] * gdxS->pos.x) + (sp60.m[1][3] * gdxS->pos.y) +
++                                (sp60.m[2][3] * gdxS->pos.z)) + sp60.m[3][3];
++                    f32 gdxX = ((sp60.m[0][0] * gdxS->pos.x) + (sp60.m[1][0] * gdxS->pos.y) +
++                                (sp60.m[2][0] * gdxS->pos.z)) + sp60.m[3][0];
++                    gdx_dbg_logf("[cull]  chunk[%d] st=%d pos=(%.1f %.1f %.1f) depth=%.1f w=%g "
++                                 "ndcx=%g\n",
++                                 gdxN, gdxS->drawState, gdxS->pos.x, gdxS->pos.y, gdxS->pos.z,
++                                 gdxS->depth, gdxW, (gdxW != 0.0f) ? (gdxX / gdxW) : 9999.0f);
++                }
++            }
++            /* C3 extension: name the failing test. Full row of the concatenated matrix
++               (m30/m31 were missing above), raw projection scale terms, and a per-chunk
++               reclassification of every depth-in-range rejected chunk: which of the two
++               NDC tests rejected it, plus samples with both NDC coordinates. */
++            gdx_dbg_logf("[cull2] m30=%g m31=%g col0=(%g %g %g) col1=(%g %g %g) p00=%g p11=%g "
++                         "cullX=%g farScale=%g\n",
++                         sp60.m[3][0], sp60.m[3][1],
++                         sp60.m[0][0], sp60.m[1][0], sp60.m[2][0],
++                         sp60.m[0][1], sp60.m[1][1], sp60.m[2][1],
++                         camera->projectionMtx.m[0][0], camera->projectionMtx.m[1][1],
++                         gdxCullX, gdxFarRenderDistanceScale);
++            {
++                s32 gdxNx = 0;
++                s32 gdxNy = 0;
++                s32 gdxOdd = 0;
++                s32 gdxShown = 0;
++                SegmentChunk* gdxC2;
++                for (gdxC2 = gSegmentChunks; gdxC2 != sLastSegmentChunk; gdxC2++) {
++                    f32 gdxW2;
++                    f32 gdxNdcX;
++                    f32 gdxNdcY;
++                    if ((gdxC2->depth < 0.0f) ||
++                        ((sCourseFarRenderDistance * gdxFarRenderDistanceScale) < gdxC2->depth)) {
++                        continue;
++                    }
++                    gdxW2 = ((sp60.m[0][3] * gdxC2->pos.x) + (sp60.m[1][3] * gdxC2->pos.y) +
++                             (sp60.m[2][3] * gdxC2->pos.z)) + sp60.m[3][3];
++                    if (gdxW2 == 0.0f) {
++                        continue;
++                    }
++                    gdxNdcX = (((sp60.m[0][0] * gdxC2->pos.x) + (sp60.m[1][0] * gdxC2->pos.y) +
++                                (sp60.m[2][0] * gdxC2->pos.z)) + sp60.m[3][0]) / gdxW2;
++                    gdxNdcY = (((sp60.m[0][1] * gdxC2->pos.x) + (sp60.m[1][1] * gdxC2->pos.y) +
++                                (sp60.m[2][1] * gdxC2->pos.z)) + sp60.m[3][1]) / gdxW2;
++                    if (gdxC2->drawState == 0) {
++                        if ((gdxNdcX < -gdxCullX) || (gdxNdcX > gdxCullX)) {
++                            gdxNx++;
++                        } else if ((gdxNdcY < -1.0f) || (gdxNdcY > 1.0f)) {
++                            gdxNy++;
++                        } else {
++                            gdxOdd++; /* rejected by the cull yet passing both NDC tests here */
++                        }
++                    }
++                    if (gdxShown < 14) {
++                        gdxShown++;
++                        gdx_dbg_logf("[cull2]  c[%d] st=%d d=%.0f w=%.0f x=%.2f y=%.2f\n",
++                                     (s32) (gdxC2 - gSegmentChunks), gdxC2->drawState,
++                                     gdxC2->depth, gdxW2, gdxNdcX, gdxNdcY);
++                    }
++                }
++                gdx_dbg_logf("[cull2] inRangeRejects: ndcx=%d ndcy=%d odd=%d\n", gdxNx, gdxNy,
++                             gdxOdd);
++                /* The by-index sample above rarely covers the road right in front of the
++                   racer. Second pass: the near band (w < 3200, i.e. within ~2200 units of
++                   the camera), which is exactly where the captures show missing road. */
++                gdxShown = 0;
++                for (gdxC2 = gSegmentChunks; gdxC2 != sLastSegmentChunk; gdxC2++) {
++                    f32 gdxW2;
++                    f32 gdxNdcX;
++                    f32 gdxNdcY;
++                    if ((gdxC2->depth < 0.0f) ||
++                        ((sCourseFarRenderDistance * gdxFarRenderDistanceScale) < gdxC2->depth)) {
++                        continue;
++                    }
++                    gdxW2 = ((sp60.m[0][3] * gdxC2->pos.x) + (sp60.m[1][3] * gdxC2->pos.y) +
++                             (sp60.m[2][3] * gdxC2->pos.z)) + sp60.m[3][3];
++                    if ((gdxW2 <= 0.0f) || (gdxW2 >= 3200.0f)) {
++                        continue;
++                    }
++                    gdxNdcX = (((sp60.m[0][0] * gdxC2->pos.x) + (sp60.m[1][0] * gdxC2->pos.y) +
++                                (sp60.m[2][0] * gdxC2->pos.z)) + sp60.m[3][0]) / gdxW2;
++                    gdxNdcY = (((sp60.m[0][1] * gdxC2->pos.x) + (sp60.m[1][1] * gdxC2->pos.y) +
++                                (sp60.m[2][1] * gdxC2->pos.z)) + sp60.m[3][1]) / gdxW2;
++                    if (gdxShown < 14) {
++                        gdxShown++;
++                        gdx_dbg_logf("[cull2]  near[%d] st=%d d=%.0f w=%.0f x=%.2f y=%.2f "
++                                     "pos=(%.0f %.0f %.0f)\n",
++                                     (s32) (gdxC2 - gSegmentChunks), gdxC2->drawState,
++                                     gdxC2->depth, gdxW2, gdxNdcX, gdxNdcY, gdxC2->pos.x,
++                                     gdxC2->pos.y, gdxC2->pos.z);
++                    }
++                }
++            }
++        }
++    }
++#endif
+     lastChunkDrawState = 1;
+     D_800CF500 = 0;
+     nextChunk = &gSegmentChunks[1];
+diff --git a/src/game/racer.c b/src/game/racer.c
+index e62ad2e..6b3f027 100644
+--- a/src/game/racer.c
++++ b/src/game/racer.c
+@@ -5716,6 +5716,57 @@ Gfx* Racer_Draw(Gfx* gfx, s32 playerIndex) {
+         }
+ #endif
+     }
++#ifdef PORT
++    /* C2-COURSE-CULL diagnostics (bounded, read-only): census of the racer visibility pass and
++       the operands for the first few culled-but-active rivals. Every 64th call, 64 bursts max.
++       OFF by default behind the GDX_DIAG_CULL gate (armed frames measurably cost fps). */
++    {
++        extern void gdx_dbg_logf(const char* fmt, ...);
++        extern int gdx_diag_cull_enabled(void);
++        static u32 sGdxRvCalls = 0;
++        static u32 sGdxRvBursts = 0;
++        if (gdx_diag_cull_enabled() && ((sGdxRvCalls++ & 63) == 0) && (sGdxRvBursts < 64)) {
++            Racer* gdxR;
++            s32 gdxActive = 0;
++            s32 gdxVis = 0;
++            s32 gdxDumped = 0;
++            sGdxRvBursts++;
++            for (gdxR = sLastRacer; gdxR >= gRacers; gdxR--) {
++                if (gdxR->stateFlags & RACER_STATE_ACTIVE) {
++                    gdxActive++;
++                    if (gdxR->machineLod != 0) {
++                        gdxVis++;
++                    } else if (gdxDumped < 3) {
++                        f32 gdxD = ((sp580.m[0][2] * gdxR->segmentPositionInfo.pos.x) +
++                                    (sp580.m[1][2] * gdxR->segmentPositionInfo.pos.y) +
++                                    (sp580.m[2][2] * gdxR->segmentPositionInfo.pos.z)) +
++                                   sp580.m[3][2];
++                        f32 gdxW = ((sp580.m[0][3] * gdxR->segmentPositionInfo.pos.x) +
++                                    (sp580.m[1][3] * gdxR->segmentPositionInfo.pos.y) +
++                                    (sp580.m[2][3] * gdxR->segmentPositionInfo.pos.z)) +
++                                   sp580.m[3][3];
++                        f32 gdxX = ((sp580.m[0][0] * gdxR->segmentPositionInfo.pos.x) +
++                                    (sp580.m[1][0] * gdxR->segmentPositionInfo.pos.y) +
++                                    (sp580.m[2][0] * gdxR->segmentPositionInfo.pos.z)) +
++                                   sp580.m[3][0];
++                        gdxDumped++;
++                        gdx_dbg_logf("[rvcull]  racer[%d] pos=(%.1f %.1f %.1f) depth=%.1f "
++                                     "ndcx=%g\n",
++                                     (s32) (gdxR - gRacers), gdxR->segmentPositionInfo.pos.x,
++                                     gdxR->segmentPositionInfo.pos.y,
++                                     gdxR->segmentPositionInfo.pos.z, gdxD,
++                                     (gdxW != 0.0f) ? (gdxX / gdxW) : 9999.0f);
++                    }
++                }
++            }
++            gdx_dbg_logf("[rvcull] cam=%d active=%d vis=%d eye=(%.1f %.1f %.1f) m32=%g m33=%g "
++                         "col2=(%g %g %g)\n",
++                         playerIndex, gdxActive, gdxVis, camera->eye.x, camera->eye.y,
++                         camera->eye.z, sp580.m[3][2], sp580.m[3][3], sp580.m[0][2],
++                         sp580.m[1][2], sp580.m[2][2]);
++        }
++    }
++#endif
+     if (gNumPlayers >= 3) {
+         for (racer = &gRacers[gNumPlayers - 1]; racer >= gRacers; racer--) {
+             if (

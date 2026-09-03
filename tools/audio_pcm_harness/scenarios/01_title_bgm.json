@@ -1,0 +1,20 @@
+{
+  "id": "title_bgm",
+  "title": "Title BGM (zero input)",
+  "status": "ready",
+  "autoinput": null,
+  "capture_frames": 96000,
+  "timeout_seconds": 180,
+  "env": {
+    "GDX_RAND_SEED1": "1",
+    "GDX_RAND_SEED2": "2",
+    "GDX_AUDIO_THREAD": "0"
+  },
+  "notes": [
+    "Scenario 1 of the C-R2.3 matrix. Zero input: the attract-mode / title trigger is",
+    "sample-position-driven, so the title BGM sequence is already deterministic given the",
+    "two RNG pins. GDX_AUDIO_THREAD=0 forces the legacy fiber audio path (the golden path).",
+    "96000 frames at 32 kHz is ~3 s of stereo audio — enough to cover the boot-logo riff and",
+    "the first bars of the title theme. Adjust capture_frames for a longer window."
+  ]
+}

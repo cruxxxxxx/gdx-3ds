@@ -1,0 +1,75 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index f1659fd..08247fa 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -687,6 +687,18 @@ extern "C" void gdx3ds_settimg_note_memo(void);
+ // port-side (INI [debug] diag_prim=1 / env GDX_DIAG_PRIM).
+ extern "C" void gdx3ds_prim_note_set(int isPrim, unsigned r, unsigned g, unsigned b, unsigned a,
+                                      unsigned pendingTris, int flushed);
++// SHIP-LIVERY-2 [livery] texture-identity receipts (port/3ds/gfx/gfx_citro3d.cpp).
++// note_load fires on every TMEM store (StoreLoadedTexture) with the source's resource
++// path when one exists; note_import fires on every ImportTexture resolution with the
++// texture id the lookup BOUND for the consuming draw — the port keeps an id→identity
++// table from these so its [livery] draw log can name the texture every in-race draw
++// actually samples. Both are cheap early-returns while the port-side one-shot window
++// is disarmed; the arming/budget/INI gate ([debug] diag_livery) live port-side.
++extern "C" void gdx3ds_livery_note_load(unsigned tmemWord, const char* path, const void* addr,
++                                        unsigned sizeBytes);
++extern "C" void gdx3ds_livery_note_import(int unit, int tile, unsigned tmemWord, unsigned fmt,
++                                          unsigned siz, unsigned texId, const char* path,
++                                          const void* addr, unsigned tileW, unsigned tileH, int hit);
+ #endif
+ 
+ // [prof] sectioned CPU-build profiler hooks (port/3ds/gfx/gdx3ds_gpu_prof.c, gated on the
+@@ -2384,14 +2396,31 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+         return;
+     }
+ 
+-    if (TextureCacheLookup(i, key)) {
+-        return;
++#ifdef __3DS__
++    // SHIP-LIVERY-2: log the texture id this lookup BINDS for the consuming draw
++    // (hit or miss — the id is assigned either way) plus the resource identity, so
++    // the port's id→name table can resolve every subsequent draw's bound textures.
++    {
++        const bool liveryCacheHit = TextureCacheLookup(i, key);
++        const TextureCacheNode* liveryNode = mRenderingState.mTextures[i];
++        gdx3ds_livery_note_import(i, tile, (unsigned)tmemIdex, fmt, siz,
++                                  liveryNode != nullptr ? liveryNode->second.texture_id : 0xffffffffu,
++                                  metadata->resource != nullptr
++                                      ? metadata->resource->GetInitData()->Path.c_str()
++                                      : nullptr,
++                                  origAddr, key.tile_width, key.tile_height, liveryCacheHit ? 1 : 0);
++        if (liveryCacheHit) {
++            return;
++        }
+     }
+ 
+-#ifdef __3DS__
+     gdx3ds_texcache_note_miss(origAddr, fmt, siz, tmemIdex, key.line_size_bytes,
+                               mRdp->LoadedTextureAt(tmemIdex).size_bytes, key.tile_width, key.tile_height,
+                               key.tmem_content_hash);
++#else
++    if (TextureCacheLookup(i, key)) {
++        return;
++    }
+ #endif
+ 
+     if ((texFlags & TEX_FLAG_LOAD_AS_IMG) != 0) {
+@@ -4715,6 +4744,16 @@ void Interpreter::StoreLoadedTexture(uint16_t tmemStart, const LoadedTexture& te
+         }
+     }
+ 
++#ifdef __3DS__
++    // SHIP-LIVERY-2: every TMEM store, with the source's resource identity when one
++    // exists. Early-returns port-side while the [livery] window is disarmed.
++    gdx3ds_livery_note_load((unsigned)tmemStart,
++                            texture.raw_tex_metadata.resource != nullptr
++                                ? texture.raw_tex_metadata.resource->GetInitData()->Path.c_str()
++                                : nullptr,
++                            texture.addr, texture.size_bytes);
++#endif
++
+     const uint32_t logicalSize = texture.orig_size_bytes != 0 ? texture.orig_size_bytes : texture.size_bytes;
+     const uint32_t requestedWords = std::max<uint32_t>(1u, (logicalSize + kTmemWordBytes - 1u) / kTmemWordBytes);
+     const uint32_t wordCount = std::min(requestedWords, kTmemWordCount - tmemStart);

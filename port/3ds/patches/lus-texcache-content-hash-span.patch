@@ -1,0 +1,153 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index 8ea23d3..667e945 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -546,6 +546,18 @@ void Interpreter::TextureCacheClear() {
+     std::fill(std::begin(mRenderingState.mTextures), std::end(mRenderingState.mTextures), nullptr);
+ }
+ 
++// 3DS texture-cache telemetry hooks (port/3ds/gfx/gfx_citro3d.cpp). The [c3d] texUp
++// counter showed steady per-frame re-uploads in race scenes; these hooks let the
++// backend name which lookups miss and how often invalidation fires. spdlog is a
++// no-op stub on the 3DS build, so the evidence has to flow through the backend.
++#ifdef __3DS__
++extern "C" void gdx3ds_texcache_note_import(void);
++extern "C" void gdx3ds_texcache_note_miss(const void* addr, unsigned fmt, unsigned siz, unsigned tmemWord,
++                                          unsigned lineBytes, unsigned sizeBytes, unsigned tileW, unsigned tileH,
++                                          unsigned contentHash);
++extern "C" void gdx3ds_texcache_note_delete(unsigned evictedEntries);
++#endif
++
+ // Workshop texture-dump hooks (port/gdx_workshop.cpp).
+ extern "C" int gdx_workshop_texture_dump_enabled(void);
+ extern "C" void gdx_workshop_dump_texture(const void* origSrcAddr, size_t origSrcLen,
+@@ -697,6 +709,9 @@ std::string_view Interpreter::GetBaseTexturePath(std::string_view path) {
+ }
+ 
+ void Interpreter::TextureCacheDelete(const uint8_t* origAddr) {
++#ifdef __3DS__
++    unsigned gdxDeleted = 0;
++#endif
+     while (mTextureCache.map.bucket_count() > 0) {
+         TextureCacheKey key = { origAddr, { 0 }, 0, 0, 0 }; // bucket index only depends on the address
+         size_t bucket = mTextureCache.map.bucket(key);
+@@ -711,6 +726,9 @@ void Interpreter::TextureCacheDelete(const uint8_t* origAddr) {
+                 mTextureCache.free_texture_ids.push_back(it->second.texture_id);
+                 mTextureCache.map.erase(it->first);
+                 again = true;
++#ifdef __3DS__
++                ++gdxDeleted;
++#endif
+                 break;
+             }
+         }
+@@ -718,6 +736,11 @@ void Interpreter::TextureCacheDelete(const uint8_t* origAddr) {
+             break;
+         }
+     }
++#ifdef __3DS__
++    if (gdxDeleted != 0) {
++        gdx3ds_texcache_note_delete(gdxDeleted);
++    }
++#endif
+ 
+     // The refreshed buffer may also be a TLUT, and palette-keyed entries hash to unrelated
+     // buckets. Gated on mSeenPaletteAddrs, so a plain refresh costs one hash lookup.
+@@ -754,6 +777,12 @@ void Interpreter::TextureCacheDeletePalette(const uint8_t* paletteAddr) {
+         ++evicted;
+     }
+ 
++#ifdef __3DS__
++    if (evicted != 0) {
++        gdx3ds_texcache_note_delete((unsigned)evicted);
++    }
++#endif
++
+     if (sDiagPaletteEvict && evicted != 0) {
+         static int sPaletteEvictLogs = 0;
+         if (sPaletteEvictLogs < 200) {
+@@ -1814,6 +1843,9 @@ void Interpreter::ImportTextureRaw(int tile, bool importReplacement) {
+ }
+ 
+ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
++#ifdef __3DS__
++    gdx3ds_texcache_note_import();
++#endif
+     uint8_t fmt = mRdp->texture_tile[tile].fmt;
+     uint8_t siz = mRdp->texture_tile[tile].siz;
+     uint32_t texFlags = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].tex_flags;
+@@ -2003,11 +2035,58 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+         const uint32_t tmemByteOffset = static_cast<uint32_t>(tmemIdex) * 8u;
+         const uint32_t lineBytes = mRdp->texture_tile[tile].line_size_bytes;
+         if (tmemByteOffset < sizeof(mRdp->tmem) && lineBytes >= 2) {
+-            const uint32_t span =
+-                std::min<uint32_t>(sizeof(mRdp->tmem) - tmemByteOffset, lineBytes * 64u);
++            const uint32_t remaining = sizeof(mRdp->tmem) - tmemByteOffset;
++            // Span = the bytes the decode actually reads, not a fixed 64-line guess. The old
++            // `lineBytes * 64` bound reached to the END of TMEM for common strides, so the key
++            // for a stable texture folded in every OTHER texture streaming through TMEM that
++            // frame -- each import minted a fresh key (hash never repeated), every import was a
++            // cache miss, and race scenes re-decoded + re-swizzled + re-uploaded the same
++            // textures every frame (the [c3d] texUp thrash) while flooding the 1024-entry LRU.
++            //
++            // Default: the recorded load extent (the TMEM copy of the source bytes) -- exactly
++            // the content identity the hash exists to capture for the DRAM-decoding font paths.
++            uint32_t span = std::min<uint32_t>(remaining, std::max<uint32_t>(
++                                                              mRdp->loaded_texture[tmemIdex].size_bytes, 8u));
++            if (isRgba16) {
++                // The RGBA16 TMEM decode reads rows [0, h) at stride lineBytes, bytes [0, 2*w)
++                // per row. Mirror its extent derivation exactly (ImportTextureRgba16): any byte
++                // it reads is in the key, so this stays a strict content identity -- and no byte
++                // it does NOT read can destabilize the key.
++                uint32_t w = lineBytes / 2;
++                uint32_t h = remaining / lineBytes;
++                ApplyTileMaskExtent(mRdp, tile, w, h, /*maskAuthoritative=*/true);
++                if ((mRdp->texture_tile[tile].cms & G_TX_CLAMP) != 0 && cacheTileWidth > 0 && cacheTileWidth < w) {
++                    w = cacheTileWidth;
++                }
++                if ((mRdp->texture_tile[tile].cmt & G_TX_CLAMP) != 0 && cacheTileHeight > 0 &&
++                    cacheTileHeight < h) {
++                    h = cacheTileHeight;
++                }
++                if (w == 0) {
++                    w = 1;
++                }
++                if (h == 0) {
++                    h = 1;
++                }
++                if (lineBytes * h > remaining) {
++                    h = remaining / lineBytes;
++                }
++                if (w > 0 && h > 0) {
++                    span = std::min<uint32_t>(remaining, (h - 1) * lineBytes + 2 * w);
++                }
++            }
++            // FNV-1a folded 4 bytes at a time (base is 8-byte aligned; span is measured in
++            // TMEM bytes): this runs on EVERY import of a hashed format, ~100/frame in race
++            // scenes, so the byte loop was real per-frame CPU.
+             uint32_t contentHash = 2166136261u;
+             const uint8_t* tmemBytes = mRdp->tmem + tmemByteOffset;
+-            for (uint32_t b = 0; b < span; b++) {
++            uint32_t b = 0;
++            for (; b + 4 <= span; b += 4) {
++                uint32_t word;
++                std::memcpy(&word, tmemBytes + b, 4);
++                contentHash = (contentHash ^ word) * 16777619u;
++            }
++            for (; b < span; b++) {
+                 contentHash = (contentHash ^ tmemBytes[b]) * 16777619u;
+             }
+             key.tmem_content_hash = contentHash;
+@@ -2026,6 +2105,12 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+         return;
+     }
+ 
++#ifdef __3DS__
++    gdx3ds_texcache_note_miss(origAddr, fmt, siz, tmemIdex, key.line_size_bytes,
++                              mRdp->loaded_texture[tmemIdex].size_bytes, key.tile_width, key.tile_height,
++                              key.tmem_content_hash);
++#endif
++
+     if ((texFlags & TEX_FLAG_LOAD_AS_IMG) != 0) {
+         ImportTextureImg(tile, importReplacement);
+     } else if ((texFlags & TEX_FLAG_LOAD_AS_RAW) != 0) {

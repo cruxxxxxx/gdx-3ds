@@ -1,0 +1,30 @@
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -7879,6 +7879,27 @@
+         case OTR_G_DL_INDEX:
+         case RDP_G_VTX_WIDE:
+         case RDP_G_TRI1_WIDE:
++        // [traffic] RDP sync ops: their handlers mutate NO interpreter state (the loads/tile/full
++        // syncs are stubs; the pipesync drain is a batch split at most — it never touches the
++        // tile descriptors, loaded slots, othermode or sampler state the memo derives from).
++        // F-Zero X race DLs carry ~450 G_RDPPIPESYNCs per traffic frame interleaved with the
++        // machine-part draws; before this row each one armed the dirty mask and forced the next
++        // G_TRI2 into a FULL state re-resolution (extent divides + ApplyTileMaskExtent + two
++        // virtual backend calls) — the [profop] 06=16us/call traffic thrash.
++        case RDP_G_RDPPIPESYNC:
++        case RDP_G_RDPLOADSYNC:
++        case RDP_G_RDPTILESYNC:
++        case RDP_G_RDPFULLSYNC:
++        // [traffic] Draw-constant colour registers: nothing the memo banks reads prim/env colour
++        // or the combine word. The batch-constant hazard is handled at the mutation site
++        // (GfxDpSetPrimColor/GfxDpSetEnvColor flush on a VALUE change, lus-3ds-primenv-flush),
++        // and combiner identity is a memo KEY (s7Memo.comb / s7Memo.prg compare), so a combine
++        // change that resolves to a different ColorCombiner misses the memo by construction and
++        // re-banks through the slow path. A re-assertion of the SAME combine (the dominant
++        // machine-part pattern: 30 machines sharing a handful of materials) now keeps the memo.
++        case RDP_G_SETPRIMCOLOR:
++        case RDP_G_SETENVCOLOR:
++        case RDP_G_SETCOMBINE:
+             return true;
+         default:
+             return false;

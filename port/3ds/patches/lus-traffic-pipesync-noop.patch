@@ -1,0 +1,69 @@
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -5381,6 +5381,20 @@
+ }
+ 
+ void Interpreter::GfxDpSetFogColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
++#ifdef __3DS__
++    // [traffic] Same batch-split-on-value-change guard as GfxDpSetPrimColor/GfxDpSetEnvColor
++    // (lus-3ds-primenv-flush): the 3DS backend hoists the fog blend stage's colour from
++    // VERTEX 0 of the flushed batch (RefreshStageConstants fogBlendStage) and the per-vertex
++    // factor for G_BL_CLR_BL draws samples fog_color.a at append time — so a batch spanning a
++    // fog-colour change binds the OLD colour to every triangle. The gDPPipeSync drain used to
++    // mask exactly this hazard (game DLs pair gDPSetFogColor with a preceding pipesync); with
++    // the pipesync a no-op (gfx_rdp_pipe_sync_handler_rdp) the guard must live here. No-op
++    // re-sets do not split. Desktop interpolates the per-vertex baked values and needs none.
++    if (mRdp->fog_color.r != r || mRdp->fog_color.g != g || mRdp->fog_color.b != b ||
++        mRdp->fog_color.a != a) {
++        Flush();
++    }
++#endif
+     mRdp->fog_color.r = r;
+     mRdp->fog_color.g = g;
+     mRdp->fog_color.b = b;
+@@ -7530,7 +7544,37 @@
+ // affect queued draws. The drain was once removed as redundant with the source-side
+ // [prim-depth-flush]/[blend-alpha-flush] guards, but removing it coincided with the Mute City sky
+ // alternating every other tick. GDX_NO_PIPESYNC_FLUSH=1 restores the no-drain behaviour.
++//
++// [traffic] 3DS: the drain is now OFF by default. This renderer orders draws by submission, so
++// the only hazards a pipesync ever guarded here are states sampled AFTER append time, and every
++// one of those now flushes at its own mutation site when the value actually changes:
++//   - prim_depth      -> gfx_set_prim_depth_handler_rdp   ([prim-depth-flush], value-change Flush)
++//   - blend_color.a   -> gfx_set_blend_color_handler_rdp  ([blend-alpha-flush], value-change Flush)
++//   - prim/env color  -> GfxDpSetPrimColor/GfxDpSetEnvColor (lus-3ds-primenv-flush, value-change
++//                        Flush; the 3DS backend binds these as batch constants from vertex 0)
++//   - fog line        -> the G_MW_FOG moveword handlers (lus-3ds-fog-exact-params, value-change
++//                        Flush; the 3DS backend binds ONE fog LUT per draw)
++//   - fog color       -> GfxDpSetFogColor (value-change Flush added WITH this change: the fog
++//                        blend stage constant is also hoisted from vertex 0, and game DLs pair
++//                        gDPSetFogColor with a pipesync — the drain was masking that one hazard)
++// Everything else (combiner/shader, othermode-derived depth/decal/alpha, viewport/scissor,
++// samplers, texture imports) flushes inside GfxSpTri1's state application when the state
++// differs from mRenderingState — a pipesync between them is pure overhead. The Mute City
++// sky-alternation that once justified the drain predates the primenv/fog value-change guards,
++// which cover exactly that defect class. Traffic frames carry ~450 pipesyncs; each drain that
++// found a non-empty batch split it into a tiny extra draw (~208 draws/frame, drw/dsp overhead).
++// GDX_PIPESYNC_FLUSH=1 restores the unconditional drain for A/B.
+ bool gfx_rdp_pipe_sync_handler_rdp(F3DGfx** cmd0) {
++#ifdef __3DS__
++    static const bool sForceFlush = [] {
++        const char* e = std::getenv("GDX_PIPESYNC_FLUSH");
++        return e != nullptr && e[0] != 0 && !(e[0] == '0' && e[1] == 0);
++    }();
++    if (sForceFlush) {
++        Interpreter* gfx = sGfxInstanceRaw;
++        gfx->Flush();
++    }
++#else
+     static const bool sNoFlush = [] {
+         const char* e = std::getenv("GDX_NO_PIPESYNC_FLUSH");
+         return e != nullptr && e[0] != 0 && !(e[0] == '0' && e[1] == 0);
+@@ -7539,6 +7583,7 @@
+         Interpreter* gfx = sGfxInstanceRaw;
+         gfx->Flush();
+     }
++#endif
+     return false;
+ }
+ 

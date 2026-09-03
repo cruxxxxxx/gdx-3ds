@@ -1,0 +1,64 @@
+--- a/src/overlays/ovl_i4/machine.c
++++ b/src/overlays/ovl_i4/machine.c
+@@ -1133,7 +1133,53 @@
+     gDPSetCycleType(gfx++, G_CYC_FILL);
+ 
+ #ifdef PORT
++#ifdef GDX_PLATFORM_3DS
+     {
++        /* SELECT-PERF: the stock gradient emits one PipeSync+SetFillColor+FillRectangle
++           triplet PER SCANLINE — ~224 (240 borderless) single-row fill rects per frame,
++           ~700 extra Gfx commands the bridge translates and the interpreter rasterises
++           as 2 tris each, on exactly the two screens (machine select / settings) the
++           port measures as its slowest menus. The >>3 quantisation means the 224 rows
++           collapse to at most ~8 distinct colours (r 0..1, g 0, b 0..7), so coalescing
++           runs of identical fill colour into one tall rect is PIXEL-IDENTICAL (a
++           multi-row FILL rect is the exact union of its rows; PipeSync between
++           same-colour fills has no visual effect) while cutting the rect count ~28x.
++           3DS-only so desktop DL content stays byte-identical. */
++        extern int gdx_remove_borders(void);
++        s32 noBorders = gdx_remove_borders();
++        /* Borderless: full 240 rows / full width, gradient index clamped so the stock
++           12..307 x 8..231 band keeps its colours and the freed margins extend the
++           edge colours — same mapping as the stock per-row loops below. */
++        s32 rowBegin = noBorders ? -8 : 0;
++        s32 rowEnd = noBorders ? 232 : 224;
++        s32 xl = noBorders ? 0 : 12;
++        s32 xr = noBorders ? (SCREEN_WIDTH - 1) : 307;
++        s32 runStart = rowBegin;
++        u32 runColor = 0;
++        for (i = rowBegin; i < rowEnd; i++) {
++            s32 gdxIdx = (i < 0) ? 0 : ((i > 223) ? 223 : i);
++            u32 packed;
++            temp_a1 = temp_t1 - gdxIdx;
++            r = ((((rmul2 * temp_a1) + (rmul * gdxIdx)) / temp_t1) >> 3);
++            g = ((((gmul2 * temp_a1) + (gmul * gdxIdx)) / temp_t1) >> 3);
++            b = ((((bmul2 * temp_a1) + (bmul * gdxIdx)) / temp_t1) >> 3);
++            packed = PACK_5551(r, g, b, 1);
++            if (i == rowBegin) {
++                runColor = packed;
++            } else if (packed != runColor) {
++                gDPPipeSync(gfx++);
++                gDPSetFillColor(gfx++, runColor << 0x10 | runColor);
++                gDPFillRectangle(gfx++, xl, runStart + 8, xr, (i - 1) + 8);
++                runStart = i;
++                runColor = packed;
++            }
++        }
++        gDPPipeSync(gfx++);
++        gDPSetFillColor(gfx++, runColor << 0x10 | runColor);
++        gDPFillRectangle(gfx++, xl, runStart + 8, xr, (rowEnd - 1) + 8);
++    }
++#else
++    {
+         /* With the overscan frame removed the gradient's 12..307 x 8..231 band leaves the freed
+            margins black; draw the full 240 rows, clamping the gradient index so the stock band
+            is pixel-identical and the margins extend the edge colours. */
+@@ -1165,6 +1211,7 @@
+             }
+         }
+     }
++#endif
+ #else
+     for (i = 0; i < 224; i++) {
+         s32 temp_t6 = 224;

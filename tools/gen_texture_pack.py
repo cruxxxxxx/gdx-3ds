@@ -1,0 +1,472 @@
+#!/usr/bin/env python3
+"""Pack a directory of <key>.png replacement textures into a deterministic .o2r texture pack.
+
+Quick start (sensible defaults — this is all most modders need):
+
+    python tools/gen_texture_pack.py dump/ my-pack.o2r --name "My Pack" --author you
+
+    # validate a dump folder or an existing pack without writing anything:
+    python tools/gen_texture_pack.py dump/ --check
+    python tools/gen_texture_pack.py my-pack.o2r --check
+
+Input (mirrors the Workshop dump output):
+  <input_dir>/
+    <key>.png            one PNG per texture, nested dirs allowed (keys contain '/')
+    manifest.tsv         the dump manifest: TAB-separated  key<TAB>nativeW<TAB>nativeH<TAB>fmt
+                         (native dimensions + the N64 format the game loads each texture as).
+                         Produced automatically by the in-game "Dump textures while playing" tool.
+    workshop.json        (optional) pack metadata: {name, version, author, game_version,
+                         key_scheme_version}. If absent, one is synthesized from the --name /
+                         --author / --version flags (this packer never errors just because the
+                         metadata file is missing).
+
+Output: one .o2r (a ZIP, like tools/gen_f3d_o2r.py) where each PNG becomes an OTEX-V1 resource at
+archive path "textures/pack/<key>", plus the metadata at the archive root as workshop.json.
+
+Validation lists EVERY problem it finds (never dies on the first): PNGs that are not valid images,
+pack dimensions that are not an integer multiple of the native size, keys with no manifest.tsv entry,
+and native formats this packer cannot encode. With --check it writes nothing and just reports.
+
+IMPORTANT — format matching (verified against libultraship):
+  The Fast3D interpreter dispatches texture decoding on the GAME TILE's format/size, NOT the
+  replacement's declared type (interpreter.cpp ImportTexture). Therefore a replacement MUST be
+  encoded in the SAME N64 format the game uses for that texture. This packer reads that native
+  format from the dump manifest (the `fmt` column) and re-encodes the (upscaled) PNG back into it.
+  The OTEX scale fields tell the interpreter the replacement is N times larger:
+      HByteScale  = packW / nativeW      VPixelScale = packH / nativeH
+  (These are the UPSCALE factor, >1 for hi-res. resultNewLineSize = resultOrigLineSize * HByteScale
+  in interpreter.cpp, so a bigger replacement needs a scale > 1.) Integer multiples are enforced.
+
+The archive is written deterministically (sorted entries, fixed 1980 timestamps) so identical inputs
+produce byte-identical output.
+"""
+import argparse
+import json
+import os
+import struct
+import sys
+import zipfile
+
+try:
+    from PIL import Image
+except ImportError:
+    sys.stderr.write("gen_texture_pack: Pillow (PIL) is required: pip install Pillow\n")
+    raise
+
+# OTR resource header constants (libultraship ResourceLoader::ReadResourceInitDataBinary).
+OTR_HEADER_SIZE = 64
+OTR_BYTE_ORDER_LITTLE = 0
+OTR_IS_CUSTOM = 1
+OTR_TYPE_TEXTURE = 0x4F544558  # 'OTEX'
+OTR_TEXTURE_VERSION_V1 = 1
+
+# Fast::TextureType enum (libultraship/include/fast/resource/type/Texture.h).
+TT_RGBA32 = 1
+TT_RGBA16 = 2
+TT_PAL4 = 3
+TT_PAL8 = 4
+TT_I4 = 5      # Grayscale4bpp
+TT_I8 = 6      # Grayscale8bpp
+TT_IA4 = 7     # GrayscaleAlpha4bpp
+TT_IA8 = 8     # GrayscaleAlpha8bpp
+TT_IA16 = 9    # GrayscaleAlpha16bpp
+
+FIXED_DATE = (1980, 1, 1, 0, 0, 0)
+
+# Key-scheme version this packer produces. Must match kGdxWorkshopKeySchemeVersion in
+# port/gdx_workshop.h — a mismatch is flagged in the in-game Workshop menu.
+KEY_SCHEME_VERSION = "1"
+# Native formats this packer can re-encode. CI4/CI8/CI16 (paletted) are intentionally absent: the
+# W0 pipeline has no palette side-channel, so those textures are dump-only for now.
+UNSUPPORTED_FMT_NOTE = "CI/paletted formats are not replaceable in W0"
+
+
+def luma(r, g, b):
+    return (r * 299 + g * 587 + b * 114) // 1000
+
+
+def enc_rgba32(px, w, h):
+    out = bytearray(w * h * 4)
+    i = 0
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            out[i] = r; out[i + 1] = g; out[i + 2] = b; out[i + 3] = a
+            i += 4
+    return bytes(out), TT_RGBA32
+
+
+def enc_rgba16(px, w, h):
+    # N64 RGBA5551, big-endian 16-bit words.
+    out = bytearray(w * h * 2)
+    i = 0
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            v = ((r >> 3) << 11) | ((g >> 3) << 6) | ((b >> 3) << 1) | (1 if a >= 128 else 0)
+            out[i] = (v >> 8) & 0xFF; out[i + 1] = v & 0xFF
+            i += 2
+    return bytes(out), TT_RGBA16
+
+
+def enc_ia16(px, w, h):
+    out = bytearray(w * h * 2)
+    i = 0
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            out[i] = luma(r, g, b); out[i + 1] = a
+            i += 2
+    return bytes(out), TT_IA16
+
+
+def enc_ia8(px, w, h):
+    out = bytearray(w * h)
+    i = 0
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            out[i] = ((luma(r, g, b) >> 4) << 4) | (a >> 4)
+            i += 1
+    return bytes(out), TT_IA8
+
+
+def _pack4(vals, w, h):
+    # Pack a list of 4-bit values (row-major, w*h of them) two-per-byte, rows padded to whole bytes.
+    out = bytearray()
+    for y in range(h):
+        row = vals[y * w:(y + 1) * w]
+        for x in range(0, w, 2):
+            hi = row[x] & 0xF
+            lo = row[x + 1] & 0xF if x + 1 < w else 0
+            out.append((hi << 4) | lo)
+    return bytes(out)
+
+
+def enc_ia4(px, w, h):
+    vals = []
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            i3 = luma(r, g, b) >> 5
+            a1 = 1 if a >= 128 else 0
+            vals.append((i3 << 1) | a1)
+    return _pack4(vals, w, h), TT_IA4
+
+
+def enc_i8(px, w, h):
+    out = bytearray(w * h)
+    i = 0
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            out[i] = luma(r, g, b)
+            i += 1
+    return bytes(out), TT_I8
+
+
+def enc_i4(px, w, h):
+    vals = []
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            vals.append(luma(r, g, b) >> 4)
+    return _pack4(vals, w, h), TT_I4
+
+
+ENCODERS = {
+    "RGBA32": enc_rgba32,
+    "RGBA16": enc_rgba16,
+    "IA16": enc_ia16,
+    "IA8": enc_ia8,
+    "IA4": enc_ia4,
+    "I8": enc_i8,
+    "I4": enc_i4,
+}
+
+
+def build_otex_v1(tex_type, width, height, h_scale, v_scale, image_data):
+    """Return the full resource file bytes: 64-byte OTR header + V1 subheader + raw texel data."""
+    header = bytearray(OTR_HEADER_SIZE)
+    header[0] = OTR_BYTE_ORDER_LITTLE
+    header[1] = OTR_IS_CUSTOM
+    struct.pack_into("<I", header, 4, OTR_TYPE_TEXTURE)
+    struct.pack_into("<I", header, 8, OTR_TEXTURE_VERSION_V1)
+    struct.pack_into("<Q", header, 12, 0)  # Id (unused by the reader)
+    sub = struct.pack("<IIIIffI", tex_type, width, height, 0, h_scale, v_scale, len(image_data))
+    return bytes(header) + sub + image_data
+
+
+def load_native_manifest(path):
+    native = {}
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 4:
+                continue
+            key, w, h, fmt = parts[0], parts[1], parts[2], parts[3].strip()
+            try:
+                native[key] = (int(w), int(h), fmt)
+            except ValueError:
+                continue
+    return native
+
+
+def collect_pngs(base):
+    entries = []
+    for root, dirs, files in os.walk(base):
+        dirs.sort()
+        for f in sorted(files):
+            if not f.lower().endswith(".png"):
+                continue
+            full = os.path.join(root, f)
+            rel = os.path.relpath(full, base).replace(os.sep, "/")
+            key = rel[:-len(".png")]
+            entries.append((key, full))
+    return sorted(entries)
+
+
+def resolve_manifest_bytes(args, native):
+    """Return (manifest_bytes, source_description). Prefer an on-disk metadata file
+    (workshop.json, then legacy manifest.json); otherwise synthesize one from the CLI flags so a
+    missing metadata file is never a fatal error."""
+    if args.manifest:
+        candidates = [args.manifest]
+    else:
+        candidates = [os.path.join(args.input_dir, "workshop.json"),
+                      os.path.join(args.input_dir, "manifest.json")]
+
+    base = {}
+    source = "synthesized from flags"
+    for path in candidates:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as fh:
+                base = json.load(fh)  # raises on malformed JSON — surfaced to the caller
+            source = os.path.basename(path)
+            break
+
+    default_name = os.path.splitext(os.path.basename(args.output_o2r))[0] if args.output_o2r else "texture-pack"
+    manifest = {
+        "name": args.name or base.get("name") or default_name,
+        "version": args.version or base.get("version") or "0.1",
+        "author": args.author or base.get("author") or "unknown",
+        "game_version": args.game_version or base.get("game_version") or "us.rev0",
+        "key_scheme_version": args.key_scheme_version or base.get("key_scheme_version") or KEY_SCHEME_VERSION,
+    }
+    # Preserve any extra fields the modder added to their metadata file.
+    for k, v in base.items():
+        manifest.setdefault(k, v)
+    return json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8"), source
+
+
+def plan_pack(input_dir, native):
+    """Validate every PNG against the native manifest. Returns (entries, errors, warnings, infos)
+    where entries is the list of (arc_path, blob) ready to write. Collects ALL problems."""
+    entries = []
+    errors = []
+    warnings = []
+    infos = []
+
+    pngs = collect_pngs(input_dir)
+    if not pngs:
+        errors.append("no .png files found under %s" % input_dir)
+        return entries, errors, warnings, infos
+
+    seen_keys = set()
+    for key, full in pngs:
+        seen_keys.add(key)
+        if key not in native:
+            warnings.append("%s: no manifest.tsv entry (unknown key) - skipped" % key)
+            continue
+        nat_w, nat_h, fmt = native[key]
+        if fmt not in ENCODERS:
+            warnings.append("%s: native format %s is not encodable (%s) - skipped"
+                            % (key, fmt, UNSUPPORTED_FMT_NOTE))
+            continue
+        try:
+            img = Image.open(full)
+            img.load()
+            img = img.convert("RGBA")
+        except Exception as exc:  # noqa: BLE001 - report any decode failure, keep going
+            errors.append("%s: not a readable PNG (%s)" % (key, exc))
+            continue
+        pw, ph = img.size
+        if nat_w <= 0 or nat_h <= 0:
+            errors.append("%s: invalid native size %dx%d in manifest.tsv" % (key, nat_w, nat_h))
+            continue
+        if pw % nat_w != 0 or ph % nat_h != 0:
+            errors.append("%s: pack size %dx%d is not an integer multiple of native %dx%d "
+                          "(allowed: %dx%d, %dx%d, %dx%d, ...)"
+                          % (key, pw, ph, nat_w, nat_h,
+                             nat_w, nat_h, nat_w * 2, nat_h * 2, nat_w * 4, nat_h * 4))
+            continue
+        px = img.load()
+        image_data, tex_type = ENCODERS[fmt](px, pw, ph)
+        blob = build_otex_v1(tex_type, pw, ph, float(pw) / float(nat_w), float(ph) / float(nat_h), image_data)
+        entries.append(("textures/pack/" + key, blob))
+
+    # Informational: manifest rows the game recorded but that this pack does not override.
+    missing = sorted(k for k in native if k not in seen_keys)
+    if missing:
+        infos.append("%d texture(s) in manifest.tsv have no PNG in this pack (left as-is)" % len(missing))
+    return entries, errors, warnings, infos
+
+
+def report(errors, warnings, infos):
+    for msg in infos:
+        print("info:  %s" % msg)
+    for msg in warnings:
+        print("warn:  %s" % msg)
+    for msg in errors:
+        sys.stderr.write("error: %s\n" % msg)
+
+
+def check_pack(path):
+    """Validate an existing .o2r pack without writing. Returns process exit code."""
+    if not zipfile.is_zipfile(path):
+        sys.stderr.write("error: %s is not a valid .o2r (zip) archive\n" % path)
+        return 2
+    errors = []
+    tex_count = 0
+    with zipfile.ZipFile(path, "r") as z:
+        names = z.namelist()
+        has_meta = "workshop.json" in names or "manifest.json" in names
+        if not has_meta:
+            errors.append("no workshop.json (pack metadata) at archive root")
+        for name in names:
+            if not name.startswith("textures/pack/"):
+                continue
+            tex_count += 1
+            data = z.read(name)
+            if len(data) < OTR_HEADER_SIZE + 4:
+                errors.append("%s: too small to be an OTEX resource" % name)
+                continue
+            magic = struct.unpack_from("<I", data, 4)[0]
+            version = struct.unpack_from("<I", data, 8)[0]
+            if magic != OTR_TYPE_TEXTURE:
+                errors.append("%s: bad resource magic 0x%08X (expected OTEX)" % (name, magic))
+            elif version != OTR_TEXTURE_VERSION_V1:
+                errors.append("%s: unexpected OTEX version %d" % (name, version))
+        if "workshop.json" in names:
+            try:
+                json.loads(z.read("workshop.json"))
+            except Exception as exc:  # noqa: BLE001
+                errors.append("workshop.json is not valid JSON (%s)" % exc)
+    print("pack: %s" % path)
+    print("  %d texture override(s)" % tex_count)
+    if tex_count == 0:
+        errors.append("no textures/pack/<key> resources found — pack overrides nothing")
+    for msg in errors:
+        sys.stderr.write("error: %s\n" % msg)
+    if errors:
+        print("FAILED: %d problem(s)" % len(errors))
+        return 1
+    print("OK")
+    return 0
+
+
+def check_dir(input_dir, native_path):
+    """Validate a dump/pack source directory without writing. Returns process exit code."""
+    if not os.path.isfile(native_path):
+        sys.stderr.write("error: native manifest not found: %s\n" % native_path)
+        return 2
+    native = load_native_manifest(native_path)
+    entries, errors, warnings, infos = plan_pack(input_dir, native)
+    report(errors, warnings, infos)
+    print("check: %s" % input_dir)
+    print("  %d texture(s) would be packed, %d skipped, %d error(s)"
+          % (len(entries), len(warnings), len(errors)))
+    if errors:
+        print("FAILED")
+        return 1
+    print("OK")
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Pack <key>.png textures into a deterministic .o2r OTEX pack",
+        epilog="Examples:\n"
+               "  gen_texture_pack.py dump/ my-pack.o2r --name \"My Pack\" --author you\n"
+               "  gen_texture_pack.py dump/ --check\n"
+               "  gen_texture_pack.py my-pack.o2r --check",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("input", help="dump/pack source directory (or an .o2r pack when --check)")
+    ap.add_argument("output_o2r", nargs="?", default=None, help="output .o2r path (omit with --check)")
+    ap.add_argument("--check", action="store_true",
+                    help="validate the input directory or an existing .o2r pack; write nothing")
+    ap.add_argument("--manifest", default=None,
+                    help="pack metadata json (default <input>/workshop.json or manifest.json)")
+    ap.add_argument("--native-manifest", default=None,
+                    help="dump manifest.tsv with native dims/fmt (default <input>/manifest.tsv)")
+    ap.add_argument("--name", default=None, help="pack name for synthesized metadata")
+    ap.add_argument("--author", default=None, help="pack author for synthesized metadata")
+    ap.add_argument("--version", default=None, help="pack version for synthesized metadata")
+    ap.add_argument("--game-version", default=None, help="target game build (default us.rev0)")
+    ap.add_argument("--key-scheme-version", default=None,
+                    help="key-scheme version (default %s)" % KEY_SCHEME_VERSION)
+    args = ap.parse_args()
+
+    # --check on an existing pack file.
+    if args.check and os.path.isfile(args.input) and args.input.lower().endswith(".o2r"):
+        return check_pack(args.input)
+
+    # From here on the input is treated as a directory. Keep args.input_dir compatible with helpers.
+    args.input_dir = args.input
+    native_path = args.native_manifest or os.path.join(args.input_dir, "manifest.tsv")
+
+    if args.check:
+        return check_dir(args.input_dir, native_path)
+
+    if not args.output_o2r:
+        sys.stderr.write("error: output_o2r is required (or pass --check to validate only)\n")
+        return 2
+    if not os.path.isdir(args.input_dir):
+        sys.stderr.write("error: input directory not found: %s\n" % args.input_dir)
+        return 2
+    if not os.path.isfile(native_path):
+        sys.stderr.write("error: native manifest not found: %s\n"
+                         "  (run the in-game texture dump first; it writes dump/manifest.tsv)\n" % native_path)
+        return 2
+
+    native = load_native_manifest(native_path)
+    try:
+        manifest_bytes, manifest_source = resolve_manifest_bytes(args, native)
+    except (json.JSONDecodeError, ValueError) as exc:
+        sys.stderr.write("error: pack metadata is not valid JSON (%s)\n" % exc)
+        return 2
+
+    entries, errors, warnings, infos = plan_pack(args.input_dir, native)
+    report(errors, warnings, infos)
+    if errors:
+        sys.stderr.write("error: %d problem(s) must be fixed before packing; nothing written\n" % len(errors))
+        return 1
+    if not entries:
+        sys.stderr.write("error: nothing to pack (every PNG was skipped - see warnings above)\n")
+        return 2
+
+    arc_entries = list(entries)
+    # Metadata is stored as workshop.json: "manifest.json" is libultraship's reserved archive
+    # manifest (numeric game_version schema) and our string game_version made LUS throw on mount.
+    arc_entries.append(("workshop.json", manifest_bytes))
+    arc_entries.sort(key=lambda e: e[0])
+
+    with zipfile.ZipFile(args.output_o2r, "w", zipfile.ZIP_DEFLATED) as z:
+        for arc, data in arc_entries:
+            info = zipfile.ZipInfo(arc, date_time=FIXED_DATE)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            z.writestr(info, data)
+
+    print("wrote %s (%d texture override(s), metadata %s)"
+          % (args.output_o2r, len(entries), manifest_source))
+    for msg in warnings:
+        print("  skipped: %s" % msg)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

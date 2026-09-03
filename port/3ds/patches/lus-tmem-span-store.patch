@@ -1,0 +1,762 @@
+diff --git a/include/fast/interpreter.h b/include/fast/interpreter.h
+index a7b7ffa..c5436e8 100644
+--- a/include/fast/interpreter.h
++++ b/include/fast/interpreter.h
+@@ -337,7 +337,38 @@ struct RDP {
+     } texture_to_load;
+     // One entry per 64-bit TMEM word address: multiple render tiles can point at independent
+     // loads within the same 4 KiB image.
++    //
++    // LOADBLOCK-OPT: StoreLoadedTexture used to materialize a full LoadedTexture at EVERY
++    // covered TMEM word — a 4 KiB load was 512 struct copies (each with a shared_ptr
++    // refcount pair inside raw_tex_metadata) plus a 512-entry overlap-invalidation walk of
++    // struct clears; measured on the 3DS as the #1 CPU cost ([profop] F3 = 22.34 ms/frame
++    // over 82 loads). A load is now ONE span record (the word-0 view, stored eagerly at the
++    // span's base slot) plus per-word bookkeeping bytes; per-word views materialize lazily,
++    // on first read, with EXACTLY the math the old store loop used, so every consumer sees
++    // byte-identical data. Read only through LoadedTextureAt(); the two in-place mutators
++    // (GfxDpImageRectangle, the port's VI present fallback) go through
++    // MutableLoadedTextureAt(), which materializes the whole containing span first.
++    //
++    // Invariants:
++    //  - live spans are disjoint; tmem_span_base[w] maps word w to (span base + 1), 0 = none;
++    //  - a live span's base slot always holds its word-0 view (payload fields identical to
++    //    the original StoreLoadedTexture argument) and is never stale: it doubles as the
++    //    span record interior materialization derives from;
++    //  - tmem_slot_stale[w] == 0 means loaded_texture[w] physically equals the logical
++    //    per-word view. Any slot holding a resource shared_ptr is fresh for the live span
++    //    covering it, so span removal releases exactly the refs the old eager clears did.
+     LoadedTexture loaded_texture[512];
++    uint16_t tmem_span_base[512];  // 0 = no span covers this word; else span base word + 1
++    uint16_t tmem_span_words[512]; // valid at a span's base index only: the span's word count
++    uint8_t tmem_slot_stale[512];  // 1 = loaded_texture[word] needs (re)materialization
++    void MaterializeTmemSlot(uint16_t tmemWord);
++    inline const LoadedTexture& LoadedTextureAt(uint16_t tmemWord) {
++        if (tmem_slot_stale[tmemWord] != 0) {
++            MaterializeTmemSlot(tmemWord);
++        }
++        return loaded_texture[tmemWord];
++    }
++    LoadedTexture& MutableLoadedTextureAt(uint16_t tmemWord);
+     // Emulated 4 KiB TMEM. Import decodes from here using only tile-descriptor state, like
+     // hardware, which makes slot-reuse-heavy frames immune to stale per-slot load bookkeeping.
+     uint8_t tmem[4096];
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index a8a669e..114e5b3 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -280,7 +280,7 @@ void Interpreter::SetF3dex2Variant(F3dex2Variant variant) {
+             mGeometryDiagnostics.preFlxOtherModeH = mRdp->other_mode_h;
+             mGeometryDiagnostics.preFlxOtherModeL = mRdp->other_mode_l;
+             mGeometryDiagnostics.preFlxCombineMode = mRdp->combine_mode;
+-            mGeometryDiagnostics.preFlxTexture = mRdp->loaded_texture[0].addr;
++            mGeometryDiagnostics.preFlxTexture = mRdp->LoadedTextureAt(0).addr;
+         }
+         mRsp->f3dflx_alpha_light_valid = false;
+     }
+@@ -710,9 +710,9 @@ void Interpreter::GdxDumpDecodedRgba32(int tile, const uint8_t* rgba32, uint32_t
+         return;
+     }
+     uint32_t tmem = mRdp->texture_tile[tile].tmem_index;
+-    const RawTexMetadata* metadata = &mRdp->loaded_texture[tmem].raw_tex_metadata;
+-    const void* origAddr = mRdp->loaded_texture[tmem].addr;
+-    size_t origLen = mRdp->loaded_texture[tmem].size_bytes;
++    const RawTexMetadata* metadata = &mRdp->LoadedTextureAt(tmem).raw_tex_metadata;
++    const void* origAddr = mRdp->LoadedTextureAt(tmem).addr;
++    size_t origLen = mRdp->LoadedTextureAt(tmem).size_bytes;
+     const char* path = (metadata->resource != nullptr) ? metadata->resource->GetInitData()->Path.c_str() : nullptr;
+     gdx_workshop_dump_texture(origAddr, origLen, path, rgba32, (int)width, (int)height,
+                               (int)mRdp->texture_tile[tile].fmt, (int)mRdp->texture_tile[tile].siz);
+@@ -1014,11 +1014,11 @@ static void ApplyTileMaskExtent(const RDP* rdp, int tile, uint32_t& width, uint3
+ }
+ 
+ void Interpreter::ImportTextureRgba16(int textureUnit, int tile, bool importReplacement, bool forceOpaqueAlpha) {
+-    const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
++    const RawTexMetadata* metadata = &mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).raw_tex_metadata;
+     const uint8_t* addr =
+         importReplacement && (metadata->resource != nullptr)
+             ? mMaskedTextures.find(GetBaseTexturePath(metadata->resource->GetInitData()->Path))->second.replacementData
+-            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
++            : mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).addr;
+ 
+     if (addr == nullptr) {
+         SPDLOG_ERROR("ImportTextureRgba16: null texture address for tile {}", tile);
+@@ -1121,7 +1121,7 @@ void Interpreter::ImportTextureRgba16(int textureUnit, int tile, bool importRepl
+                 if (sTmemChk && gGdxRaceActive != 0) {
+                     static int sTmemChkCount = 0;
+                     if (sTmemChkCount < 400) {
+-                        const auto& slot = mRdp->loaded_texture[tmemTile.tmem_index];
++                        const auto& slot = mRdp->LoadedTextureAt(tmemTile.tmem_index);
+                         uint32_t tmemRowSum = 0;
+                         for (uint32_t b = 0; b < lineBytes && b < 256; b++) {
+                             tmemRowSum = tmemRowSum * 31u + tmemSrc[b];
+@@ -1156,10 +1156,10 @@ void Interpreter::ImportTextureRgba16(int textureUnit, int tile, bool importRepl
+         }
+     }
+ 
+-    uint32_t sizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].size_bytes;
++    uint32_t sizeBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).size_bytes;
+     uint32_t fullImageLineSizeBytes =
+-        mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].full_image_line_size_bytes;
+-    uint32_t line_size_bytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].line_size_bytes;
++        mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).full_image_line_size_bytes;
++    uint32_t line_size_bytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).line_size_bytes;
+ 
+     uint32_t widthBytes = GetEffectiveLineSize(line_size_bytes, fullImageLineSizeBytes, sizeBytes,
+                                                mRdp->texture_tile[tile].line_size_bytes);
+@@ -1301,7 +1301,7 @@ void Interpreter::ImportTextureRgba16(int textureUnit, int tile, bool importRepl
+             }
+             FILE* idx = fopen("roadtex-index.txt", "a");
+             if (idx != nullptr) {
+-                const auto& loadedEntry = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index];
++                const auto& loadedEntry = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index);
+                 fprintf(idx,
+                         "%s fullLine=%u expLine=%u strideOK=%d cms=%u cmt=%u masks=%u maskt=%u scaleS=%04X "
+                         "ldLine=%u ldFull=%u ldSize=%u ldOrig=%u tileLine=%u tmemIdx=%u addr=%p\n",
+@@ -1325,21 +1325,21 @@ void Interpreter::ImportTextureRgba16(int textureUnit, int tile, bool importRepl
+ }
+ 
+ void Interpreter::ImportTextureRgba32(int tile, bool importReplacement) {
+-    const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
++    const RawTexMetadata* metadata = &mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).raw_tex_metadata;
+     const uint8_t* addr =
+         importReplacement && (metadata->resource != nullptr)
+             ? mMaskedTextures.find(GetBaseTexturePath(metadata->resource->GetInitData()->Path))->second.replacementData
+-            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
++            : mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).addr;
+ 
+     if (addr == nullptr) {
+         SPDLOG_ERROR("ImportTextureRgba32: null texture address for tile {}", tile);
+         return;
+     }
+ 
+-    uint32_t size_bytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].size_bytes;
++    uint32_t size_bytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).size_bytes;
+     uint32_t full_image_line_size_bytes =
+-        mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].full_image_line_size_bytes;
+-    uint32_t line_size_bytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].line_size_bytes;
++        mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).full_image_line_size_bytes;
++    uint32_t line_size_bytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).line_size_bytes;
+ 
+     uint32_t widthBytes = GetEffectiveLineSize(line_size_bytes, full_image_line_size_bytes, size_bytes,
+                                                mRdp->texture_tile[tile].line_size_bytes * 2);
+@@ -1386,21 +1386,21 @@ void Interpreter::ImportTextureRgba32(int tile, bool importReplacement) {
+ }
+ 
+ void Interpreter::ImportTextureIA4(int tile, bool importReplacement) {
+-    const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
++    const RawTexMetadata* metadata = &mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).raw_tex_metadata;
+     const uint8_t* addr =
+         importReplacement && (metadata->resource != nullptr)
+             ? mMaskedTextures.find(GetBaseTexturePath(metadata->resource->GetInitData()->Path))->second.replacementData
+-            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
++            : mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).addr;
+ 
+     if (addr == nullptr) {
+         SPDLOG_ERROR("ImportTextureIA4: null texture address for tile {}", tile);
+         return;
+     }
+ 
+-    uint32_t sizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].size_bytes;
++    uint32_t sizeBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).size_bytes;
+     uint32_t fullImageLineSizeBytes =
+-        mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].full_image_line_size_bytes;
+-    uint32_t lineSizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].line_size_bytes;
++        mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).full_image_line_size_bytes;
++    uint32_t lineSizeBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).line_size_bytes;
+ 
+     uint32_t widthBytes = GetEffectiveLineSize(lineSizeBytes, fullImageLineSizeBytes, sizeBytes,
+                                                mRdp->texture_tile[tile].line_size_bytes);
+@@ -1433,21 +1433,21 @@ void Interpreter::ImportTextureIA4(int tile, bool importReplacement) {
+ }
+ 
+ void Interpreter::ImportTextureIA8(int tile, bool importReplacement) {
+-    const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
++    const RawTexMetadata* metadata = &mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).raw_tex_metadata;
+     const uint8_t* addr =
+         importReplacement && (metadata->resource != nullptr)
+             ? mMaskedTextures.find(GetBaseTexturePath(metadata->resource->GetInitData()->Path))->second.replacementData
+-            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
++            : mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).addr;
+ 
+     if (addr == nullptr) {
+         SPDLOG_ERROR("ImportTextureIA8: null texture address for tile {}", tile);
+         return;
+     }
+ 
+-    uint32_t sizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].size_bytes;
++    uint32_t sizeBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).size_bytes;
+     uint32_t fullImageLineSizeBytes =
+-        mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].full_image_line_size_bytes;
+-    uint32_t lineSizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].line_size_bytes;
++        mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).full_image_line_size_bytes;
++    uint32_t lineSizeBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).line_size_bytes;
+ 
+     uint32_t width = GetEffectiveLineSize(lineSizeBytes, fullImageLineSizeBytes, sizeBytes,
+                                           mRdp->texture_tile[tile].line_size_bytes);
+@@ -1477,21 +1477,21 @@ void Interpreter::ImportTextureIA8(int tile, bool importReplacement) {
+ }
+ 
+ void Interpreter::ImportTextureIA16(int tile, bool importReplacement) {
+-    const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
++    const RawTexMetadata* metadata = &mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).raw_tex_metadata;
+     const uint8_t* addr =
+         importReplacement && (metadata->resource != nullptr)
+             ? mMaskedTextures.find(GetBaseTexturePath(metadata->resource->GetInitData()->Path))->second.replacementData
+-            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
++            : mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).addr;
+ 
+     if (addr == nullptr) {
+         SPDLOG_ERROR("ImportTextureIA16: null texture address for tile {}", tile);
+         return;
+     }
+ 
+-    uint32_t size_bytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].size_bytes;
++    uint32_t size_bytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).size_bytes;
+     uint32_t full_image_line_size_bytes =
+-        mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].full_image_line_size_bytes;
+-    uint32_t line_size_bytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].line_size_bytes;
++        mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).full_image_line_size_bytes;
++    uint32_t line_size_bytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).line_size_bytes;
+ 
+     uint32_t widthBytes = GetEffectiveLineSize(line_size_bytes, full_image_line_size_bytes, size_bytes,
+                                                mRdp->texture_tile[tile].line_size_bytes);
+@@ -1529,21 +1529,21 @@ void Interpreter::ImportTextureIA16(int tile, bool importReplacement) {
+ }
+ 
+ void Interpreter::ImportTextureI4(int tile, bool importReplacement) {
+-    const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
++    const RawTexMetadata* metadata = &mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).raw_tex_metadata;
+     const uint8_t* addr =
+         importReplacement && (metadata->resource != nullptr)
+             ? mMaskedTextures.find(GetBaseTexturePath(metadata->resource->GetInitData()->Path))->second.replacementData
+-            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
++            : mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).addr;
+ 
+     if (addr == nullptr) {
+         SPDLOG_ERROR("ImportTextureI4: null texture address for tile {}", tile);
+         return;
+     }
+ 
+-    uint32_t sizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].size_bytes;
++    uint32_t sizeBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).size_bytes;
+     uint32_t fullImageLineSizeBytes =
+-        mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].full_image_line_size_bytes;
+-    uint32_t lineSizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].line_size_bytes;
++        mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).full_image_line_size_bytes;
++    uint32_t lineSizeBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).line_size_bytes;
+ 
+     uint32_t widthBytes = GetEffectiveLineSize(lineSizeBytes, fullImageLineSizeBytes, sizeBytes,
+                                                mRdp->texture_tile[tile].line_size_bytes);
+@@ -1638,8 +1638,8 @@ void Interpreter::ImportTextureI4(int tile, bool importReplacement) {
+                              tile, mRdp->texture_tile[tile].tmem_index, width, height, sum);
+                 gdx_dbg_logf("[fontmach] I4 in: sizeB=%u origB=%u lineB=%u fullB=%u tileLineB=%u "
+                              "tileWH=%ux%u mask=%u/%u cm=%u/%u addr=%p\n",
+-                             mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].size_bytes,
+-                             mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].orig_size_bytes,
++                             mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).size_bytes,
++                             mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).orig_size_bytes,
+                              lineSizeBytes, fullImageLineSizeBytes, mRdp->texture_tile[tile].line_size_bytes,
+                              tileWidth, tileHeight, mRdp->texture_tile[tile].masks, mRdp->texture_tile[tile].maskt,
+                              mRdp->texture_tile[tile].cms, mRdp->texture_tile[tile].cmt,
+@@ -1652,21 +1652,21 @@ void Interpreter::ImportTextureI4(int tile, bool importReplacement) {
+ }
+ 
+ void Interpreter::ImportTextureI8(int tile, bool importReplacement) {
+-    const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
++    const RawTexMetadata* metadata = &mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).raw_tex_metadata;
+     const uint8_t* addr =
+         importReplacement && (metadata->resource != nullptr)
+             ? mMaskedTextures.find(GetBaseTexturePath(metadata->resource->GetInitData()->Path))->second.replacementData
+-            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
++            : mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).addr;
+ 
+     if (addr == nullptr) {
+         SPDLOG_ERROR("ImportTextureI8: null texture address for tile {}", tile);
+         return;
+     }
+ 
+-    uint32_t sizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].size_bytes;
++    uint32_t sizeBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).size_bytes;
+     uint32_t fullImageLineSizeBytes =
+-        mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].full_image_line_size_bytes;
+-    uint32_t lineSizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].line_size_bytes;
++        mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).full_image_line_size_bytes;
++    uint32_t lineSizeBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).line_size_bytes;
+ 
+     uint32_t width = GetEffectiveLineSize(lineSizeBytes, fullImageLineSizeBytes, sizeBytes,
+                                           mRdp->texture_tile[tile].line_size_bytes);
+@@ -1695,20 +1695,20 @@ void Interpreter::ImportTextureI8(int tile, bool importReplacement) {
+ 
+ void Interpreter::ImportTextureCi4(int tile, bool importReplacement) {
+     uint32_t fullImageLineSizeBytes =
+-        mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].full_image_line_size_bytes;
+-    const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
++        mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).full_image_line_size_bytes;
++    const RawTexMetadata* metadata = &mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).raw_tex_metadata;
+     const uint8_t* addr =
+         importReplacement && (metadata->resource != nullptr)
+             ? mMaskedTextures.find(GetBaseTexturePath(metadata->resource->GetInitData()->Path))->second.replacementData
+-            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
++            : mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).addr;
+ 
+     if (addr == nullptr) {
+         SPDLOG_ERROR("ImportTextureCi4: null texture address for tile {}", tile);
+         return;
+     }
+ 
+-    uint32_t sizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].size_bytes;
+-    uint32_t lineSizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].line_size_bytes;
++    uint32_t sizeBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).size_bytes;
++    uint32_t lineSizeBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).line_size_bytes;
+     uint32_t palIdx = mRdp->texture_tile[tile].palette; // 0-15
+ 
+     const uint8_t* palette;
+@@ -1777,21 +1777,21 @@ void Interpreter::ImportTextureCi4(int tile, bool importReplacement) {
+ }
+ 
+ void Interpreter::ImportTextureCi8(int tile, bool importReplacement) {
+-    const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
++    const RawTexMetadata* metadata = &mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).raw_tex_metadata;
+     const uint8_t* addr =
+         importReplacement && (metadata->resource != nullptr)
+             ? mMaskedTextures.find(GetBaseTexturePath(metadata->resource->GetInitData()->Path))->second.replacementData
+-            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
++            : mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).addr;
+ 
+     if (addr == nullptr) {
+         SPDLOG_ERROR("ImportTextureCi8: null texture address for tile {}", tile);
+         return;
+     }
+ 
+-    uint32_t sizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].size_bytes;
++    uint32_t sizeBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).size_bytes;
+     uint32_t fullImageLineSizeBytes =
+-        mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].full_image_line_size_bytes;
+-    uint32_t lineSizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].line_size_bytes;
++        mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).full_image_line_size_bytes;
++    uint32_t lineSizeBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).line_size_bytes;
+ 
+     if (mRdp->palettes[0] == nullptr || mRdp->palettes[1] == nullptr) {
+         SPDLOG_WARN("CI8: null palette (pal0={}, pal1={})", static_cast<const void*>(mRdp->palettes[0]),
+@@ -1899,11 +1899,11 @@ void Interpreter::ImportTextureCi8(int tile, bool importReplacement) {
+ }
+ 
+ void Interpreter::ImportTextureImg(int tile, bool importReplacement) {
+-    const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
++    const RawTexMetadata* metadata = &mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).raw_tex_metadata;
+     const uint8_t* addr =
+         importReplacement && (metadata->resource != nullptr)
+             ? mMaskedTextures.find(GetBaseTexturePath(metadata->resource->GetInitData()->Path))->second.replacementData
+-            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
++            : mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).addr;
+ 
+     if (addr == nullptr) {
+         SPDLOG_ERROR("ImportTextureImg: null texture address for tile {}", tile);
+@@ -1916,11 +1916,11 @@ void Interpreter::ImportTextureImg(int tile, bool importReplacement) {
+ }
+ 
+ void Interpreter::ImportTextureRaw(int tile, bool importReplacement) {
+-    const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
++    const RawTexMetadata* metadata = &mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).raw_tex_metadata;
+     const uint8_t* addr =
+         importReplacement && (metadata->resource != nullptr)
+             ? mMaskedTextures.find(GetBaseTexturePath(metadata->resource->GetInitData()->Path))->second.replacementData
+-            : mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].addr;
++            : mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).addr;
+ 
+     if (addr == nullptr) {
+         SPDLOG_ERROR("ImportTextureRaw: null texture address for tile {}", tile);
+@@ -1944,8 +1944,8 @@ void Interpreter::ImportTextureRaw(int tile, bool importReplacement) {
+             break;
+     }
+ 
+-    uint32_t numLoadedBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].size_bytes;
+-    uint32_t numOriginallyLoadedBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].orig_size_bytes;
++    uint32_t numLoadedBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).size_bytes;
++    uint32_t numOriginallyLoadedBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).orig_size_bytes;
+ 
+     uint32_t resultOrigLineSize = mRdp->texture_tile[tile].line_size_bytes;
+     switch (mRdp->texture_tile[tile].siz) {
+@@ -1964,8 +1964,8 @@ void Interpreter::ImportTextureRaw(int tile, bool importReplacement) {
+     }
+ 
+     uint32_t fullImageLineSizeBytes =
+-        mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].full_image_line_size_bytes;
+-    uint32_t line_size_bytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].line_size_bytes;
++        mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).full_image_line_size_bytes;
++    uint32_t line_size_bytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).line_size_bytes;
+ 
+     // Get the resource's true image size
+     uint32_t resourceImageSizeBytes = resource->ImageDataSize;
+@@ -2003,16 +2003,16 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+ #endif
+     uint8_t fmt = mRdp->texture_tile[tile].fmt;
+     uint8_t siz = mRdp->texture_tile[tile].siz;
+-    uint32_t texFlags = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].tex_flags;
++    uint32_t texFlags = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).tex_flags;
+     uint32_t tmemIdex = mRdp->texture_tile[tile].tmem_index;
+     uint8_t paletteIndex = mRdp->texture_tile[tile].palette;
+-    uint32_t origSizeBytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].orig_size_bytes;
++    uint32_t origSizeBytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).orig_size_bytes;
+ 
+-    const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
++    const RawTexMetadata* metadata = &mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).raw_tex_metadata;
+     const uint8_t* origAddr =
+         importReplacement && (metadata->resource != nullptr)
+             ? mMaskedTextures.find(GetBaseTexturePath(metadata->resource->GetInitData()->Path))->second.replacementData
+-            : mRdp->loaded_texture[tmemIdex].addr;
++            : mRdp->LoadedTextureAt(tmemIdex).addr;
+ 
+     // Lookup-side TMEM trace: pairs with StoreLoadedTexture's store log so one
+     // run shows whether this tile's tmem base selected the load that populated
+@@ -2027,7 +2027,7 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+                 ++sEffectTileLogs;
+                 SPDLOG_ERROR("[tmem] EFFECT-TILE lookup tile={} tmem={} fmt={} siz={} -> addr={} sizeB={}",
+                              tile, tmemIdex, fmt, siz, fmt::ptr(origAddr),
+-                             mRdp->loaded_texture[tmemIdex].size_bytes);
++                             mRdp->LoadedTextureAt(tmemIdex).size_bytes);
+             }
+         }
+         if (gGdxRaceActive != 0) { // race-gated, matching the store log
+@@ -2040,7 +2040,7 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+                     ++sTmemLookupLogs;
+                     SPDLOG_ERROR("[tmem] lookup tile={} tmem={} fmt={} siz={} -> addr={} sizeB={}", tile,
+                                  tmemIdex, fmt, siz, fmt::ptr(origAddr),
+-                                 mRdp->loaded_texture[tmemIdex].size_bytes);
++                                 mRdp->LoadedTextureAt(tmemIdex).size_bytes);
+                 }
+             }
+         }
+@@ -2128,8 +2128,8 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+     } else {
+         key = { origAddr, {}, fmt, siz, paletteIndex, origSizeBytes };
+     }
+-    key.line_size_bytes = mRdp->loaded_texture[tmemIdex].line_size_bytes;
+-    key.full_image_line_size_bytes = mRdp->loaded_texture[tmemIdex].full_image_line_size_bytes;
++    key.line_size_bytes = mRdp->LoadedTextureAt(tmemIdex).line_size_bytes;
++    key.full_image_line_size_bytes = mRdp->LoadedTextureAt(tmemIdex).full_image_line_size_bytes;
+ 
+     // CI palette-content hash (opt-in: GDX_CI_PALETTE_HASH). The key carries the palette's DRAM
+     // address, which cannot see an in-place fade rewriting content at that same address, so the
+@@ -2205,7 +2205,7 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+             // Default: the recorded load extent (the TMEM copy of the source bytes) -- exactly
+             // the content identity the hash exists to capture for the DRAM-decoding font paths.
+             uint32_t span = std::min<uint32_t>(remaining, std::max<uint32_t>(
+-                                                              mRdp->loaded_texture[tmemIdex].size_bytes, 8u));
++                                                              mRdp->LoadedTextureAt(tmemIdex).size_bytes, 8u));
+             if (isRgba16) {
+                 // The RGBA16 TMEM decode reads rows [0, h) at stride lineBytes, bytes [0, 2*w)
+                 // per row. Mirror its extent derivation exactly (ImportTextureRgba16): any byte
+@@ -2337,7 +2337,7 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+     // Zero-sized textures divide by zero or fault UploadTexture. Hoisted before
+     // TextureCacheLookup so such a load never mints an uploaded == false entry, which could never
+     // be satisfied and re-ran this prologue every frame.
+-    if (mRdp->texture_tile[tile].line_size_bytes == 0 || mRdp->loaded_texture[tmemIdex].size_bytes == 0 ||
++    if (mRdp->texture_tile[tile].line_size_bytes == 0 || mRdp->LoadedTextureAt(tmemIdex).size_bytes == 0 ||
+         origAddr == nullptr) {
+         return;
+     }
+@@ -2348,7 +2348,7 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+ 
+ #ifdef __3DS__
+     gdx3ds_texcache_note_miss(origAddr, fmt, siz, tmemIdex, key.line_size_bytes,
+-                              mRdp->loaded_texture[tmemIdex].size_bytes, key.tile_width, key.tile_height,
++                              mRdp->LoadedTextureAt(tmemIdex).size_bytes, key.tile_width, key.tile_height,
+                               key.tmem_content_hash);
+ #endif
+ 
+@@ -2453,7 +2453,7 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+ 
+ void Interpreter::ImportTextureMask(int i, int tile) {
+     uint32_t tmemIndex = mRdp->texture_tile[tile].tmem_index;
+-    RawTexMetadata metadata = mRdp->loaded_texture[tmemIndex].raw_tex_metadata;
++    RawTexMetadata metadata = mRdp->LoadedTextureAt(tmemIndex).raw_tex_metadata;
+ 
+     if (metadata.resource == nullptr) {
+         return;
+@@ -2477,7 +2477,7 @@ void Interpreter::ImportTextureMask(int i, int tile) {
+     }
+ 
+     uint32_t width = mRdp->texture_tile[tile].line_size_bytes;
+-    uint32_t height = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].orig_size_bytes /
++    uint32_t height = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).orig_size_bytes /
+                       mRdp->texture_tile[tile].line_size_bytes;
+     switch (mRdp->texture_tile[tile].siz) {
+         case G_IM_SIZ_4b:
+@@ -3133,8 +3133,8 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+                    replacement between load and draw, nonzero points at UV/handle. */
+                 const int probeTile = mRdp->first_tile_index;
+                 const uint32_t probeTmem = mRdp->texture_tile[probeTile].tmem_index;
+-                const uint8_t* probeSrc = mRdp->loaded_texture[probeTmem].addr;
+-                const uint32_t probeSize = mRdp->loaded_texture[probeTmem].size_bytes;
++                const uint8_t* probeSrc = mRdp->LoadedTextureAt(probeTmem).addr;
++                const uint32_t probeSize = mRdp->LoadedTextureAt(probeTmem).size_bytes;
+                 uint32_t srcSum = 0;
+                 if (probeSrc != nullptr) {
+                     const uint32_t n = probeSize < 64 ? probeSize : 64;
+@@ -3351,7 +3351,7 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+                 const uint32_t bigTriTile = mRdp->first_tile_index;
+                 mGeometryDiagnostics.bigTriTile = static_cast<uint8_t>(bigTriTile);
+                 mGeometryDiagnostics.bigTriTexture =
+-                    mRdp->loaded_texture[mRdp->texture_tile[bigTriTile].tmem_index].addr;
++                    mRdp->LoadedTextureAt(mRdp->texture_tile[bigTriTile].tmem_index).addr;
+                 mGeometryDiagnostics.bigTriViewportX = mRdp->viewport.x;
+                 mGeometryDiagnostics.bigTriViewportY = mRdp->viewport.y;
+                 mGeometryDiagnostics.bigTriViewportW = mRdp->viewport.width;
+@@ -3531,8 +3531,8 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+     static const bool diagnosticTexel1FromBase = std::getenv("GDX_DIAG_TEXEL1_FROM_BASE") != nullptr;
+     const uint32_t texel1Tile =
+         diagnosticTexel1FromBase ? texel0Tile : ((mRdp->first_tile_index + 1u) & 7u);
+-    const auto& texel0Loaded = mRdp->loaded_texture[mRdp->texture_tile[texel0Tile].tmem_index];
+-    const auto& texel1Loaded = mRdp->loaded_texture[mRdp->texture_tile[texel1Tile].tmem_index];
++    const auto& texel0Loaded = mRdp->LoadedTextureAt(mRdp->texture_tile[texel0Tile].tmem_index);
++    const auto& texel1Loaded = mRdp->LoadedTextureAt(mRdp->texture_tile[texel1Tile].tmem_index);
+ 
+     if (texel0Loaded.masked) {
+         cc_options |= SHADER_OPT(TEXEL0_MASK);
+@@ -3622,7 +3622,7 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+         effective_tile[i] = tile;
+ 
+         if (comb->usedTextures[i]) {
+-            const auto& activeLoaded = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index];
++            const auto& activeLoaded = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index);
+             if (mRdp->textures_changed[i]) {
+                 Flush();
+                 ImportTexture(i, tile, false);
+@@ -3638,10 +3638,10 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+             uint8_t cms = mRdp->texture_tile[tile].cms;
+             uint8_t cmt = mRdp->texture_tile[tile].cmt;
+ 
+-            uint32_t loaded_line_size = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].line_size_bytes;
+-            uint32_t loaded_size = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].size_bytes;
++            uint32_t loaded_line_size = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).line_size_bytes;
++            uint32_t loaded_size = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).size_bytes;
+             uint32_t loaded_full_line =
+-                mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].full_image_line_size_bytes;
++                mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).full_image_line_size_bytes;
+             uint32_t tex_size_bytes;
+             uint32_t line_size;
+             if ((loaded_line_size != loaded_size || loaded_full_line != loaded_size) && loaded_line_size > 0) {
+@@ -3649,7 +3649,7 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+                 tex_size_bytes = loaded_size;
+             } else {
+                 line_size = mRdp->texture_tile[tile].line_size_bytes;
+-                tex_size_bytes = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].orig_size_bytes;
++                tex_size_bytes = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index).orig_size_bytes;
+                 // RGBA32: texture_tile stores TMEM-interleaved stride (half of actual DRAM stride).
+                 if (mRdp->texture_tile[tile].siz == G_IM_SIZ_32b) {
+                     line_size *= 2;
+@@ -4006,7 +4006,7 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+                                 (unsigned)mRdp->texture_tile[uv_tile].tmem,
+                                 (unsigned)mRdp->texture_tile[uv_tile].fmt,
+                                 (unsigned)mRdp->texture_tile[uv_tile].siz,
+-                                (const void*)mRdp->loaded_texture[mRdp->texture_tile[uv_tile].tmem_index].addr,
++                                (const void*)mRdp->LoadedTextureAt(mRdp->texture_tile[uv_tile].tmem_index).addr,
+                                 (unsigned long long)mRdp->combine_mode,
+                                 (unsigned)mRsp->geometry_mode,
+                                 (unsigned)mRdp->other_mode_h);
+@@ -4032,7 +4032,7 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+                                         ++gGdxTraceSeq, uv_tile, normalizedV,
+                                         mRdp->texture_tile[uv_tile].cms, mRdp->texture_tile[uv_tile].cmt,
+                                         mRdp->texture_tile[uv_tile].masks, mRdp->texture_tile[uv_tile].maskt,
+-                                        (const void*)mRdp->loaded_texture[mRdp->texture_tile[uv_tile].tmem_index].addr,
++                                        (const void*)mRdp->LoadedTextureAt(mRdp->texture_tile[uv_tile].tmem_index).addr,
+                                         mRdp->texture_tile[uv_tile].uls, mRdp->texture_tile[uv_tile].ult,
+                                         mRdp->texture_tile[uv_tile].lrs, mRdp->texture_tile[uv_tile].lrt,
+                                         v_arr[i]->x, v_arr[i]->y, v_arr[i]->z, v_arr[i]->w);
+@@ -4666,46 +4666,141 @@ void Interpreter::StoreLoadedTexture(uint16_t tmemStart, const LoadedTexture& te
+     const uint32_t requestedWords = std::max<uint32_t>(1u, (logicalSize + kTmemWordBytes - 1u) / kTmemWordBytes);
+     const uint32_t wordCount = std::min(requestedWords, kTmemWordCount - tmemStart);
+     const uint32_t newEnd = tmemStart + wordCount;
++    RDP& rdp = *mRdp;
+ 
+     // A TMEM upload replaces bytes, not a named texture object. Discard any
+     // older metadata range touched by this upload so a later render tile can
+     // never select stale DRAM data for overwritten TMEM.
+-    for (auto& existing : mRdp->loaded_texture) {
+-        if (existing.tmem_word_count == 0) {
++    //
++    // LOADBLOCK-OPT: the old implementation walked all 512 per-word LoadedTexture entries
++    // and cleared every one whose own recorded [tmem_start, +tmem_word_count) range
++    // overlapped the new range. The span map reaches the same set of words in O(touched
++    // words): every such entry belongs to a span with at least one word inside the new
++    // range, and only slots that were actually materialized still hold payloads (and
++    // resource refs) to release — exactly the refs the old eager clears released. The
++    // per-word overlap re-check below keeps one legacy subtlety intact: an entry whose own
++    // recorded word count is 0 (the port's VI-fallback slot detaches itself that way) was
++    // never cleared by the old walk, and still is not.
++    const auto slotRange = [&rdp](uint32_t word, uint32_t& start, uint32_t& end) {
++        if (rdp.tmem_slot_stale[word] == 0) {
++            // Fresh slot: its own recorded range is authoritative (old-code semantics,
++            // including in-place mutations that detached the entry).
++            start = rdp.loaded_texture[word].tmem_start;
++            end = start + rdp.loaded_texture[word].tmem_word_count;
++        } else if (rdp.tmem_span_base[word] != 0) {
++            // Stale slot: the range materialization WOULD record is the span's.
++            start = rdp.tmem_span_base[word] - 1u;
++            end = start + rdp.tmem_span_words[start];
++        } else {
++            start = end = 0;
++        }
++    };
++    uint32_t w = tmemStart;
++    while (w < newEnd) {
++        uint32_t spanStart;
++        uint32_t spanEnd;
++        slotRange(w, spanStart, spanEnd);
++        if (spanEnd <= spanStart) {
++            ++w;
+             continue;
+         }
+-        const uint32_t existingEnd = existing.tmem_start + existing.tmem_word_count;
+-        if (existing.tmem_start < newEnd && tmemStart < existingEnd) {
+-            existing = {};
++        for (uint32_t k = spanStart; k < spanEnd && k < kTmemWordCount; ++k) {
++            // A stale member's logical range IS the span's (captured above — the map entries
++            // are being torn down as this loop runs); only a fresh slot can carry a diverging
++            // record of its own (the detached zero-count case).
++            uint32_t kStart = spanStart;
++            uint32_t kEnd = spanEnd;
++            if (rdp.tmem_slot_stale[k] == 0) {
++                kStart = rdp.loaded_texture[k].tmem_start;
++                kEnd = kStart + rdp.loaded_texture[k].tmem_word_count;
++            }
++            if (kStart < newEnd && tmemStart < kEnd) {
++                if (rdp.tmem_slot_stale[k] == 0) {
++                    // Fresh: release the materialized view (and its resource ref) now, exactly
++                    // where the old eager walk released it; the slot stays fresh because a
++                    // physical {} equals the logical empty state.
++                    rdp.loaded_texture[k] = {};
++                } // else: stale slots are ref-free by invariant; span_base = 0 below makes the
++                  // next read materialize the {}.
++                rdp.tmem_span_base[k] = 0;
++                rdp.tmem_span_words[k] = 0;
++            }
+         }
++        w = spanEnd > w ? spanEnd : w + 1;
+     }
+ 
+-    // Materialize metadata at every covered TMEM word. Render tiles are legal
+-    // at offsets inside a LOADBLOCK/LOADTILE range, not only at its base.
+-    for (uint32_t word = 0; word < wordCount; ++word) {
+-        const uint32_t logicalByteOffset = word * kTmemWordBytes;
+-        const uint32_t hostByteOffset =
+-            logicalSize != 0 ? static_cast<uint32_t>((static_cast<uint64_t>(logicalByteOffset) * texture.size_bytes) /
+-                                                     logicalSize)
+-                             : logicalByteOffset;
+-        LoadedTexture entry = texture;
+-        entry.tmem_start = tmemStart;
+-        entry.tmem_word_count = static_cast<uint16_t>(wordCount);
+-        if (entry.addr != nullptr) {
+-            entry.addr += hostByteOffset;
+-        }
+-        entry.size_bytes = texture.size_bytes > hostByteOffset ? texture.size_bytes - hostByteOffset : 0;
+-        entry.orig_size_bytes =
+-            texture.orig_size_bytes > logicalByteOffset ? texture.orig_size_bytes - logicalByteOffset : 0;
+-        if (word != 0) {
+-            // An interior TMEM address starts a new render view into this upload. Its row layout
+-            // comes from the render tile, not the load base; keeping the base stride collapses
+-            // these views into one-pixel-high stripes.
+-            entry.line_size_bytes = 0;
+-            entry.full_image_line_size_bytes = 0;
++    // Record ONE span for the new load. Render tiles are legal at offsets inside a
++    // LOADBLOCK/LOADTILE range, not only at its base, so the old code materialized a
++    // derived view at every covered word here; those views now materialize lazily in
++    // RDP::MaterializeTmemSlot (same math, verbatim) on first read.
++    std::fill_n(&rdp.tmem_span_base[tmemStart], wordCount, static_cast<uint16_t>(tmemStart + 1u));
++    memset(&rdp.tmem_slot_stale[tmemStart], 1, wordCount);
++    rdp.tmem_span_words[tmemStart] = static_cast<uint16_t>(wordCount);
++
++    LoadedTexture baseEntry = texture;
++    baseEntry.tmem_start = tmemStart;
++    baseEntry.tmem_word_count = static_cast<uint16_t>(wordCount);
++    rdp.loaded_texture[tmemStart] = std::move(baseEntry);
++    rdp.tmem_slot_stale[tmemStart] = 0;
++}
++
++// Lazy per-word view materialization: byte-identical to the loop StoreLoadedTexture ran
++// eagerly at every covered word before LOADBLOCK-OPT (see the RDP struct comment).
++void RDP::MaterializeTmemSlot(uint16_t tmemWord) {
++    constexpr uint32_t kTmemWordBytes = 8;
++    const uint16_t basePlus1 = tmem_span_base[tmemWord];
++    if (basePlus1 == 0) {
++        loaded_texture[tmemWord] = {};
++        tmem_slot_stale[tmemWord] = 0;
++        return;
++    }
++    const uint16_t base = static_cast<uint16_t>(basePlus1 - 1u);
++    // The base slot doubles as the span record: it always holds the span's word-0 view,
++    // whose payload fields equal the original StoreLoadedTexture argument.
++    const LoadedTexture& texture = loaded_texture[base];
++    const uint32_t word = static_cast<uint32_t>(tmemWord) - base;
++    const uint32_t logicalSize = texture.orig_size_bytes != 0 ? texture.orig_size_bytes : texture.size_bytes;
++    const uint32_t logicalByteOffset = word * kTmemWordBytes;
++    const uint32_t hostByteOffset =
++        logicalSize != 0
++            ? static_cast<uint32_t>((static_cast<uint64_t>(logicalByteOffset) * texture.size_bytes) / logicalSize)
++            : logicalByteOffset;
++    LoadedTexture entry = texture; // tmem_start/tmem_word_count already carry the span's values
++    if (entry.addr != nullptr) {
++        entry.addr += hostByteOffset;
++    }
++    entry.size_bytes = texture.size_bytes > hostByteOffset ? texture.size_bytes - hostByteOffset : 0;
++    entry.orig_size_bytes = texture.orig_size_bytes > logicalByteOffset ? texture.orig_size_bytes - logicalByteOffset : 0;
++    if (word != 0) {
++        // An interior TMEM address starts a new render view into this upload. Its row layout
++        // comes from the render tile, not the load base; keeping the base stride collapses
++        // these views into one-pixel-high stripes.
++        entry.line_size_bytes = 0;
++        entry.full_image_line_size_bytes = 0;
++    }
++    loaded_texture[tmemWord] = std::move(entry);
++    tmem_slot_stale[tmemWord] = 0;
++}
++
++// Write access for the in-place mutators (GfxDpImageRectangle, the port's VI present
++// fallback): materialize EVERY word of the containing span first, so the edit lands on
++// fully-consistent physical state — after this, no lazy derivation can run against the
++// mutated record while the span lives, which is exactly the old always-materialized
++// behaviour.
++LoadedTexture& RDP::MutableLoadedTextureAt(uint16_t tmemWord) {
++    const uint16_t basePlus1 = tmem_span_base[tmemWord];
++    if (basePlus1 != 0) {
++        const uint32_t base = basePlus1 - 1u;
++        const uint32_t end = std::min<uint32_t>(base + tmem_span_words[base], 512u);
++        for (uint32_t k = base; k < end; ++k) {
++            if (tmem_slot_stale[k] != 0) {
++                MaterializeTmemSlot(static_cast<uint16_t>(k));
++            }
+         }
+-        mRdp->loaded_texture[tmemStart + word] = entry;
++    } else if (tmem_slot_stale[tmemWord] != 0) {
++        MaterializeTmemSlot(tmemWord);
+     }
++    return loaded_texture[tmemWord];
+ }
+ 
+ void Interpreter::GfxDpLoadBlock(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t dxt) {
+@@ -5353,7 +5448,9 @@ void Interpreter::GfxDpImageRectangle(int32_t tile, int32_t w, int32_t h, int32_
+     mRdp->texture_tile[tile].lrt = h * 4;
+     mRdp->texture_tile[tile].line_size_bytes = w << (mRdp->texture_tile[tile].siz >> 1);
+ 
+-    auto& loadtex = mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index];
++    // In-place mutation of the current slot: goes through the materializing write accessor
++    // so the whole containing span is physically consistent before (and after) the edit.
++    auto& loadtex = mRdp->MutableLoadedTextureAt(mRdp->texture_tile[tile].tmem_index);
+     loadtex.full_image_line_size_bytes = loadtex.line_size_bytes = mRdp->texture_tile[tile].line_size_bytes;
+     loadtex.size_bytes = loadtex.orig_size_bytes = loadtex.line_size_bytes * h;
+ 
+diff --git a/src/libultraship/window/gui/GfxDebuggerWindow.cpp b/src/libultraship/window/gui/GfxDebuggerWindow.cpp
+index c998499..8468e37 100644
+--- a/src/libultraship/window/gui/GfxDebuggerWindow.cpp
++++ b/src/libultraship/window/gui/GfxDebuggerWindow.cpp
+@@ -658,7 +658,7 @@ void GfxDebuggerWindow::DrawDisas() {
+ 
+             ImGui::Text("Loaded Textures");
+             for (size_t i = 0; i < 2; i++) {
+-                auto& tex = mInterpreter.lock()->mRdp->loaded_texture[i];
++                auto& tex = mInterpreter.lock()->mRdp->LoadedTextureAt(static_cast<uint16_t>(i)); // materializing read accessor (LOADBLOCK-OPT)
+                 // ImGui::Text("%s", fmt::format("{}: {}x{} type={}", i, tex.raw_tex_metadata.width,
+                 //                               tex.raw_tex_metadata.height, getTexType(tex.raw_tex_metadata.type))
+                 //                       .c_str());

@@ -1,0 +1,91 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>G-Diffuser on New 3DS</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap"><style>
+:root {
+  --bg:#eef1f6; --bg2:#ffffff; --bg3:#e2e7ef; --ink:#17202e; --ink2:#48546a; --ink3:#7a8598;
+  --line:#cfd6e2; --accent:#2457ff; --accent-ink:#1a3fc4; --accent-soft:#dbe3ff; --gold:#e0a71a; --gold-soft:#fbefc9;
+  --good:#1f8f4e; --warn:#c77d0a; --bad:#c9302c; --bad-soft:#f8dcdb; --good-soft:#d9f1e3; --warn-soft:#fbe9cc;
+  --c1:#2457ff; --c2:#e0a71a; --c3:#7a3be0; --c4:#1f8f4e; --c5:#c9302c; --c6:#0e8fa3; --c7:#8a6d3b; --c8:#5c6577;
+  --shadow:0 1px 2px rgba(23,32,46,.08), 0 8px 24px -12px rgba(23,32,46,.25);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:#0f141d; --bg2:#161d29; --bg3:#1f2836; --ink:#e7ecf4; --ink2:#b3bccb; --ink3:#7f8a9c;
+    --line:#2b3547; --accent:#6d8dff; --accent-ink:#9fb3ff; --accent-soft:#1d2a55; --gold:#f0c04a; --gold-soft:#3a2f10;
+    --good:#4cc37c; --warn:#f0a83a; --bad:#f06a66; --bad-soft:#4a1f1e; --good-soft:#153826; --warn-soft:#3f2c0f;
+    --c1:#6d8dff; --c2:#f0c04a; --c3:#b08cff; --c4:#4cc37c; --c5:#f06a66; --c6:#3fc3d8; --c7:#c9a26b; --c8:#8f9ab0;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  }
+}
+:root[data-theme="dark"] {
+  --bg:#0f141d; --bg2:#161d29; --bg3:#1f2836; --ink:#e7ecf4; --ink2:#b3bccb; --ink3:#7f8a9c;
+  --line:#2b3547; --accent:#6d8dff; --accent-ink:#9fb3ff; --accent-soft:#1d2a55; --gold:#f0c04a; --gold-soft:#3a2f10;
+  --good:#4cc37c; --warn:#f0a83a; --bad:#f06a66; --bad-soft:#4a1f1e; --good-soft:#153826; --warn-soft:#3f2c0f;
+  --c1:#6d8dff; --c2:#f0c04a; --c3:#b08cff; --c4:#4cc37c; --c5:#f06a66; --c6:#3fc3d8; --c7:#c9a26b; --c8:#8f9ab0;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+}
+* { box-sizing:border-box; }
+html { color-scheme: light dark; }
+body { margin:0; background:var(--bg); color:var(--ink); font-family:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif; font-size:16px; line-height:1.55; }
+a { color:var(--accent-ink); text-decoration:none; } a:hover { text-decoration:underline; }
+code, pre, .mono { font-family:"IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; font-size:.92em; }
+pre { background:var(--bg3); padding:12px 14px; border-radius:6px; overflow-x:auto; line-height:1.45; }
+code { background:var(--bg3); padding:1px 5px; border-radius:4px; }
+pre code { background:none; padding:0; }
+.shell { display:grid; grid-template-columns:230px minmax(0,1fr); min-height:100vh; }
+nav.rail { border-right:1px solid var(--line); padding:26px 18px; position:sticky; top:0; height:100vh; overflow:auto; background:var(--bg2); }
+nav.rail .brand { font-family:"Barlow Condensed", "Arial Narrow", sans-serif; font-weight:700; font-size:22px; letter-spacing:.02em; text-transform:uppercase; line-height:1.05; margin-bottom:4px; }
+nav.rail .sub { color:var(--ink3); font-size:12.5px; margin-bottom:22px; }
+nav.rail ol { list-style:none; padding:0; margin:0; counter-reset:p; }
+nav.rail li { margin:0 0 6px; }
+nav.rail li a { display:block; padding:7px 10px; border-radius:6px; color:var(--ink2); }
+nav.rail li a b { display:block; font-weight:600; color:var(--ink); font-size:14.5px; }
+nav.rail li a span { font-size:12px; color:var(--ink3); }
+nav.rail li a.on { background:var(--accent-soft); } nav.rail li a.on b { color:var(--accent-ink); }
+nav.rail li a:hover { text-decoration:none; background:var(--bg3); }
+nav.rail .foot { margin-top:26px; font-size:11.5px; color:var(--ink3); line-height:1.5; }
+main { padding:40px 56px 80px; max-width:1180px; }
+.eyebrow { font-family:"IBM Plex Mono", monospace; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent-ink); margin:0 0 8px; }
+h1 { font-family:"Barlow Condensed", "Arial Narrow", sans-serif; font-weight:700; font-size:54px; line-height:.98; letter-spacing:.005em; margin:0 0 14px; text-wrap:balance; text-transform:uppercase; }
+h2 { font-family:"Barlow Condensed", "Arial Narrow", sans-serif; font-weight:600; font-size:31px; line-height:1.05; margin:46px 0 12px; text-wrap:balance; text-transform:uppercase; letter-spacing:.01em; }
+h3 { font-size:17.5px; font-weight:600; margin:28px 0 8px; }
+p, li { max-width:72ch; }
+.lede { font-size:19px; color:var(--ink2); max-width:66ch; margin:0 0 26px; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px,1fr)); gap:12px; margin:22px 0 10px; }
+.tile { background:var(--bg2); border:1px solid var(--line); border-radius:8px; padding:14px 16px 12px; }
+.tile .n { font-family:"Barlow Condensed", sans-serif; font-weight:700; font-size:34px; overflow-wrap:anywhere; line-height:1; letter-spacing:.005em; font-variant-numeric:tabular-nums; }
+.tile .n small { font-size:19px; color:var(--ink3); font-weight:600; margin-left:2px; }
+.tile .l { font-size:12.5px; color:var(--ink2); margin-top:6px; line-height:1.35; }
+.tile.hot .n { color:var(--accent-ink); }
+figure { margin:22px 0 30px; background:var(--bg2); border:1px solid var(--line); border-radius:8px; padding:16px 18px 12px; box-shadow:var(--shadow); }
+figure svg { width:100%; height:auto; display:block; }
+figcaption { font-size:13px; color:var(--ink2); margin-top:10px; max-width:none; line-height:1.45; }
+figcaption b { color:var(--ink); }
+.legend { display:flex; flex-wrap:wrap; gap:6px 16px; font-size:12.5px; color:var(--ink2); margin:0 0 8px; }
+.legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:-1px; }
+.tbl { overflow-x:auto; margin:16px 0 26px; }
+table { border-collapse:collapse; width:100%; font-size:14px; }
+th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink2); font-weight:600; }
+td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+tr:hover td { background:var(--bg3); }
+.pill { display:inline-block; font-size:11.5px; font-weight:600; letter-spacing:.04em; padding:2px 8px; border-radius:999px; white-space:nowrap; }
+.pill.good { background:var(--good-soft); color:var(--good); } .pill.bad { background:var(--bad-soft); color:var(--bad); }
+.pill.warn { background:var(--warn-soft); color:var(--warn); } .pill.neu { background:var(--bg3); color:var(--ink2); }
+.pill.acc { background:var(--accent-soft); color:var(--accent-ink); }
+.timeline { border-left:2px solid var(--line); margin:20px 0 30px 8px; padding-left:22px; }
+.ev { position:relative; margin:0 0 22px; }
+.ev::before { content:""; position:absolute; left:-29px; top:8px; width:12px; height:12px; border-radius:50%; background:var(--bg); border:2px solid var(--accent); }
+.ev.big::before { background:var(--accent); }
+.ev.bad::before { border-color:var(--bad); } .ev.bad.big::before { background:var(--bad); }
+.ev.gold::before { border-color:var(--gold); } .ev.gold.big::before { background:var(--gold); }
+.ev .d { font-family:"IBM Plex Mono", monospace; font-size:12px; color:var(--ink3); letter-spacing:.04em; }
+.ev .t { font-weight:600; font-size:16px; margin:1px 0 3px; }
+.ev p { margin:0 0 4px; color:var(--ink2); font-size:14.5px; }
+.q { border-left:3px solid var(--gold); padding:6px 14px; margin:14px 0; background:var(--gold-soft); border-radius:0 6px 6px 0; font-size:14.5px; max-width:72ch; }
+.q .who { font-family:"IBM Plex Mono", monospace; font-size:11.5px; color:var(--ink3); letter-spacing:.06em; text-transform:uppercase; display:block; margin-bottom:2px; }
+.note { background:var(--bg3); border-radius:6px; padding:10px 14px; font-size:14px; color:var(--ink2); max-width:78ch; margin:14px 0; }
+.cols2 { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px,1fr)); gap:14px 28px; }
+.assume { border:1px dashed var(--line); border-radius:6px; padding:10px 14px; font-size:13.5px; color:var(--ink2); max-width:78ch; }
+.next { margin-top:56px; padding-top:18px; border-top:1px solid var(--line); display:flex; justify-content:space-between; font-size:14px; }
+@media (max-width: 860px) { .shell { grid-template-columns:1fr; } nav.rail { position:static; height:auto; border-right:0; border-bottom:1px solid var(--line); } main { padding:26px 20px 60px; } h1 { font-size:40px; } }
+@media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+</style></head><body><div class="shell"><nav class="rail"><div class="brand">G-Diffuser<br>on New 3DS</div><div class="sub">Post-mortem · F-Zero X, 2026-08-11 → 2026-09-03</div><ol><li><a href="index.html" class="on"><b>Overview</b><span>What was built, in one screen</span></a></li><li><a href="timeline.html"><b>Every step</b><span>The 24-day chronology</span></a></li><li><a href="road-to-60.html"><b>Road to 60</b><span>The performance campaign, round by round</span></a></li><li><a href="difficulties.html"><b>Difficulties</b><span>What fought back, and how it was beaten</span></a></li><li><a href="frontier.html"><b>Frontier</b><span>Why this is innovative, bold, and new</span></a></li><li><a href="agentic.html"><b>Agentic workflow</b><span>How the fleet was run, and how the ship was steered</span></a></li><li><a href="cost.html"><b>Cost</b><span>Tokens, dollars, subagents</span></a></li></ol><div class="foot">Sources: git history, docs/research, session transcripts, hardware logs. <a href="https://github.com/cruxxxxxx/gdx-3ds">Repository</a> · <a href="G-Diffuser-3DS-postmortem.pdf">PDF</a></div></nav><main><p class="eyebrow">01 · Overview</p><h1>F-Zero X on a New 3DS, at 60, in 3D, in 24 days</h1><p class="lede">A post-mortem of porting G-Diffuser, the F-Zero X decompilation on the libultraship runtime, to the New Nintendo 3DS. One person directed; one long-lived Claude session orchestrated; 147 subagents built. The console went from a black screen to a native-60 stereoscopic racer between 2026-08-11 and 2026-09-03.</p><div class="note" id="author"><b>Author's retrospective.</b> Placeholder: this section is reserved for the author's own thoughts and retrospective, to be added later.</div><div class="tiles"><div class="tile hot"><div class="n">59.6<small>fps</small></div><div class="l">median on hardware, full Grand Prix, final round (from 12–20 fps in the first emulator race)</div></div><div class="tile hot"><div class="n">51.4<small>fps</small></div><div class="l">tenth-percentile floor in 30-machine crowds (from 25–35)</div></div><div class="tile hot"><div class="n">53%</div><div class="l">of frames at the 60 cap (from 14% one week earlier)</div></div><div class="tile"><div class="n">15</div><div class="l">active days across 24 calendar days, three credit pauses</div></div><div class="tile"><div class="n">3.17 B</div><div class="l">tokens across all sessions and agents</div></div><div class="tile"><div class="n">$4,280</div><div class="l">at published API list prices (Fable $10/$50 per MTok); see Cost</div></div><div class="tile"><div class="n">250</div><div class="l">commits touching the 3DS port</div></div><div class="tile"><div class="n">15,039</div><div class="l">lines under port/3ds plus 48 pure-delta patches</div></div></div><h2>What was built</h2><p>A New 3DS build of G-Diffuser that boots from the HOME menu (.cia) or the homebrew launcher (.3dsx), reads prebaked asset archives from the SD card (no ROM ever touches the console), and plays the whole game: Grand Prix, Time Trial, Practice, Death Race, the machine editor screens, with music and effects on the real DSP, stereoscopic 3D on the slider, a touch menu on the bottom screen with live performance levers and a log viewer, and clean HOME suspend, resume, close, lid sleep and power-off. Frame pacing is native 60 Hz, not 30 Hz with interpolation.</p><div class="cols2"><div><h3>The stack</h3><ul><li><b>decomp</b>: the F-Zero X decompilation (inspectredc/fzerox), untouched, plus 10 patches.</li><li><b>libultraship</b>: the N64 runtime (Kenix3), untouched, plus 38 patches, including a 13-line newlib fix that lets it build on devkitARM.</li><li><b>port/3ds</b>: 15,039 lines of new code: a citro3d rendering backend, stereo, audio, input, menu, lifecycle, render thread, profilers, packaging.</li></ul></div><div><h3>The headline numbers on hardware</h3><div class="tbl"><table><thead><tr><th class="">When</th><th class="num">Median</th><th class="num">p10</th><th class="num">At cap</th></tr></thead><tbody><tr><td class="">08-14 first race (emulator)</td><td class="num">12–20</td><td class="num">–</td><td class="num">–</td></tr><tr><td class="">08-21 first hardware run</td><td class="num">48–50</td><td class="num">–</td><td class="num">–</td></tr><tr><td class="">08-28 release-grade build</td><td class="num">~51</td><td class="num">~40 (crowds, MINIMAL)</td><td class="num">–</td></tr><tr><td class="">09-02 Round 1: Mainline before the campaign</td><td class="num">51.3</td><td class="num">39.2</td><td class="num">9%</td></tr><tr><td class="">09-02 Round 2: Bridge memos (brfast)</td><td class="num">57.2</td><td class="num">46.6</td><td class="num">29%</td></tr><tr><td class="">09-02 Round 3: HUD atlas · triangle memo · TMEM · audio</td><td class="num">56.0</td><td class="num">48.0</td><td class="num">32%</td></tr><tr><td class="">09-02 Round 4: Render thread on core 2 (pipe)</td><td class="num">57.6</td><td class="num">44.6</td><td class="num">14%</td></tr><tr><td class="">09-03 Round 5: Ahead mode · bridge on main · auto rival detail</td><td class="num">59.6</td><td class="num">51.4</td><td class="num">53%</td></tr></tbody></table></div></div></div><h2>The arc in five lines</h2><ol><li><b>08-11 → 08-14: from research to a race.</b> Feasibility dossier, plan for a team of agents, five parallel foundation streams, six boot bugs, first race at 12–20 fps in the emulator.</li><li><b>08-20 → 08-22: from pink to playable, then to a real console.</b> Fog, HUD, livery, shadow, sky fixed; the loadblock discovery took menus from 27 to 60 fps; first hardware run 08-21 ("wow it runs amazing"); audio the same evening.</li><li><b>08-27 → 08-28: product grade.</b> Five-agent fleet drop, stereo armed, touch menu, rival detail, GPU vertex-transform moonshot built and shelved, README with legal notice, release package.</li><li><b>09-01 → 09-02: lifecycle and the last big lever.</b> HOME crash and close-from-HOME hang fixed; bridge output cache proven a NO-GO and pivoted into brfast; LOCKED-60 campaign launched with four parallel levers.</li><li><b>09-02 → 09-03: multi-core.</b> Render thread on core 2, one-frame-ahead mode, bridge on main, auto LOD; median 59.6 with 53% of frames at cap; crash fixed; viewport placement fixed; stereo markers anchored.</li></ol><h2>Read on</h2><ul><li><a href="timeline.html"><b>Every step</b></a>: The 24-day chronology.</li><li><a href="road-to-60.html"><b>Road to 60</b></a>: The performance campaign, round by round.</li><li><a href="difficulties.html"><b>Difficulties</b></a>: What fought back, and how it was beaten.</li><li><a href="frontier.html"><b>Frontier</b></a>: Why this is innovative, bold, and new.</li><li><a href="agentic.html"><b>Agentic workflow</b></a>: How the fleet was run, and how the ship was steered.</li><li><a href="cost.html"><b>Cost</b></a>: Tokens, dollars, subagents.</li></ul><div class="note">Every number on these pages has a source: git history, the research documents under <code>docs/research/</code>, the hardware logs, or the session transcripts on this machine. Where a value is an estimate (the dollar figures, which apply published API list prices to exact token counts), the assumption is stated next to it.</div><div class="next"><span></span><a href="timeline.html">Every step →</a></div></main></div></body></html>

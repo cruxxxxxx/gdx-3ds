@@ -1,0 +1,121 @@
+--- a/src/game/racer.c
++++ b/src/game/racer.c
+@@ -17,6 +17,15 @@
+ s32 gTotalRacers;
+ Racer* sLastRacer;
+ Racer* sRivalRacer;
++#ifdef PORT
++/* RIVAL-DETAIL (perf option, port hook gdx_rival_detail_level): Racer_Draw's pre-pass
++   marks which racers get their distance thresholds (LOD tiers, shadow, effects) biased
++   this frame. Human machines (index < gNumPlayers) are never biased; MINIMAL additionally
++   exempts the nearest GDX_RIVAL_PROTECT_COUNT rivals so the machines the player actually
++   fights keep full detail. */
++#define GDX_RIVAL_PROTECT_COUNT 5
++static u8 sGdxRivalBiased[TOTAL_RACER_COUNT];
++#endif
+ Vtx* gEffectsVtxPtr;
+ Vtx* gEffectsVtxEndPtr;
+ s16 gPlayerLives[4];
+@@ -5588,6 +5597,11 @@
+     // on its original path, stock 1:1.
+     s32 gdxForceMaxMachineLod;
+     f32 gdxCullX;
++    /* RIVAL-DETAIL: 0=NATIVE 1=REDUCED 2=MINIMAL, read once per Racer_Draw from the
++       port (config [perf] rival_detail on 3DS; a plain static read, cheap per frame). */
++    s32 gdxRivalDetail;
++    f32 gdxRivalNear;
++    f32 gdxRivalBias;
+ #endif
+ 
+     camera = &gCameras[playerIndex];
+@@ -5626,11 +5640,77 @@
+     {
+         extern int CVarGetInteger(const char* name, int defaultValue); // libultraship consolevariablebridge.h
+         extern float gdx_get_ultrawide_cull_xscale(void);
++        extern int gdx_rival_detail_level(void); // port hook (3DS: [perf] rival_detail)
+         gdxForceMaxMachineLod = CVarGetInteger("gEnhancements.Graphics.ForceMaxMachineLOD", 0);
+         /* Ultrawide: widen the NDC-x visibility test the same way course.c widens the chunk
+            cull — machines between the 4:3 band and the true frame edge vanished at 21:9.
+            Exactly 1.0f (IEEE-exact no-op comparison) unless UltrawideMode is on. */
+         gdxCullX = gdx_get_ultrawide_cull_xscale();
++        /* RIVAL-DETAIL tuning: beyond gdxRivalNear a biased rival's view depth is
++           stretched multiplicatively (scale-free in the far field, exact native inside
++           the near band), so every stock threshold below — LOD tiers 230/290/380/470/
++           1500, shadow 800, effects 400/900 — engages earlier by the same factor. */
++        gdxRivalDetail = gdx_rival_detail_level();
++        gdxRivalNear = 250.0f;
++        gdxRivalBias = 2.5f;
++        if (gdxRivalDetail == 2) {
++            gdxRivalNear = 120.0f;
++            gdxRivalBias = 6.0f;
++        }
++    }
++
++    /* RIVAL-DETAIL pre-pass: decide who gets biased thresholds this frame. Rank rivals by
++       |view depth| (a racer right behind the player is still a neighbour being fought). */
++    {
++        s32 gdxI;
++        s32 gdxCount = (s32) (sLastRacer - gRacers) + 1;
++        f32 gdxDepth[TOTAL_RACER_COUNT];
++
++        if (gdxCount > TOTAL_RACER_COUNT) {
++            gdxCount = TOTAL_RACER_COUNT;
++        }
++        for (gdxI = 0; gdxI < gdxCount; gdxI++) {
++            sGdxRivalBiased[gdxI] = 0;
++        }
++        if (gdxRivalDetail != 0) {
++            for (gdxI = 0; gdxI < gdxCount; gdxI++) {
++                Racer* gdxRacer = &gRacers[gdxI];
++
++                gdxDepth[gdxI] = 1e30f;
++                if (gdxI < gNumPlayers) {
++                    continue; /* human machines are never reduced */
++                }
++                sGdxRivalBiased[gdxI] = 1;
++                if (gdxRacer->stateFlags & RACER_STATE_ACTIVE) {
++                    f32 gdxD = ((sp580.m[0][2] * gdxRacer->segmentPositionInfo.pos.x) +
++                                (sp580.m[1][2] * gdxRacer->segmentPositionInfo.pos.y) +
++                                (sp580.m[2][2] * gdxRacer->segmentPositionInfo.pos.z)) +
++                               sp580.m[3][2];
++                    gdxDepth[gdxI] = (gdxD < 0.0f) ? -gdxD : gdxD;
++                }
++            }
++            if (gdxRivalDetail == 2) {
++                /* MINIMAL: the nearest GDX_RIVAL_PROTECT_COUNT rivals keep full treatment
++                   (O(n^2) over <=30 racers, ~450 compares — noise next to the draw walk). */
++                s32 gdxJ;
++
++                for (gdxI = gNumPlayers; gdxI < gdxCount; gdxI++) {
++                    s32 gdxNearer = 0;
++
++                    if (gdxDepth[gdxI] >= 1e30f) {
++                        continue;
++                    }
++                    for (gdxJ = gNumPlayers; gdxJ < gdxCount; gdxJ++) {
++                        if ((gdxJ != gdxI) && (gdxDepth[gdxJ] < gdxDepth[gdxI])) {
++                            gdxNearer++;
++                        }
++                    }
++                    if (gdxNearer < GDX_RIVAL_PROTECT_COUNT) {
++                        sGdxRivalBiased[gdxI] = 0;
++                    }
++                }
++            }
++        }
+     }
+ #endif
+ 
+@@ -5680,6 +5760,12 @@
+                 }
+ 
+ #ifdef PORT
++                /* RIVAL-DETAIL: stretch this rival's depth beyond the near band so the
++                   LOD/shadow/effect thresholds below all engage earlier. temp_fa0 is not
++                   read again after the tier assignments, so overwriting it is safe. */
++                if ((gdxRivalDetail != 0) && sGdxRivalBiased[racer - gRacers] && (temp_fa0 > gdxRivalNear)) {
++                    temp_fa0 = gdxRivalNear + ((temp_fa0 - gdxRivalNear) * gdxRivalBias);
++                }
+                 if (gdxForceMaxMachineLod) {
+                     racer->machineLod = 1;
+                 } else

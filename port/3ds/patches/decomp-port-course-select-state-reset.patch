@@ -1,0 +1,21 @@
+diff --git a/src/overlays/course_select/course_select.c b/src/overlays/course_select/course_select.c
+index 360e4e3..2d0535f 100644
+--- a/src/overlays/course_select/course_select.c
++++ b/src/overlays/course_select/course_select.c
+@@ -350,7 +350,15 @@ void CourseSelect_Init(void) {
+     s32 var_v1;
+ 
+     D_800CCFE8 = 3;
+-#ifdef EXPANSION_KIT
++#if defined(EXPANSION_KIT) || defined(PORT)
++    /* PORT: the retail (non-EK) ROM relies on the course_select OVERLAY re-DMA to restore
++     * this .data initializer to COURSE_SELECT_CUP_SELECT on every entry -- the EK re-release
++     * added this explicit reset. The port links overlays statically (Dma_LoadOverlay
++     * does not restore initialized data), so a second visit inherits the PREVIOUS visit's
++     * state: after any GP cup / next-course flow it is COURSE_SELECT_CONTINUE or
++     * COURSE_SELECT_NEXT_COURSE_*, none of which CourseSelect_Update handles -- the screen
++     * renders (draw switches cover them) but ignores ALL input forever. Hardware-verified
++     * as the TIME TRIAL entry freeze on the 3DS (the only non-EK port build). */
+     sCourseSelectState = COURSE_SELECT_CUP_SELECT;
+ #endif
+     sSelectedGhostOption = sGhostOptionTypeMap[gCurrentGhostType];

@@ -1,0 +1,50 @@
+diff --git a/src/audio/disk/external.c b/src/audio/disk/external.c
+index d1fa1fc..9a1fc7f 100644
+--- a/src/audio/disk/external.c
++++ b/src/audio/disk/external.c
+@@ -1104,8 +1104,21 @@ void Audio_SetSpec(s32 specId) {
+         sPreviousSpecId = specId;
+         sSpecChangeActive = true;
+         AudioThread_ResetAudioHeap(specId);
++#ifdef PORT
++        /* PORT: the reset stages only advance on the dedicated audio thread
++         * (gdx_audio_produce_one_tick). A raw spin here starves it permanently on the 3DS
++         * kernel (no same-priority preemption) — the yield donates the CPU each iteration.
++         * See port/n64_sched.c:gdx_audio_specwait_yield. */
++        {
++            extern void gdx_audio_specwait_yield(void);
++            do {
++                gdx_audio_specwait_yield();
++            } while (AudioThread_ResetComplete() == 0);
++        }
++#else
+         do {
+         } while (AudioThread_ResetComplete() == 0);
++#endif
+         sSpecChangeActive = false;
+     }
+ }
+diff --git a/src/audio/rom/external.c b/src/audio/rom/external.c
+index f60a9c3..61367d1 100644
+--- a/src/audio/rom/external.c
++++ b/src/audio/rom/external.c
+@@ -1763,7 +1763,19 @@ void Audio_SetSpec(s32 specId) {
+         sPreviousSpecId = specId;
+         AudioThread_ResetAudioHeap(specId);
+ 
++#ifdef PORT
++        /* PORT: the reset stages only advance on the dedicated audio thread
++         * (gdx_audio_produce_one_tick). A raw spin here starves it permanently on the 3DS
++         * kernel (no same-priority preemption) — the yield donates the CPU each iteration.
++         * See port/n64_sched.c:gdx_audio_specwait_yield. */
++        {
++            extern void gdx_audio_specwait_yield(void);
++            do { gdx_audio_specwait_yield(); } while (!AudioThread_ResetComplete());
++        }
++    }
++#else
+         do { } while (!AudioThread_ResetComplete()); }
++#endif
+ }
+ 
+ void Audio_SetPlayerMode(u8 numPlayersIndex) {

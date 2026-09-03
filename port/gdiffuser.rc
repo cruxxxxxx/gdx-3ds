@@ -1,0 +1,8 @@
+// G-Diffuser Windows resources: the application icon shown on the desktop, in Explorer, on the
+// taskbar, and (via SDL picking up the lowest-ID icon group at window-class registration) in the
+// window title bar. Icon artwork lives at assets/branding/gdiffuser.ico, generated from the
+// original assets/branding/gdiffuser-icon.png (16..256 px sizes).
+//
+// Resource ID 1 on purpose: SDL selects the lowest-numbered icon group for its window class, so a
+// named or higher ID would give Explorer the icon but leave the running window generic.
+1 ICON "../assets/branding/gdiffuser.ico"

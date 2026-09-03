@@ -1,0 +1,336 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -138,8 +138,9 @@
+ static Interpreter* sGfxInstanceRaw = nullptr;
+ // [perf-s7] Compiled-in S7 interpreter optimizations, surfaced to the port's one-shot
+ // [perf-s7] log line (weak-referenced there so unpatched trees still link).
+-// bit0 = raw-instance dispatch, bit1 = gated geometry diagnostics, bit2 = tri draw-state memo.
+-extern "C" const unsigned int gdx_s7_lus_optmask = 0x7u;
++// bit0 = raw-instance dispatch, bit1 = gated geometry diagnostics, bit2 = tri draw-state memo,
++// bit3 = rect-run draw-state memo ([texrect]).
++extern "C" const unsigned int gdx_s7_lus_optmask = 0xFu;
+ 
+ // [perf-s7] Per-triangle draw-state memo. GfxSpTri1 re-derived the texture-unit extents
+ // (several integer divides per unit), re-queried the backend for ShaderGetInfo and
+@@ -162,13 +163,46 @@
+     uint8_t numInputs = 0;
+     bool usedTextures[2] = {};
+     GfxClipParameters clip_parameters = {};
++    // [texrect] key for the rect-run memo only: GfxDpTextureRectangle/GfxDpImageRectangle swap
++    // mRdp->first_tile_index per rect, so a banked rect derivation is only reusable for rects
++    // addressing the SAME tile descriptor. Unused (always banked, never compared) for tris.
++    uint8_t first_tile = 0;
+ };
+ static GfxS7TriStateMemo sGfxS7TriMemo;
+-static bool sGfxS7DrawStateDirty = true;
++
++// [texrect] Second memo instance for the rect path (G_TEXRECT/G_FILLRECT via GfxDrawRectangle).
++// The tri memo deliberately excludes rect draws: GfxDrawRectangle wraps its GfxSpTri1 calls in
++// temporary othermode/viewport/geometry mutations it restores afterwards, so banking THOSE into
++// the tri memo would leave a stale memo marked clean for the next game triangle. Rect draws
++// instead bank here: every rect runs under the SAME deterministic mutation scope (geometry_mode
++// = 0, the fixed rect-bypass viewport, a COPY-mode textfilt/combiner override that is a pure
++// function of the surrounding othermode state), so a memo banked by one rect is valid for the
++// next rect exactly while no non-whitelisted opcode ran in between (kGfxS7DirtyRect below).
++static GfxS7TriStateMemo sGfxS7RectMemo;
++
++// [texrect] Draw-state dirty tracking, one bit per memo consumer. Bit semantics: SET = the
++// corresponding memo may no longer describe live state. gfx_step ORs a precomputed per-opcode
++// mask in (branchless — replaces the old single-bool branch); the GfxSpTri1 slow path clears
++// exactly its own bit when it re-banks.
++enum : uint8_t {
++    kGfxS7DirtyTri = 1u << 0,  // [perf-s7] tri draw-state memo (whitelist: pure geometry/flow)
++    kGfxS7DirtyRect = 1u << 1, // [texrect] rect-run memo (tri whitelist minus tri-emitting ops,
++                               // plus the texrect opcodes themselves)
++};
++static uint8_t sGfxS7DirtyMask = 0xFFu;
+ 
+ static inline void GfxS7InvalidateTriMemo() {
+     sGfxS7TriMemo.valid = false;
+-    sGfxS7DrawStateDirty = true;
++    sGfxS7DirtyMask |= kGfxS7DirtyTri;
++}
++
++// [texrect] Full invalidation for events that can invalidate ANY banked draw state (task/frame
++// boundaries, texture/shader cache clears — freed comb/prg pointers, nulled mRenderingState
++// textures, re-armed imports): both memos die and every dirty bit arms.
++static inline void GfxS7InvalidateDrawMemos() {
++    sGfxS7TriMemo.valid = false;
++    sGfxS7RectMemo.valid = false;
++    sGfxS7DirtyMask = 0xFFu;
+ }
+ 
+ // [perf-s7] Compute gate for the per-vertex / per-triangle geometry diagnostics (NDC min/max
+@@ -589,7 +623,7 @@
+ }
+ 
+ void Interpreter::TextureCacheClear() {
+-    GfxS7InvalidateTriMemo(); // [perf-s7] mRenderingState.mTextures nulled below
++    GfxS7InvalidateDrawMemos(); // [perf-s7] mRenderingState.mTextures nulled below
+     for (const auto& entry : mTextureCache.map) {
+         mTextureCache.free_texture_ids.push_back(entry.second.texture_id);
+     }
+@@ -850,7 +884,7 @@
+ }
+ 
+ void Interpreter::TextureCacheDelete(const uint8_t* origAddr) {
+-    GfxS7InvalidateTriMemo(); // [perf-s7] may null mRenderingState.mTextures / re-arm imports
++    GfxS7InvalidateDrawMemos(); // [perf-s7] may null mRenderingState.mTextures / re-arm imports
+ #ifdef __3DS__
+     unsigned gdxDeleted = 0;
+ #endif
+@@ -899,7 +933,7 @@
+     if (paletteAddr == nullptr || mSeenPaletteAddrs.find(paletteAddr) == mSeenPaletteAddrs.end()) {
+         return;
+     }
+-    GfxS7InvalidateTriMemo(); // [perf-s7] same rationale as TextureCacheDelete
++    GfxS7InvalidateDrawMemos(); // [perf-s7] same rationale as TextureCacheDelete
+ 
+     static const bool sDiagPaletteEvict = std::getenv("GDX_DIAG_PALETTE_EVICT") != nullptr;
+     size_t evicted = 0;
+@@ -3600,21 +3634,30 @@
+     uint32_t effective_tile[2] = {};
+ 
+     // [perf-s7] Reuse the tile-extent derivation while the draw state is clean (see
+-    // GfxS7OpcodePreservesDrawState / sGfxS7DrawStateDirty). The comb identity check pins the
++    // GfxS7OpcodePreservesDrawState / sGfxS7DirtyMask). The comb identity check pins the
+     // memo to the combiner it was derived under (usedTextures gates the per-unit work), and the
+     // live textures_changed probe closes the cache-eviction hole: an eviction inside an import
+     // can re-arm textures_changed without an intervening state opcode.
+-    const bool s7TexMemoHit = !is_rect && !sGfxS7DrawStateDirty && sGfxS7TriMemo.valid &&
+-                              sGfxS7TriMemo.comb == static_cast<const void*>(comb) &&
++    // [texrect] Rect draws consume/bank their own memo instance under their own (wider-
++    // whitelist, see GfxS7OpcodePreservesRectState) dirty bit, additionally keyed on
++    // first_tile_index: the texrect handlers swap the tile per rect, and a tile switch changes
++    // extents/samplers without any dirtying opcode in between. A switch away from the game's
++    // tile also re-arms textures_changed on rect exit, which the live probe catches; the
++    // first_tile key covers the switch BACK, where textures_changed stays clear.
++    GfxS7TriStateMemo& s7Memo = is_rect ? sGfxS7RectMemo : sGfxS7TriMemo;
++    const uint8_t s7DirtyBit = is_rect ? kGfxS7DirtyRect : kGfxS7DirtyTri;
++    const bool s7TexMemoHit = (sGfxS7DirtyMask & s7DirtyBit) == 0 && s7Memo.valid &&
++                              s7Memo.comb == static_cast<const void*>(comb) &&
++                              (!is_rect || s7Memo.first_tile == mRdp->first_tile_index) &&
+                               !mRdp->textures_changed[0] && !mRdp->textures_changed[1];
+     if (s7TexMemoHit) {
+-        tm = sGfxS7TriMemo.tm;
++        tm = s7Memo.tm;
+         for (int i = 0; i < 2; i++) {
+-            tex_width[i] = sGfxS7TriMemo.tex_width[i];
+-            tex_height[i] = sGfxS7TriMemo.tex_height[i];
+-            tex_width2[i] = sGfxS7TriMemo.tex_width2[i];
+-            tex_height2[i] = sGfxS7TriMemo.tex_height2[i];
+-            effective_tile[i] = sGfxS7TriMemo.effective_tile[i];
++            tex_width[i] = s7Memo.tex_width[i];
++            tex_height[i] = s7Memo.tex_height[i];
++            tex_width2[i] = s7Memo.tex_width2[i];
++            tex_height2[i] = s7Memo.tex_height2[i];
++            effective_tile[i] = s7Memo.effective_tile[i];
+         }
+     } else {
+     for (int i = 0; i < 2; i++) {
+@@ -3807,22 +3850,25 @@
+         }
+     }
+     // [perf-s7] slow path taken: bank the tile-extent derivation and mark the state clean.
+-    // Clearing the dirty flag here (after imports/samplers ran) is what lets the next
+-    // same-state triangle take the fast path above. Never banked from rect draws:
++    // Clearing the dirty bit here (after imports/samplers ran) is what lets the next
++    // same-state draw take the fast path above. Rect draws bank into their own instance
++    // ([texrect] sGfxS7RectMemo) — never into the tri memo, whose exclusion rationale stands:
+     // GfxDrawRectangle wraps its GfxSpTri1 calls in temporary othermode/viewport/geometry
+-    // mutations that it restores afterwards, which would leave a stale memo marked clean.
+-    if (!is_rect) {
+-        sGfxS7TriMemo.comb = comb;
+-        sGfxS7TriMemo.tm = tm;
++    // mutations that it restores afterwards, which would leave a stale TRI memo marked clean
++    // (and GfxDrawRectangle still invalidates the tri memo on exit).
++    {
++        s7Memo.comb = comb;
++        s7Memo.tm = tm;
+         for (int i = 0; i < 2; i++) {
+-            sGfxS7TriMemo.tex_width[i] = tex_width[i];
+-            sGfxS7TriMemo.tex_height[i] = tex_height[i];
+-            sGfxS7TriMemo.tex_width2[i] = tex_width2[i];
+-            sGfxS7TriMemo.tex_height2[i] = tex_height2[i];
+-            sGfxS7TriMemo.effective_tile[i] = effective_tile[i];
++            s7Memo.tex_width[i] = tex_width[i];
++            s7Memo.tex_height[i] = tex_height[i];
++            s7Memo.tex_width2[i] = tex_width2[i];
++            s7Memo.tex_height2[i] = tex_height2[i];
++            s7Memo.effective_tile[i] = effective_tile[i];
+         }
+-        sGfxS7TriMemo.valid = true;
+-        sGfxS7DrawStateDirty = false;
++        s7Memo.first_tile = mRdp->first_tile_index;
++        s7Memo.valid = true;
++        sGfxS7DirtyMask &= static_cast<uint8_t>(~s7DirtyBit);
+     }
+     }
+ 
+@@ -3883,21 +3929,20 @@
+ 
+     // [perf-s7] Both calls are virtual round trips into the backend that only depend on prg and
+     // the bound framebuffer, and every opcode that can switch either invalidates the memo.
+-    if (s7TexMemoHit && sGfxS7TriMemo.prg == static_cast<const void*>(prg)) {
+-        numInputs = sGfxS7TriMemo.numInputs;
+-        usedTextures[0] = sGfxS7TriMemo.usedTextures[0];
+-        usedTextures[1] = sGfxS7TriMemo.usedTextures[1];
+-        clip_parameters = sGfxS7TriMemo.clip_parameters;
++    // [texrect] Rect draws bank/consume via their own instance (s7Memo aliases it above).
++    if (s7TexMemoHit && s7Memo.prg == static_cast<const void*>(prg)) {
++        numInputs = s7Memo.numInputs;
++        usedTextures[0] = s7Memo.usedTextures[0];
++        usedTextures[1] = s7Memo.usedTextures[1];
++        clip_parameters = s7Memo.clip_parameters;
+     } else {
+         mRapi->ShaderGetInfo(prg, &numInputs, usedTextures);
+         clip_parameters = mRapi->GetClipParameters();
+-        if (!is_rect) {
+-            sGfxS7TriMemo.prg = prg;
+-            sGfxS7TriMemo.numInputs = numInputs;
+-            sGfxS7TriMemo.usedTextures[0] = usedTextures[0];
+-            sGfxS7TriMemo.usedTextures[1] = usedTextures[1];
+-            sGfxS7TriMemo.clip_parameters = clip_parameters;
+-        }
++        s7Memo.prg = prg;
++        s7Memo.numInputs = numInputs;
++        s7Memo.usedTextures[0] = usedTextures[0];
++        s7Memo.usedTextures[1] = usedTextures[1];
++        s7Memo.clip_parameters = clip_parameters;
+     }
+ 
+     // [pit-uv-probe]: the PIT strip imports and draws with correct state yet renders
+@@ -5457,7 +5502,9 @@
+     }
+     // [perf-s7] the temporary othermode/viewport/geometry scope above ran draws through
+     // GfxSpTri1; whatever sampler/render state they left behind must not be carried into
+-    // the next game triangle's memo fast path.
++    // the next game triangle's memo fast path. Tri memo ONLY: the rect memo (banked by the
++    // draws above) stays valid — it describes exactly this scope's state, and its own dirty
++    // bit tracks everything that could invalidate it between rect runs.
+     GfxS7InvalidateTriMemo();
+ }
+ 
+@@ -7731,7 +7778,34 @@
+         case RDP_G_TRI1_WIDE:
+             return true;
+         default:
++            return false;
++    }
++}
++
++// [texrect] Rect-run memo whitelist: opcodes that can never invalidate the RECT-path draw
++// state (sGfxS7RectMemo). Strictly the tri whitelist MINUS the triangle-emitting ops — their
++// GfxSpTri1 applies GAME sampler/shader state to mRenderingState, which the rect fast path
++// must be able to prove untouched since banking — PLUS the texrect opcodes themselves, whose
++// in-handler mutations are each covered: first_tile_index is a memo key, textures_changed is
++// probed live, and the COPY-mode combiner/textfilt overrides are pure functions of the
++// surrounding othermode state (unchanged while the whitelist holds). G_FILLRECT and
++// OTR_G_IMAGE_RECT are deliberately NOT whitelisted (fill mutates combine/fill state around
++// its draw; image-rect rewrites tile descriptors and TMEM slot fields); their draws re-bank
++// the rect memo through the slow path, which keeps them exact.
++static inline bool GfxS7OpcodePreservesRectState(int8_t opcode) {
++    switch (opcode) {
++        case F3DEX2_G_TRI1:
++        case F3DEX2_G_TRI2:
++        case F3DEX2_G_QUAD:
++        case OTR_G_TRI1_OTR:
++        case RDP_G_TRI1_WIDE:
+             return false;
++        case RDP_G_TEXRECT:
++        case RDP_G_TEXRECTFLIP:
++        case OTR_G_TEXRECT_WIDE:
++            return true;
++        default:
++            return GfxS7OpcodePreservesDrawState(opcode);
+     }
+ }
+ 
+@@ -7747,6 +7821,9 @@
+ struct GfxFlatDispatchEntry {
+     GfxOpcodeHandlerFunc fn;
+     uint8_t flags;
++    // [texrect] Precomputed sGfxS7DirtyMask contribution (kGfxS7Dirty* bits) of this opcode:
++    // gfx_step ORs it in unconditionally, replacing the legacy PreservesDrawState branch.
++    uint8_t dirty;
+ };
+ 
+ enum : uint8_t {
+@@ -7797,7 +7874,7 @@
+ 
+     for (int i = 0; i <= (int)std::numeric_limits<uint8_t>::max(); i++) {
+         const int8_t opcode = (int8_t)(uint8_t)i;
+-        GfxFlatDispatchEntry entry{ nullptr, 0 };
++        GfxFlatDispatchEntry entry{ nullptr, 0, 0 };
+ 
+         // Same precedence as the legacy chain: otr overrides > rdp > selected ucode table.
+         if (otrHandlers.contains(opcode)) {
+@@ -7819,14 +7896,22 @@
+         // [perf-s7] tri draw-state memo whitelist, precomputed per slot (see gfx_step).
+         if (ucode_handler_index == ucode_f3dex2 && GfxS7OpcodePreservesDrawState(opcode)) {
+             entry.flags |= kGfxFlatFlagPreservesDrawState;
++        } else {
++            entry.dirty |= kGfxS7DirtyTri;
++        }
++        // [texrect] rect-run memo whitelist (same f3dex2 gate — collisions can't slip through).
++        if (!(ucode_handler_index == ucode_f3dex2 && GfxS7OpcodePreservesRectState(opcode))) {
++            entry.dirty |= kGfxS7DirtyRect;
+         }
+ 
+         sFlatDispatch[i] = entry;
+     }
+ 
+     // Installed last so it overrides whatever the merge put in its slot, mirroring the legacy
+-    // early check. Deliberately no PreservesDrawState flag: G_LOAD_UCODE dirtied the memo before.
+-    sFlatDispatch[(uint8_t)(int8_t)F3DEX2_G_LOAD_UCODE] = { gfx_load_ucode_flat_handler, 0 };
++    // early check. Deliberately no PreservesDrawState flag and a full dirty mask: G_LOAD_UCODE
++    // dirtied the memo before, and a mid-run ucode switch must dirty the rect memo too.
++    sFlatDispatch[(uint8_t)(int8_t)F3DEX2_G_LOAD_UCODE] = { gfx_load_ucode_flat_handler, 0,
++                                                            (uint8_t)(kGfxS7DirtyTri | kGfxS7DirtyRect) };
+ }
+ 
+ // Build the initial table for the static ucode_f3dex2 default. The constexpr handler tables it
+@@ -7841,10 +7926,9 @@
+     // mid-command table rebuild (G_LOAD_UCODE) cannot pull it out from under us.
+     const GfxFlatDispatchEntry entry = sFlatDispatch[(uint8_t)opcode];
+ 
+-    // [perf-s7] tri draw-state memo: whitelist precomputed into the flag at table build.
+-    if ((entry.flags & kGfxFlatFlagPreservesDrawState) == 0) {
+-        sGfxS7DrawStateDirty = true;
+-    }
++    // [perf-s7]/[texrect] draw-state memo dirty tracking: per-opcode contribution precomputed
++    // into entry.dirty at table build (branchless OR replaces the legacy whitelist branch).
++    sGfxS7DirtyMask |= entry.dirty;
+ 
+ #ifdef USE_GBI_TRACE
+     if (cmd->words.trace.valid &&
+@@ -7899,7 +7983,7 @@
+ }
+ 
+ void Interpreter::SpReset() {
+-    GfxS7InvalidateTriMemo(); // [perf-s7] per-task boundary
++    GfxS7InvalidateDrawMemos(); // [perf-s7] per-task boundary
+     while (!mShaderStack.empty()) {
+         mShaderStack.pop();
+     }
+@@ -8030,8 +8114,8 @@
+ 
+ void Interpreter::StartFrame() {
+     // [perf-s7] backend clip parameters / framebuffer bindings can change between frames
+-    // without an opcode in between (resize, present) — never carry the memo across frames.
+-    GfxS7InvalidateTriMemo();
++    // without an opcode in between (resize, present) — never carry the memos across frames.
++    GfxS7InvalidateDrawMemos();
+     mWapi->GetDimensions(&mGfxCurrentWindowDimensions.width, &mGfxCurrentWindowDimensions.height, &mCurWindowPosX,
+                          &mCurWindowPosY);
+     if (mCurDimensions.height == 0) {
+@@ -8590,7 +8674,7 @@
+ }
+ 
+ extern "C" void gfx_shader_cache_clear() {
+-    Fast::GfxS7InvalidateTriMemo(); // [perf-s7] comb/prg pointers freed below
++    Fast::GfxS7InvalidateDrawMemos(); // [perf-s7] comb/prg pointers freed below
+     auto instance = Fast::mInstance.lock().get();
+     instance->mColorCombinerPool.clear();
+     instance->mPrevCombiner = Fast::mInstance.lock().get()->mColorCombinerPool.end();

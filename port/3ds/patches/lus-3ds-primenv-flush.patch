@@ -1,0 +1,64 @@
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -574,6 +574,21 @@
+ // [gpu]/[c3d] lines surface them as rl=/rm= (dRl=/dRm=).
+ extern "C" void gdx3ds_settimg_note_load(void);
+ extern "C" void gdx3ds_settimg_note_memo(void);
++// PRIM-COLOR (ship yellow-body): the 3DS backend serves draw-constant combiner
++// inputs (PRIM/ENV colour) from per-stage TexEnv CONSTANT registers refreshed from
++// vertex 0 of each flushed batch (gfx_citro3d.cpp RefreshStageConstants) — desktop
++// GL reads them per-vertex and never needed a batch split on a colour change. So a
++// G_SETPRIMCOLOR/G_SETENVCOLOR value change over a NON-EMPTY batch hands every
++// pending tri the batch's FIRST colour: F-Zero X's race loop sets each machine's
++// body colour through gDPSetEnvColor between same-combiner draws, and any merge
++// window (untextured same-shader pieces, sampler-equal runs) painted the player's
++// I4 body with a rival's constant — the yellow Blue Falcon. Same class as the
++// G_MW_FOG moveword flush in lus-3ds-fog-exact-params.patch. The set handlers now
++// flush pending tris when the VALUE changes (no-op re-sets do not split) and note
++// the change here; filtering/arming/budget for the one-shot [prim] diag live
++// port-side (INI [debug] diag_prim=1 / env GDX_DIAG_PRIM).
++extern "C" void gdx3ds_prim_note_set(int isPrim, unsigned r, unsigned g, unsigned b, unsigned a,
++                                     unsigned pendingTris, int flushed);
+ #endif
+ 
+ // Workshop texture-dump hooks (port/gdx_workshop.cpp).
+@@ -4830,6 +4845,20 @@
+ }
+ 
+ void Interpreter::GfxDpSetEnvColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
++#ifdef __3DS__
++    // Split the batch on a VALUE change: the citro3d backend binds this colour as a
++    // TexEnv stage constant from vertex 0 of the flushed batch, so tris appended
++    // under the old value must be drawn before the register can move (see the
++    // gdx3ds_prim_note_set comment above / lus-3ds-primenv-flush.patch README).
++    if (mRdp->env_color.r != r || mRdp->env_color.g != g || mRdp->env_color.b != b ||
++        mRdp->env_color.a != a) {
++        const unsigned pendingTris = (unsigned)mBufVboNumTris;
++        if (mBufVboLen > 0) {
++            Flush();
++        }
++        gdx3ds_prim_note_set(0, r, g, b, a, pendingTris, pendingTris > 0 ? 1 : 0);
++    }
++#endif
+     mRdp->env_color.r = r;
+     mRdp->env_color.g = g;
+     mRdp->env_color.b = b;
+@@ -4837,6 +4866,18 @@
+ }
+ 
+ void Interpreter::GfxDpSetPrimColor(uint8_t m, uint8_t l, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
++#ifdef __3DS__
++    // Same batch split as GfxDpSetEnvColor. prim_lod_fraction participates: it rides
++    // the same stage-constant path (G_CCMUX_PRIM_LOD_FRAC / G_ACMUX_PRIM_LOD_FRAC).
++    if (mRdp->prim_color.r != r || mRdp->prim_color.g != g || mRdp->prim_color.b != b ||
++        mRdp->prim_color.a != a || mRdp->prim_lod_fraction != l) {
++        const unsigned pendingTris = (unsigned)mBufVboNumTris;
++        if (mBufVboLen > 0) {
++            Flush();
++        }
++        gdx3ds_prim_note_set(1, r, g, b, a, pendingTris, pendingTris > 0 ? 1 : 0);
++    }
++#endif
+     mRdp->prim_lod_fraction = l;
+     mRdp->prim_color.r = r;
+     mRdp->prim_color.g = g;

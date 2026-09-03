@@ -1,0 +1,28 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index e7501b7..246eca7 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -869,10 +869,21 @@ void Interpreter::ImportTextureRgba16(int textureUnit, int tile, bool importRepl
+             // Clamp axes bound to the declared tile window, like the hardware.
+             const uint32_t tileW = static_cast<uint32_t>((tmemTile.lrs - tmemTile.uls + 4) / 4);
+             const uint32_t tileH = static_cast<uint32_t>((tmemTile.lrt - tmemTile.ult + 4) / 4);
+-            if ((tmemTile.cms & G_TX_CLAMP) != 0 && tileW > 0 && tileW < width) {
++            // Height/width default to (remaining TMEM / lineBytes), which for a tall atlas
++            // (e.g. the 12x160 RGBA16 speedometer digit strip) overshoots the loaded image by
++            // reading whatever else streamed through TMEM below it. When an axis carries no mask
++            // (G_TX_NOMASK), hardware samples exactly the gDPSetTileSize window (lrs/lrt), so that
++            // window is the authoritative extent whether or not the CLAMP bit is set -- without
++            // it the decoded height inflates, padH/vScale shift, and every UV-indexed glyph
++            // samples the wrong row (garbled speed digits / km-h / tall symbol strips).
++            const bool clampS = (tmemTile.cms & G_TX_CLAMP) != 0;
++            const bool clampT = (tmemTile.cmt & G_TX_CLAMP) != 0;
++            const bool boundW = clampS || tmemTile.masks == G_TX_NOMASK;
++            const bool boundH = clampT || tmemTile.maskt == G_TX_NOMASK;
++            if (boundW && tileW > 0 && tileW < width) {
+                 width = tileW;
+             }
+-            if ((tmemTile.cmt & G_TX_CLAMP) != 0 && tileH > 0 && tileH < height) {
++            if (boundH && tileH > 0 && tileH < height) {
+                 height = tileH;
+             }
+             if (width == 0) {

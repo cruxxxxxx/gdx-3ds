@@ -1,0 +1,93 @@
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -556,6 +556,18 @@
+                                           unsigned lineBytes, unsigned sizeBytes, unsigned tileW, unsigned tileH,
+                                           unsigned contentHash);
+ extern "C" void gdx3ds_texcache_note_delete(unsigned evictedEntries);
++// Exact fog line for the PICA fog LUT (port/3ds/gfx/gfx_citro3d.cpp UpdateFogState).
++// The per-vertex fog factor baked into the vertex stream is clamp((z/w)*fog_mul +
++// fog_offset, 0, 255); reconstructing that line from clamped endpoint samples smears
++// steep fog curves (F-Zero X races: gSPFogPosition(990, 1000)) across the whole draw,
++// painting the mid-range track in solid fog colour. The mirror is latched at
++// fog-attribute APPEND time (the tri entering the batch), NOT at the G_MW_FOG
++// moveword: movewords do not flush pending tris (per-vertex baking never needed it),
++// so a moveword-time mirror hands the previous batch the NEXT draw's fog line —
++// F-Zero X's race DL interleaves gSPFogPosition settings and that misbinding painted
++// the whole track in the backdrop's linear fog (the "invisible road"). exact=0 marks
++// constant-factor blend-colour draws, which must use the vertex-scan fit instead.
++extern "C" void gdx3ds_fog_note_params(int mul, int off, int exact);
+ #endif
+ 
+ // Workshop texture-dump hooks (port/gdx_workshop.cpp).
+@@ -3755,11 +3767,17 @@
+                 mBufVbo[mBufVboLen++] = mRdp->blend_color.g / 255.0f;
+                 mBufVbo[mBufVboLen++] = mRdp->blend_color.b / 255.0f;
+                 mBufVbo[mBufVboLen++] = mRdp->fog_color.a / 255.0f;
++#ifdef __3DS__
++                gdx3ds_fog_note_params(0, 0, 0); // constant factor: backend must fit, not use the line
++#endif
+             } else {
+                 mBufVbo[mBufVboLen++] = mRdp->fog_color.r / 255.0f;
+                 mBufVbo[mBufVboLen++] = mRdp->fog_color.g / 255.0f;
+                 mBufVbo[mBufVboLen++] = mRdp->fog_color.b / 255.0f;
+                 mBufVbo[mBufVboLen++] = v_arr[i]->color.a / 255.0f; // fog factor (not alpha)
++#ifdef __3DS__
++                gdx3ds_fog_note_params(mRsp->fog_mul, mRsp->fog_offset, 1);
++#endif
+             }
+         }
+ 
+@@ -4091,6 +4109,20 @@
+             mRsp->lights_changed = true;
+             break;
+         case G_MW_FOG:
++#ifdef __3DS__
++            // The 3DS backend applies fog per DRAW through a LUT built from ONE fog line
++            // (gdx3ds_fog_note_params), but a G_MW_FOG moveword alone never flushed pending
++            // tris (per-vertex baking did not need it). F-Zero X's race DLs retune
++            // gSPFogPosition several times per frame with no intervening state change, so
++            // tris baked under the previous line shared a batch with tris baked under the
++            // new one — and the whole batch bound the LAST line (track chunks inheriting
++            // the backdrop's shallower curve: the residual "invisible road"). Split the
++            // batch when the line actually changes. Desktop interpolates the baked
++            // per-vertex factors and needs no split.
++            if (mRsp->fog_mul != (int16_t)(data >> 16) || mRsp->fog_offset != (int16_t)data) {
++                Flush();
++            }
++#endif
+             mRsp->fog_mul = (int16_t)(data >> 16);
+             mRsp->fog_offset = (int16_t)data;
+             break;
+@@ -4117,6 +4149,12 @@
+             mRsp->lights_changed = true;
+             break;
+         case G_MW_FOG:
++#ifdef __3DS__
++            // Same per-draw fog-LUT batch split as the F3DEX2 handler above.
++            if (mRsp->fog_mul != (int16_t)(data >> 16) || mRsp->fog_offset != (int16_t)data) {
++                Flush();
++            }
++#endif
+             mRsp->fog_mul = (int16_t)(data >> 16);
+             mRsp->fog_offset = (int16_t)data;
+             break;
+@@ -5314,6 +5352,9 @@
+     Interpreter* gfx = mInstance.lock().get();
+     gfx->mRsp->fog_mul = 0;
+     gfx->mRsp->fog_offset = 0;
++#ifdef __3DS__
++    gdx3ds_fog_note_params(0, 0, 1);
++#endif
+     return false;
+ }
+ 
+@@ -6961,6 +7002,9 @@
+         case ucode_f3dex2:
+             gfx->mRsp->fog_mul = 0;
+             gfx->mRsp->fog_offset = 0;
++#ifdef __3DS__
++            gdx3ds_fog_note_params(0, 0, 1);
++#endif
+             break;
+         default:
+             break;

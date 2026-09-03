@@ -1,0 +1,22 @@
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -3680,7 +3680,18 @@
+         cc_options |= SHADER_OPT(TEXEL1_BLEND);
+     }
+ 
+-    ColorCombinerKey key;
++    // LEAK ROOT CAUSE (3DS first hardware OOM, heapUsed 38.7->75.5MB over a session):
++    // ColorCombinerKey grew a third field (shader_id, upstream "fix windows arm CI
++    // failure") that NO construction site ever writes and nothing ever reads — so this
++    // stack local carried garbage into the map key. operator<=> compares all three
++    // fields: whenever the garbage differed from the pooled entries', the lookup MISSED
++    // and inserted a brand-new 148-byte Rb-tree node into mColorCombinerPool (which has
++    // no eviction — by design, unique combiners are finite), plus paid a batch-breaking
++    // Flush() and a full GenerateCC. Measured on the 3DS: ~14 leaked nodes per race
++    // frame, +11 MB live in ~5300 frames, the whole census-invisible heap climb.
++    // Value-initialize so shader_id compares equal (0) everywhere, restoring the
++    // intended ~few-dozen-entry pool.
++    ColorCombinerKey key{};
+     key.combine_mode = cc_id;
+     key.options = cc_options;
+ 

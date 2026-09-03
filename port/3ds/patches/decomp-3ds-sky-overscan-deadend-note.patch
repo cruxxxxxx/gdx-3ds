@@ -1,0 +1,24 @@
+diff --git a/src/overlays/ovl_i3/background.c b/src/overlays/ovl_i3/background.c
+index 20c864e..596d1d8 100644
+--- a/src/overlays/ovl_i3/background.c
++++ b/src/overlays/ovl_i3/background.c
+@@ -644,6 +644,19 @@ void Background_Update(void) {
+         }
+ #endif
+ 
++        /* NOTE (2026-08-20 night-verify): a `verticalRange *= factor` 3DS overscan was
++           tried here to close the distant-sky black wedge (docs/research/
++           sky-backdrop-wedge-analysis.md) and PROVEN INEFFECTIVE on the emulator: the
++           GDX_DIAG_SKY [sky] topGap held ~0.31 identically at factors 1.41x AND 2.70x.
++           Root cause: Background_UpdateSkyboxVtx clamps every skybox vertex position to
++           +/-32000.0f (s16 vertex-coord range). At F-Zero X's skyboxDepth the verts
++           already saturate that clamp, so scaling verticalRange only pushes them further
++           past a fixed ceiling -- the on-screen quad does not grow. The real fix must
++           reduce skyboxDepth (and rescale coverage to stay inside +/-32000) or rework the
++           projection, which re-frames the whole backdrop and overlaps the geometry/roof
++           domain; deferred. The visible top/bottom black band in scanouts is largely the
++           fixed scanout letterbox (present on menu/title too), not skybox undercoverage. */
++
+         xScale = camera->xzNormalizedX;
+         zScale = camera->xzNormalizedZ;
+         xOffset = background->scrollDepth * xScale;

@@ -1,0 +1,27 @@
+/*
+ * Linker version script (GNU ld / lld --version-script) for the Linux G-Diffuser executable.
+ *
+ * THE BUG THIS FIXES (engram audio/linux-silent-binary-poison): the statically-linked F-Zero X
+ * decomp provides its own N64 libultra libm `sinf`/`cosf` (guSinf/guCosf-era code). Compiled into
+ * the host executable they land in .dynsym as WEAK, DEFAULT-visibility, DEFINED symbols. Because a
+ * NEEDED shared library -- libSDL3 (via the sdl2-compat shim) -- IMPORTS `sinf`/`cosf` for its audio
+ * resampler, the dynamic linker resolves those imports to the EXECUTABLE's definitions (the main
+ * object is first in the global symbol search scope). SDL's float audio resampler therefore ran on
+ * the N64 sinf/cosf instead of glibc's, corrupting every resampled buffer: G-Diffuser's own audio
+ * came out silent/garbled AND the malformed stream biased the shared PipeWire sink so OTHER apps'
+ * audio distorted. A standalone SDL test and other libultraship ports (BattleShip) import sinf/cosf
+ * from glibc (U) and play fine -- the difference was purely this symbol leak.
+ *
+ * THE FIX: localize sinf/cosf/__sinf/__cosf so they are NOT exported in .dynsym. The decomp's own
+ * (static) call sites still bind to them at static-link time -- localizing only removes them from the
+ * dynamic export table, so libSDL3/glibc fall back to glibc's correct sinf/cosf. Bit-accurate N64
+ * math for the game is preserved; the host audio stack gets the real libm. Windows (MSVC) is
+ * unaffected (no ELF symbol interposition; guarded to non-MSVC in CMake).
+ */
+{
+  local:
+    sinf;
+    cosf;
+    __sinf;
+    __cosf;
+};

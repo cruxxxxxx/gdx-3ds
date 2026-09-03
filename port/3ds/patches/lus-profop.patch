@@ -1,0 +1,36 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -665,6 +665,9 @@
+ extern uint32_t gdx3ds_prof_vtx_loaded;
+ extern uint64_t gdx3ds_prof_child_ticks;
+ long long gdx3ds_prof_now(void);
++// [profop] per-opcode handler tick/call accumulators, read+reset by gdx3ds_gpu_prof.c.
++uint64_t gdx3ds_prof_op_ticks[256];
++uint32_t gdx3ds_prof_op_calls[256];
+ }
+ namespace {
+ enum { kGdxProfRUN = 1, kGdxProfVTX = 2, kGdxProfTRI = 3, kGdxProfIMP = 4, kGdxProfMTX = 6 };
+@@ -7654,6 +7657,22 @@
+         }
+     }
+ 
++#ifdef __3DS__
++    // [profop] per-opcode handler timing at the single dispatch call site. Names WHICH
++    // handler bodies own the 26ms "dsp" bucket. Gated on the latched gputrace flag.
++    if (gdx3ds_prof_active) {
++        const uint8_t opIdx = (uint8_t)opcode;
++        const long long t0 = gdx3ds_prof_now();
++        const bool jumped = entry.fn(&cmd);
++        gdx3ds_prof_op_ticks[opIdx] += (uint64_t)(gdx3ds_prof_now() - t0);
++        gdx3ds_prof_op_calls[opIdx] += 1;
++        if (jumped) {
++            return;
++        }
++        ++cmd;
++        return;
++    }
++#endif
+     if (entry.fn(&cmd)) {
+         return;
+     }

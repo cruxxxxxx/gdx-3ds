@@ -1,0 +1,202 @@
+diff --git a/include/fast/interpreter.h b/include/fast/interpreter.h
+index c5436e8..d4ab194 100644
+--- a/include/fast/interpreter.h
++++ b/include/fast/interpreter.h
+@@ -361,6 +361,12 @@ struct RDP {
+     uint16_t tmem_span_base[512];  // 0 = no span covers this word; else span base word + 1
+     uint16_t tmem_span_words[512]; // valid at a span's base index only: the span's word count
+     uint8_t tmem_slot_stale[512];  // 1 = loaded_texture[word] needs (re)materialization
++    // Same-content-skip eligibility, valid at a span's base index only: which loader wrote
++    // the span AND its TMEM mirror (0 = ineligible, 1 = LOADBLOCK, 2 = LOADTILE). Reset by
++    // StoreLoadedTexture, set by the two loaders after a completed mirror write, and revoked
++    // from any span whose TMEM bytes a later load's mirror overwrote beyond that load's own
++    // word range (unaligned LOADTILE row strides / scaled transfers can overhang).
++    uint8_t tmem_span_load_kind[512];
+     void MaterializeTmemSlot(uint16_t tmemWord);
+     inline const LoadedTexture& LoadedTextureAt(uint16_t tmemWord) {
+         if (tmem_slot_stale[tmemWord] != 0) {
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index 114e5b3..8d343bd 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -4724,6 +4724,7 @@ void Interpreter::StoreLoadedTexture(uint16_t tmemStart, const LoadedTexture& te
+                   // next read materialize the {}.
+                 rdp.tmem_span_base[k] = 0;
+                 rdp.tmem_span_words[k] = 0;
++                rdp.tmem_span_load_kind[k] = 0;
+             }
+         }
+         w = spanEnd > w ? spanEnd : w + 1;
+@@ -4736,6 +4737,7 @@ void Interpreter::StoreLoadedTexture(uint16_t tmemStart, const LoadedTexture& te
+     std::fill_n(&rdp.tmem_span_base[tmemStart], wordCount, static_cast<uint16_t>(tmemStart + 1u));
+     memset(&rdp.tmem_slot_stale[tmemStart], 1, wordCount);
+     rdp.tmem_span_words[tmemStart] = static_cast<uint16_t>(wordCount);
++    rdp.tmem_span_load_kind[tmemStart] = 0; // caller re-arms after a completed TMEM mirror
+ 
+     LoadedTexture baseEntry = texture;
+     baseEntry.tmem_start = tmemStart;
+@@ -4803,6 +4805,82 @@ LoadedTexture& RDP::MutableLoadedTextureAt(uint16_t tmemWord) {
+     return loaded_texture[tmemWord];
+ }
+ 
++// LOADBLOCK-OPT same-content skip support: after a loader has stored its span AND fully
++// mirrored the transfer into emulated TMEM, record WHICH loader wrote it (the TMEM layout
++// of a block copy and a row-strided tile copy differ for unaligned lines, so a skip must
++// only match against the same loader kind). Also revoke skip eligibility from any OTHER
++// span whose TMEM bytes this mirror overwrote beyond the new span's own word range: the
++// old code simply clobbered the neighbour's TMEM mirror and a re-run of the neighbour's
++// load would rewrite it, so a skip of that neighbour must not preserve the clobber.
++// `tmemWriteEndByte` is the absolute end (exclusive) of the bytes actually written to
++// mRdp->tmem, 0 when the mirror did not run.
++static void GdxNoteTmemLoadKind(RDP& rdp, uint16_t base, uint8_t kind, uint32_t tmemWriteEndByte) {
++    if (base >= 512u || rdp.tmem_span_base[base] != static_cast<uint16_t>(base + 1u)) {
++        return; // StoreLoadedTexture rejected the store (out-of-range base)
++    }
++    rdp.tmem_span_load_kind[base] = kind;
++    const uint32_t spanEnd = base + rdp.tmem_span_words[base];
++    const uint32_t writeEndWord = std::min<uint32_t>((tmemWriteEndByte + 7u) / 8u, 512u);
++    for (uint32_t w = spanEnd; w < writeEndWord; ++w) {
++        if (rdp.tmem_span_base[w] != 0) {
++            rdp.tmem_span_load_kind[rdp.tmem_span_base[w] - 1u] = 0;
++        }
++    }
++}
++
++// The skip itself is 3DS-only as a policy choice (the desktop path was never the measured
++// bottleneck, and Windows' TmemSourceReadableLimit VirtualQuery bound can legitimately vary
++// between identical calls); the constant keeps the code compiled everywhere.
++#ifdef __3DS__
++static constexpr bool kGdxTmemSameContentSkip = true;
++#else
++static constexpr bool kGdxTmemSameContentSkip = false;
++#endif
++
++// True when re-running a loader would reproduce the current span, slots and TMEM mirror
++// bit-for-bit, so the whole store (invalidation walk, span rewrite, memcpy) can be
++// skipped. Soundness argument, per condition:
++//  - the span at `base` is live, its base slot fresh and un-detached (word_count matches):
++//    live spans are disjoint and every TMEM-mirror overwrite that could desynchronize this
++//    span's TMEM bytes either removed the span (overlap invalidation) or revoked its
++//    load_kind stamp (GdxNoteTmemLoadKind overhang sweep), so span-live + kind-armed
++//    implies the TMEM mirror still holds THIS load's bytes;
++//  - the freshly derived payload equals the stored one field-for-field: the mirror's
++//    copy extent is a pure function of (size_bytes, base) on this platform (readable
++//    limit is SIZE_MAX outside _WIN32) and the tile row layout is a pure function of the
++//    payload's line/full-line/orig sizes, so equal payloads imply an identical write;
++//  - the source bytes cannot have changed: gated on a resource-backed SETTIMG
++//    (raw_tex_metadata.resource != nullptr). The stored span holds a shared_ptr to the
++//    Fast::Texture, so the resource object — and its ImageData the addr points into —
++//    is pinned alive (no address recycling), and this port never mutates decoded o2r
++//    payloads in place (no hot reload on the 3DS). Raw RDRAM/framebuffer sources have no
++//    such guarantee and always take the full store path.
++static bool GdxTmemSameContentLoad(RDP& rdp, uint16_t base, uint8_t kind, const LoadedTexture& fresh) {
++    if (base >= 512u || fresh.raw_tex_metadata.resource == nullptr) {
++        return false;
++    }
++    const uint32_t logicalSize = fresh.orig_size_bytes != 0 ? fresh.orig_size_bytes : fresh.size_bytes;
++    const uint32_t wantWords =
++        std::min<uint32_t>(std::max<uint32_t>(1u, (logicalSize + 7u) / 8u), 512u - base);
++    if (rdp.tmem_span_base[base] != static_cast<uint16_t>(base + 1u) || rdp.tmem_slot_stale[base] != 0 ||
++        rdp.tmem_span_load_kind[base] != kind || rdp.tmem_span_words[base] != wantWords) {
++        return false;
++    }
++    const LoadedTexture& prev = rdp.loaded_texture[base];
++    return prev.tmem_word_count == wantWords && prev.addr == fresh.addr &&
++           prev.orig_size_bytes == fresh.orig_size_bytes && prev.size_bytes == fresh.size_bytes &&
++           prev.full_image_line_size_bytes == fresh.full_image_line_size_bytes &&
++           prev.line_size_bytes == fresh.line_size_bytes && prev.tex_flags == fresh.tex_flags &&
++           prev.masked == fresh.masked && prev.blended == fresh.blended &&
++           prev.raw_tex_metadata.resource.get() == fresh.raw_tex_metadata.resource.get() &&
++           prev.raw_tex_metadata.width == fresh.raw_tex_metadata.width &&
++           prev.raw_tex_metadata.height == fresh.raw_tex_metadata.height &&
++           prev.raw_tex_metadata.h_byte_scale == fresh.raw_tex_metadata.h_byte_scale &&
++           prev.raw_tex_metadata.v_pixel_scale == fresh.raw_tex_metadata.v_pixel_scale &&
++           prev.raw_tex_metadata.type == fresh.raw_tex_metadata.type &&
++           prev.raw_tex_metadata.path_hash == fresh.raw_tex_metadata.path_hash;
++}
++
+ void Interpreter::GfxDpLoadBlock(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t dxt) {
+     const auto byteCountForTexels = [](uint64_t texels, uint8_t siz) -> uint32_t {
+         uint64_t bytes = 0;
+@@ -4924,9 +5002,23 @@ void Interpreter::GfxDpLoadBlock(uint8_t tile, uint32_t uls, uint32_t ult, uint3
+         loaded.blended = false;
+     }
+ 
++    // LOADBLOCK-OPT same-content skip: menus replay an identical load sequence every frame
++    // (82 LOADBLOCKs/frame of unchanged o2r-backed textures on the measured device). When
++    // re-running this load would provably reproduce the span, the slots and the TMEM mirror
++    // bit-for-bit (see GdxTmemSameContentLoad), skip all three. textures_changed still
++    // arms so the draw-side import/rebind pipeline behaves exactly as after a real load;
++    // masked/blended were derived from the LIVE mMaskedTextures above and participate in
++    // the equality check, so replacement-pack changes fall through to the full store.
++    if (kGdxTmemSameContentSkip && GdxTmemSameContentLoad(*mRdp, tmemIndex, 1, loaded)) {
++        mRdp->textures_changed[0] = true;
++        mRdp->textures_changed[1] = true;
++        return;
++    }
++
+     // Mirror the block transfer into emulated TMEM so import can decode purely from
+     // tile-descriptor state. A straight byte copy is correct: the block load's DXT interleave
+     // cancels between a linear write at load time and a linear read at import time.
++    uint32_t tmemWriteEndByte = 0; // absolute end of the mirror write, for the skip stamp
+     if (loaded.addr != nullptr) {
+         const uint32_t tmemByteOffset = static_cast<uint32_t>(tmemIndex) * 8u;
+         if (tmemByteOffset < sizeof(mRdp->tmem)) {
+@@ -4938,6 +5030,7 @@ void Interpreter::GfxDpLoadBlock(uint8_t tile, uint32_t uls, uint32_t ult, uint3
+             if (copyBytes != 0) {
+                 memcpy(mRdp->tmem + tmemByteOffset, loaded.addr, copyBytes);
+                 mRdp->tmem_generation++;
++                tmemWriteEndByte = tmemByteOffset + copyBytes;
+             }
+         }
+     }
+@@ -4971,6 +5064,7 @@ void Interpreter::GfxDpLoadBlock(uint8_t tile, uint32_t uls, uint32_t ult, uint3
+     }
+ 
+     StoreLoadedTexture(tmemIndex, loaded);
++    GdxNoteTmemLoadKind(*mRdp, tmemIndex, 1, tmemWriteEndByte);
+     mRdp->textures_changed[0] = true;
+     mRdp->textures_changed[1] = true;
+ }
+@@ -5043,9 +5137,25 @@ void Interpreter::GfxDpLoadTile(uint8_t tile, uint32_t uls, uint32_t ult, uint32
+         loaded.blended = false;
+     }
+ 
++    // LOADTILE same-content skip, mirroring GfxDpLoadBlock's: the row-strided TMEM write
++    // below is a pure function of the payload's line/full-line sizes, tile_height
++    // (= orig_size / line_size, both compared) and addr, so payload equality under an
++    // armed kind==2 stamp implies a bit-identical re-run. F4 measured 3.15 ms/frame over
++    // 11 calls on the same device — the same textures re-loaded every steady menu frame.
++    if (kGdxTmemSameContentSkip && GdxTmemSameContentLoad(*mRdp, tmemIndex, 2, loaded)) {
++        mRdp->texture_tile[tile].uls = uls;
++        mRdp->texture_tile[tile].ult = ult;
++        mRdp->texture_tile[tile].lrs = lrs;
++        mRdp->texture_tile[tile].lrt = lrt;
++        mRdp->textures_changed[0] = true;
++        mRdp->textures_changed[1] = true;
++        return;
++    }
++
+     // TMEM emulation: mirror the tile sub-rectangle into emulated TMEM row by
+     // row. Destination rows advance at the 8-byte-aligned tile line stride,
+     // matching how the hardware packs LoadTile rows.
++    uint32_t tmemWriteEndByte = 0; // absolute end of the mirror write, for the skip stamp
+     if (loaded.addr != nullptr) {
+         const uint32_t tmemByteOffset = static_cast<uint32_t>(tmemIndex) * 8u;
+         const uint32_t destStride = (tile_line_size_bytes + 7u) & ~7u;
+@@ -5062,6 +5172,7 @@ void Interpreter::GfxDpLoadTile(uint8_t tile, uint32_t uls, uint32_t ult, uint32
+                     std::min<uint32_t>(tile_line_size_bytes, sizeof(mRdp->tmem) - destOff);
+                 memcpy(mRdp->tmem + destOff, loaded.addr + srcOff, rowBytes);
+                 wrote = true;
++                tmemWriteEndByte = destOff + rowBytes;
+             }
+             if (wrote) {
+                 mRdp->tmem_generation++;
+@@ -5070,6 +5181,7 @@ void Interpreter::GfxDpLoadTile(uint8_t tile, uint32_t uls, uint32_t ult, uint32
+     }
+ 
+     StoreLoadedTexture(tmemIndex, loaded);
++    GdxNoteTmemLoadKind(*mRdp, tmemIndex, 2, tmemWriteEndByte);
+     mRdp->texture_tile[tile].uls = uls;
+     mRdp->texture_tile[tile].ult = ult;
+     mRdp->texture_tile[tile].lrs = lrs;

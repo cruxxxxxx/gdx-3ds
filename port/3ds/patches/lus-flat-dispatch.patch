@@ -1,0 +1,230 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index 38fcc3c..8a0d10e 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -7430,6 +7430,10 @@ const char* GfxGetOpcodeName(int8_t opcode) {
+     return nullptr;
+ }
+ 
++// [perf-dispatch] Rebuilds the flat merged dispatch table below whenever the selected ucode
++// changes. Defined after the handler tables it merges; forward-declared for the writers here.
++static void gfx_rebuild_flat_dispatch();
++
+ // TODO, implement a system where we can get the current opcode handler by writing to the GWords. If the powers that be
+ // are OK with that...
+ static void gfx_set_ucode_handler(UcodeHandlers ucode) {
+@@ -7444,9 +7448,12 @@ static void gfx_set_ucode_handler(UcodeHandlers ucode) {
+     // constants on such a load, and the game relies on Course_Draw's fog position staying live
+     // for the car draws that follow, so apply the quirk resets only on a real table change.
+     if (!handlerChanged) {
++        // Same ucode_handler_index value -> the flat dispatch merge is unchanged too.
+         return;
+     }
+ 
++    gfx_rebuild_flat_dispatch();
++
+     // Reset some RSP state values upon ucode load to deal with hardware quirks discovered by emulators
+     switch (ucode) {
+         case ucode_f3d:
+@@ -7502,13 +7509,114 @@ static inline bool GfxS7OpcodePreservesDrawState(int8_t opcode) {
+     }
+ }
+ 
++// [perf-dispatch] Flat merged dispatch table. The legacy gfx_step chain probed up to three
++// handler tables per command (otrHandlers -> rdpHandlers -> ucode_handlers[ucode]), each probe
++// a contains() + an at() returning a {name, fn} pair by value, plus a per-command
++// GfxS7OpcodePreservesDrawState switch, an OTR-filepath opcode scan and a G_LOAD_UCODE compare.
++// The precedence of that chain is STATIC once the ucode is selected, so it is merged here into
++// one 256-slot array of {fn, flags} at ucode-selection time (init, gfx_set_ucode_handler,
++// Interpreter ucode reset, gfx_set_target_ucode) and gfx_step becomes a single indexed load and
++// one indirect call. Slots the chain would have missed hold the matching diagnostic handler so
++// the unknown-op behaviour (SPDLOG_CRITICAL + advance) is byte-for-byte the old one.
++struct GfxFlatDispatchEntry {
++    GfxOpcodeHandlerFunc fn;
++    uint8_t flags;
++};
++
++enum : uint8_t {
++    // Set iff (ucode_handler_index == ucode_f3dex2 && GfxS7OpcodePreservesDrawState(op)) held at
++    // table-build time: precomputes the [perf-s7] tri draw-state memo whitelist per slot.
++    kGfxFlatFlagPreservesDrawState = 1u << 0,
++    // OTR filepath handlers expect w1 to be a valid string pointer; these slots run the
++    // null/N64-segment-address guard before calling the handler (legacy: an opcode scan).
++    kGfxFlatFlagOtrPointerGuard = 1u << 1,
++};
++
++static GfxFlatDispatchEntry sFlatDispatch[std::numeric_limits<uint8_t>::max() + 1];
++
++// G_LOAD_UCODE preceded every table probe in the legacy chain; the flat table gives its slot
++// this handler unconditionally. Returning false falls through to gfx_step's ++cmd, which is
++// exactly the legacy `++cmd; return;`.
++static bool gfx_load_ucode_flat_handler(F3DGfx** cmd0) {
++    F3DGfx* cmd = *cmd0;
++    const uintptr_t payload = static_cast<uintptr_t>(cmd->words.w1);
++    if ((payload & ~static_cast<uintptr_t>(0xFFu)) == F3DEX2_VARIANT_SWITCH_MARKER) {
++        const uint8_t rawVariant = static_cast<uint8_t>(payload & 0xFFu);
++        if (rawVariant <= static_cast<uint8_t>(F3dex2Variant::FZeroFlxReject)) {
++            gfx_set_ucode_handler(ucode_f3dex2);
++            sGfxInstanceRaw->SetF3dex2Variant(static_cast<F3dex2Variant>(rawVariant));
++        }
++    } else {
++        gfx_set_ucode_handler((UcodeHandlers)(cmd->words.w0 & 0xFFFFFF));
++    }
++    return false;
++}
++
++static bool gfx_unhandled_opcode_flat_handler(F3DGfx** cmd0) {
++    const int8_t opcode = (int8_t)((*cmd0)->words.w0 >> 24);
++    SPDLOG_CRITICAL("Unhandled OP code: 0x{:X}, for loaded ucode: {}", (uint8_t)opcode,
++                    (uint32_t)ucode_handler_index);
++    return false;
++}
++
++static bool gfx_invalid_ucode_flat_handler(F3DGfx** cmd0) {
++    const int8_t opcode = (int8_t)((*cmd0)->words.w0 >> 24);
++    SPDLOG_CRITICAL("Unhandled OP code: 0x{:X}, invalid ucode: {}", (uint8_t)opcode, (uint32_t)ucode_handler_index);
++    return false;
++}
++
++static void gfx_rebuild_flat_dispatch() {
++    const bool ucodeValid = ucode_handler_index < ucode_handlers.size();
++    const UcodeHandler* ucodeTable = ucodeValid ? ucode_handlers[ucode_handler_index] : nullptr;
++
++    for (int i = 0; i <= (int)std::numeric_limits<uint8_t>::max(); i++) {
++        const int8_t opcode = (int8_t)(uint8_t)i;
++        GfxFlatDispatchEntry entry{ nullptr, 0 };
++
++        // Same precedence as the legacy chain: otr overrides > rdp > selected ucode table.
++        if (otrHandlers.contains(opcode)) {
++            entry.fn = otrHandlers.at(opcode).second;
++            if (opcode == OTR_G_VTX_OTR_FILEPATH || opcode == OTR_G_SETTIMG_OTR_FILEPATH ||
++                opcode == OTR_G_DL_OTR_FILEPATH || opcode == OTR_G_PUSHCD || opcode == OTR_G_MTX_OTR_FILEPATH) {
++                entry.flags |= kGfxFlatFlagOtrPointerGuard;
++            }
++        } else if (rdpHandlers.contains(opcode)) {
++            entry.fn = rdpHandlers.at(opcode).second;
++        } else if (!ucodeValid) {
++            entry.fn = gfx_invalid_ucode_flat_handler;
++        } else if (ucodeTable->contains(opcode)) {
++            entry.fn = ucodeTable->at(opcode).second;
++        } else {
++            entry.fn = gfx_unhandled_opcode_flat_handler;
++        }
++
++        // [perf-s7] tri draw-state memo whitelist, precomputed per slot (see gfx_step).
++        if (ucode_handler_index == ucode_f3dex2 && GfxS7OpcodePreservesDrawState(opcode)) {
++            entry.flags |= kGfxFlatFlagPreservesDrawState;
++        }
++
++        sFlatDispatch[i] = entry;
++    }
++
++    // Installed last so it overrides whatever the merge put in its slot, mirroring the legacy
++    // early check. Deliberately no PreservesDrawState flag: G_LOAD_UCODE dirtied the memo before.
++    sFlatDispatch[(uint8_t)(int8_t)F3DEX2_G_LOAD_UCODE] = { gfx_load_ucode_flat_handler, 0 };
++}
++
++// Build the initial table for the static ucode_f3dex2 default. The constexpr handler tables it
++// merges are constant-initialized, so they are complete before any dynamic initializer runs.
++[[maybe_unused]] static const bool sFlatDispatchInitialized = (gfx_rebuild_flat_dispatch(), true);
++
+ static void gfx_step() {
+     auto& cmd = g_exec_stack.currCmd();
+-    auto cmd0 = cmd;
+     int8_t opcode = (int8_t)(cmd->words.w0 >> 24);
+ 
+-    // [perf-s7] tri draw-state memo: see GfxS7OpcodePreservesDrawState above.
+-    if (ucode_handler_index != ucode_f3dex2 || !GfxS7OpcodePreservesDrawState(opcode)) {
++    // [perf-dispatch] one indexed load; the entry is read fully before the handler runs so a
++    // mid-command table rebuild (G_LOAD_UCODE) cannot pull it out from under us.
++    const GfxFlatDispatchEntry entry = sFlatDispatch[(uint8_t)opcode];
++
++    // [perf-s7] tri draw-state memo: whitelist precomputed into the flag at table build.
++    if ((entry.flags & kGfxFlatFlagPreservesDrawState) == 0) {
+         sGfxS7DrawStateDirty = true;
+     }
+ 
+@@ -7526,56 +7634,23 @@ static void gfx_step() {
+     }
+ #endif
+ 
+-    if (opcode == F3DEX2_G_LOAD_UCODE) {
+-        const uintptr_t payload = static_cast<uintptr_t>(cmd->words.w1);
+-        if ((payload & ~static_cast<uintptr_t>(0xFFu)) == F3DEX2_VARIANT_SWITCH_MARKER) {
+-            const uint8_t rawVariant = static_cast<uint8_t>(payload & 0xFFu);
+-            if (rawVariant <= static_cast<uint8_t>(F3dex2Variant::FZeroFlxReject)) {
+-                gfx_set_ucode_handler(ucode_f3dex2);
+-                sGfxInstanceRaw->SetF3dex2Variant(static_cast<F3dex2Variant>(rawVariant));
+-            }
+-        } else {
+-            gfx_set_ucode_handler((UcodeHandlers)(cmd->words.w0 & 0xFFFFFF));
+-        }
+-        ++cmd;
+-        return;
+-        // Instead of having a handler for each ucode for switching ucode, just check for it early and return.
+-    }
+-
+-    if (otrHandlers.contains(opcode)) {
++    if ((entry.flags & kGfxFlatFlagOtrPointerGuard) != 0) {
+         // OTR filepath handlers expect w1 to be a valid string pointer.
+         // Guard against null or N64-segment addresses that would crash in strlen/strncmp.
+-        if (opcode == OTR_G_VTX_OTR_FILEPATH || opcode == OTR_G_SETTIMG_OTR_FILEPATH ||
+-            opcode == OTR_G_DL_OTR_FILEPATH || opcode == OTR_G_PUSHCD || opcode == OTR_G_MTX_OTR_FILEPATH) {
+-            uintptr_t w1 = (uintptr_t)cmd->words.w1;
+-            if (w1 < 0x10000
++        uintptr_t w1 = (uintptr_t)cmd->words.w1;
++        if (w1 < 0x10000
+ #if UINTPTR_MAX > 0xFFFFFFFFu
+-                // On 64-bit: filter kernel/sentinel addresses.
+-                || w1 > 0x0000FFFFFFFFFFFFull
++            // On 64-bit: filter kernel/sentinel addresses.
++            || w1 > 0x0000FFFFFFFFFFFFull
+ #endif
+-            ) {
+-                ++g_exec_stack.currCmd();
+-                return;
+-            }
+-        }
+-        if (otrHandlers.at(opcode).second(&cmd)) {
++        ) {
++            ++g_exec_stack.currCmd();
+             return;
+         }
+-    } else if (rdpHandlers.contains(opcode)) {
+-        if (rdpHandlers.at(opcode).second(&cmd)) {
+-            return;
+-        }
+-    } else if (ucode_handler_index < ucode_handlers.size()) {
+-        if (ucode_handlers[ucode_handler_index]->contains(opcode)) {
+-            if (ucode_handlers[ucode_handler_index]->at(opcode).second(&cmd)) {
+-                return;
+-            }
+-        } else {
+-            SPDLOG_CRITICAL("Unhandled OP code: 0x{:X}, for loaded ucode: {}", (uint8_t)opcode,
+-                            (uint32_t)ucode_handler_index);
+-        }
+-    } else {
+-        SPDLOG_CRITICAL("Unhandled OP code: 0x{:X}, invalid ucode: {}", (uint8_t)opcode, (uint32_t)ucode_handler_index);
++    }
++
++    if (entry.fn(&cmd)) {
++        return;
+     }
+ 
+     ++cmd;
+@@ -7654,6 +7729,7 @@ void Interpreter::Init(class GfxWindowBackend* wapi, class GfxRenderingAPI* rapi
+     }
+ 
+     ucode_handler_index = UcodeHandlers::ucode_f3dex2;
++    gfx_rebuild_flat_dispatch(); // [perf-dispatch] table tracks every ucode_handler_index write
+ 
+     // Pre-allocate texture cache buckets to prevent rehash-induced iterator invalidation.
+     mTextureCache.map.reserve(TEXTURE_CACHE_MAX_SIZE);
+@@ -7974,6 +8050,7 @@ void Interpreter::EndFrame() {
+ 
+ void gfx_set_target_ucode(UcodeHandlers ucode) {
+     ucode_handler_index = ucode;
++    gfx_rebuild_flat_dispatch(); // [perf-dispatch] table tracks every ucode_handler_index write
+ }
+ 
+ int Interpreter::GetTargetFps() {

@@ -1,0 +1,242 @@
+--- a/include/fast/interpreter.h
++++ b/include/fast/interpreter.h
+@@ -254,6 +254,15 @@
+     float h_byte_scale = 1, v_pixel_scale = 1;
+     std::shared_ptr<Fast::Texture> resource;
+     Fast::TextureType type;
++    // 3DS SELECT-PERF: folded FNV-1a of the resource's archive path, precomputed once
++    // at SETTIMG resolution time (see the SETTIMG memo in interpreter.cpp) so
++    // ImportTexture's stable resource key does not re-hash the path string on every
++    // import (~93/frame on the machine-select screens). 0 = not precomputed;
++    // ImportTexture then derives it from `resource` exactly as before, so desktop
++    // builds and the raw/hash SETTIMG paths are unchanged. Lifetime-coupled to
++    // `resource` (travels in the same struct), so it can never describe a different
++    // texture than the one it is stored with.
++    uint32_t path_hash = 0;
+ };
+ 
+ struct LoadedTexture {
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -568,6 +568,12 @@
+ // the whole track in the backdrop's linear fog (the "invisible road"). exact=0 marks
+ // constant-factor blend-colour draws, which must use the vertex-scan fit instead.
+ extern "C" void gdx3ds_fog_note_params(int mul, int off, int exact);
++// SELECT-PERF SETTIMG-resolution counters (port/3ds/gfx/gfx_citro3d.cpp): note_load
++// fires when the o2r-filepath SETTIMG handler takes the full LoadResourceProcess
++// path, note_memo when the resolution is served from the SETTIMG memo below. The
++// [gpu]/[c3d] lines surface them as rl=/rm= (dRl=/dRm=).
++extern "C" void gdx3ds_settimg_note_load(void);
++extern "C" void gdx3ds_settimg_note_memo(void);
+ #endif
+ 
+ // Workshop texture-dump hooks (port/gdx_workshop.cpp).
+@@ -2164,24 +2170,38 @@
+     // Menus draw their text/UI overwhelmingly through this resource path, so an unstable
+     // identity here is per-frame re-decode + re-swizzle + re-upload churn on every screen.
+     if (!importReplacement && metadata->resource != nullptr) {
+-        const auto initData = metadata->resource->GetInitData();
+-        // Device receipts on feat/3ds-tilebind ([ship-draw] khash=00000001 on EVERY
+-        // resource) proved this loader's InitData Id is a constant 1, so keying on it
+-        // collided every same-geometry resource in the texture cache (rival liveries
+-        // painted onto the player body). The archive path is the only guaranteed-distinct,
+-        // content-stable identity: ALWAYS FNV-1a the path; never trust Id.
+-        uint64_t stableId = 0;
+-        if (initData != nullptr) {
+-            uint64_t pathHash = 1469598103934665603ull;
+-            for (const char c : initData->Path) {
+-                pathHash = (pathHash ^ static_cast<unsigned char>(c)) * 1099511628211ull;
++#ifdef __3DS__
++        // SELECT-PERF: the o2r-filepath SETTIMG handler precomputes this fold once per
++        // resolution (memoized across frames) and ships it in the metadata, so the
++        // per-import string walk below only runs for metadata minted by the other
++        // SETTIMG paths (path_hash == 0). Value-identical by construction
++        // (GdxFoldResourcePathHash mirrors this code), so texture-cache keys are
++        // stable across memoized and non-memoized loads.
++        if (metadata->path_hash != 0) {
++            key.tmem_content_hash = metadata->path_hash;
++        } else {
++#endif
++            const auto initData = metadata->resource->GetInitData();
++            // Device receipts on feat/3ds-tilebind ([ship-draw] khash=00000001 on EVERY
++            // resource) proved this loader's InitData Id is a constant 1, so keying on it
++            // collided every same-geometry resource in the texture cache (rival liveries
++            // painted onto the player body). The archive path is the only guaranteed-distinct,
++            // content-stable identity: ALWAYS FNV-1a the path; never trust Id.
++            uint64_t stableId = 0;
++            if (initData != nullptr) {
++                uint64_t pathHash = 1469598103934665603ull;
++                for (const char c : initData->Path) {
++                    pathHash = (pathHash ^ static_cast<unsigned char>(c)) * 1099511628211ull;
++                }
++                stableId = pathHash;
+             }
+-            stableId = pathHash;
+-        }
+-        key.tmem_content_hash = static_cast<uint32_t>(stableId ^ (stableId >> 32));
+-        if (key.tmem_content_hash == 0) {
+-            key.tmem_content_hash = 1; // never collide with the unhashed-key sentinel
++            key.tmem_content_hash = static_cast<uint32_t>(stableId ^ (stableId >> 32));
++            if (key.tmem_content_hash == 0) {
++                key.tmem_content_hash = 1; // never collide with the unhashed-key sentinel
++            }
++#ifdef __3DS__
+         }
++#endif
+     }
+ 
+     // Zero-sized textures divide by zero or fault UploadTexture. Hoisted before
+@@ -6276,6 +6296,116 @@
+     return false;
+ }
+ 
++#ifdef __3DS__
++// --------------------------------------------------------------------------------
++// SELECT-PERF: per-SETTIMG resource-resolution memo.
++//
++// F-Zero X's o2r pipeline (port/n64_gfx_bridge.cpp) rewrites asset-segment SETTIMGs
++// to OTR_G_SETTIMG_OTR_FILEPATH commands whose w1 is an interned key string, so the
++// handler below ran ResourceManager::LoadResourceProcess for EVERY textured resource
++// draw, EVERY frame: ResourceIdentifier construction (std::string copy), the OTR
++// signature/alt-path checks, the cache mutex, two string-keyed map lookups and the
++// LRU tick — ~93 times/frame on the machine-select screens (30-machine grid + decals
++// + stat bars + fonts), a real slice of the 23-34 ms menu build on the 268 MHz ARM11.
++//
++// The memo is a direct-mapped table keyed on the SETTIMG identity itself (the w1 key
++// string POINTER — the bridge interns these, so the pointer is stable per texture).
++// Safety is layered, none of it trusting the pointer alone:
++//   - the payload is a weak_ptr<Fast::Texture>: resource-cache eviction (the 3DS
++//     24 MiB budget, lus-resource-cache-cap.patch) drops the cache's shared_ptr and
++//     the weak_ptr expires by construction — no generation counter, no stale entry
++//     window, and the memo never pins a resource's memory (weak refs do not count
++//     toward the evictor's use_count() > 1 pin test);
++//   - a hit verifies the resolved texture's InitData Path against the key string
++//     (with the "__OTR__" prefix skipped, matching LoadResourceProcess), so a
++//     recycled/repointed key string can never bind another resource's texture — the
++//     same identity discipline as the stable-key patch, at strcmp cost;
++//   - every kGdxSettimgMemoLease-th hit falls through to the full LoadResourceProcess
++//     anyway, refreshing the resource-cache LRU tick so the byte-budget evictor still
++//     sees these entries as hot (a memo that never touched the cache would age its
++//     own textures to the front of the eviction queue).
++// A miss (expired, mismatched, collided or leased-out) runs the pre-existing path
++// bit-for-bit and re-arms the slot. Alt-assets loads (path rewritten to alt/...)
++// fail the Path check and simply never memo — correct, just not accelerated.
++// --------------------------------------------------------------------------------
++namespace {
++
++// Mirrors ImportTexture's stable-resource-key derivation (the resource-stable-key
++// patch): 64-bit FNV-1a over the archive path, xor-folded to 32 bits, 0 promoted to 1
++// (the unhashed-key sentinel). MUST stay value-identical to that code so memoized and
++// non-memoized loads of the same resource mint the same texture-cache key.
++uint32_t GdxFoldResourcePathHash(const std::shared_ptr<Fast::Texture>& tex) {
++    const auto initData = tex != nullptr ? tex->GetInitData() : nullptr;
++    uint64_t pathHash = 0;
++    if (initData != nullptr) {
++        pathHash = 1469598103934665603ull;
++        for (const char c : initData->Path) {
++            pathHash = (pathHash ^ static_cast<unsigned char>(c)) * 1099511628211ull;
++        }
++    }
++    uint32_t folded = static_cast<uint32_t>(pathHash ^ (pathHash >> 32));
++    if (folded == 0) {
++        folded = 1;
++    }
++    return folded;
++}
++
++struct GdxSettimgMemoEntry {
++    const char* key = nullptr; // the SETTIMG w1 string pointer (bridge-interned)
++    std::weak_ptr<Fast::Texture> tex;
++    uint32_t pathHash = 0; // GdxFoldResourcePathHash of the resolved texture
++    uint32_t hitsSinceLease = 0;
++};
++
++constexpr size_t kGdxSettimgMemoSlots = 512; // power of two; direct-mapped, replace on collision
++constexpr uint32_t kGdxSettimgMemoLease = 256; // full lookup every N hits: keeps the cache LRU warm
++GdxSettimgMemoEntry sGdxSettimgMemo[kGdxSettimgMemoSlots];
++
++GdxSettimgMemoEntry& GdxSettimgMemoSlot(const char* key) {
++    // Fibonacci scramble of the pointer; low bits are alignment-dead, so index from
++    // the product's high half.
++    const uint32_t h = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(key)) * 2654435761u;
++    return sGdxSettimgMemo[(h >> 20) & (kGdxSettimgMemoSlots - 1)];
++}
++
++std::shared_ptr<Fast::Texture> GdxSettimgMemoLookup(const char* fileName, uint32_t* outPathHash) {
++    GdxSettimgMemoEntry& entry = GdxSettimgMemoSlot(fileName);
++    if (entry.key != fileName) {
++        return nullptr;
++    }
++    if (++entry.hitsSinceLease >= kGdxSettimgMemoLease) {
++        entry.hitsSinceLease = 0;
++        return nullptr; // lease expired: take the full path once to tick the cache LRU
++    }
++    std::shared_ptr<Fast::Texture> tex = entry.tex.lock();
++    if (tex == nullptr) {
++        entry.key = nullptr; // resource evicted/unloaded; re-resolve and re-arm
++        return nullptr;
++    }
++    const char* path = fileName;
++    if (strncmp(path, "__OTR__", 7) == 0) {
++        path += 7; // LoadResourceProcess strips the signature before caching
++    }
++    const auto initData = tex->GetInitData();
++    if (initData == nullptr || strcmp(initData->Path.c_str(), path) != 0) {
++        entry.key = nullptr; // key pointer no longer names this resource
++        return nullptr;
++    }
++    *outPathHash = entry.pathHash;
++    return tex;
++}
++
++void GdxSettimgMemoStore(const char* fileName, const std::shared_ptr<Fast::Texture>& tex, uint32_t pathHash) {
++    GdxSettimgMemoEntry& entry = GdxSettimgMemoSlot(fileName);
++    entry.key = fileName;
++    entry.tex = tex;
++    entry.pathHash = pathHash;
++    entry.hitsSinceLease = 0;
++}
++
++} // namespace
++#endif // __3DS__
++
+ bool gfx_set_timg_otr_filepath_handler_custom(F3DGfx** cmd0) {
+     F3DGfx* cmd = *cmd0;
+     const char* fileName = (char*)cmd->words.w1;
+@@ -6283,8 +6413,24 @@
+     uint32_t texFlags = 0;
+     RawTexMetadata rawTexMetadata = {};
+ 
++#ifdef __3DS__
++    uint32_t memoPathHash = 0;
++    std::shared_ptr<Fast::Texture> texture = GdxSettimgMemoLookup(fileName, &memoPathHash);
++    if (texture != nullptr) {
++        gdx3ds_settimg_note_memo();
++    } else {
++        gdx3ds_settimg_note_load();
++        texture = std::static_pointer_cast<Fast::Texture>(
++            Ship::Context::GetInstance()->GetResourceManager()->LoadResourceProcess(fileName));
++        if (texture != nullptr) {
++            memoPathHash = GdxFoldResourcePathHash(texture);
++            GdxSettimgMemoStore(fileName, texture, memoPathHash);
++        }
++    }
++#else
+     std::shared_ptr<Fast::Texture> texture = std::static_pointer_cast<Fast::Texture>(
+         Ship::Context::GetInstance()->GetResourceManager()->LoadResourceProcess(fileName));
++#endif
+     if (texture != nullptr) {
+         Interpreter* gfx = mInstance.lock().get();
+         texFlags = texture->Flags;
+@@ -6294,6 +6440,11 @@
+         rawTexMetadata.v_pixel_scale = texture->VPixelScale;
+         rawTexMetadata.type = texture->Type;
+         rawTexMetadata.resource = texture;
++#ifdef __3DS__
++        // Precomputed stable resource key (memo hit or the store above): ImportTexture
++        // skips its per-import path FNV when this is nonzero.
++        rawTexMetadata.path_hash = memoPathHash;
++#endif
+ 
+         uint32_t fmt = C0(21, 3);
+         uint32_t size = C0(19, 2);

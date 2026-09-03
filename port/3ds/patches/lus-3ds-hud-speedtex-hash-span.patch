@@ -1,0 +1,59 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -2078,11 +2078,24 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+                 uint32_t w = lineBytes / 2;
+                 uint32_t h = remaining / lineBytes;
+                 ApplyTileMaskExtent(mRdp, tile, w, h, /*maskAuthoritative=*/true);
+-                if ((mRdp->texture_tile[tile].cms & G_TX_CLAMP) != 0 && cacheTileWidth > 0 && cacheTileWidth < w) {
++                // Mirror ImportTextureRgba16's NOMASK bound (the tall-atlas extent fix): on an axis
++                // that carries no mask, hardware samples exactly the gDPSetTileSize window, so the
++                // decode reads only that window. The hash MUST cover the same bytes and no more --
++                // otherwise the span reaches past the loaded atlas into whatever else streamed
++                // through the shared low TMEM (e.g. the 12x160 NOMASK+WRAP speedometer digit strip
++                // hashed 170 rows while the decode read 160), so the key of a STATIC atlas changed
++                // every frame: every import missed, LUS re-decoded and the 3DS backend
++                // re-Morton-swizzled + re-uploaded it every frame, and a re-upload race could serve
++                // a rotated texture_id -- the residual green/magenta speedometer garbage that
++                // survived the decode-side extent fix. Bounding here restores a stable content key.
++                const bool clampS = (mRdp->texture_tile[tile].cms & G_TX_CLAMP) != 0;
++                const bool clampT = (mRdp->texture_tile[tile].cmt & G_TX_CLAMP) != 0;
++                const bool boundW = clampS || mRdp->texture_tile[tile].masks == G_TX_NOMASK;
++                const bool boundH = clampT || mRdp->texture_tile[tile].maskt == G_TX_NOMASK;
++                if (boundW && cacheTileWidth > 0 && cacheTileWidth < w) {
+                     w = cacheTileWidth;
+                 }
+-                if ((mRdp->texture_tile[tile].cmt & G_TX_CLAMP) != 0 && cacheTileHeight > 0 &&
+-                    cacheTileHeight < h) {
++                if (boundH && cacheTileHeight > 0 && cacheTileHeight < h) {
+                     h = cacheTileHeight;
+                 }
+                 if (w == 0) {
+@@ -2113,6 +2126,27 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+                 contentHash = (contentHash ^ tmemBytes[b]) * 16777619u;
+             }
+             key.tmem_content_hash = contentHash;
++
++            // GDX_DIAG_SPEEDTEX: dump the exact per-import identity of the two F-Zero X speedometer
++            // RGBA16 atlases (12x160 aSpeedDigitsTex, 20x16 aKmhTex) so an emulator pass can confirm
++            // the content key is now STABLE frame-to-frame (was thrashing pre-fix because the NOMASK
++            // hash span over-read past the atlas). A stable h= across frames for one addr means the
++            // key no longer aliases; a changing h= for identical decoded content is the bug's tell.
++            static const bool sDiagSpeedTex = std::getenv("GDX_DIAG_SPEEDTEX") != nullptr;
++            if (sDiagSpeedTex && isRgba16) {
++                const uint32_t decodedW = lineBytes / 2;
++                const bool isDigitStrip = decodedW == 12 && cacheTileHeight == 160;
++                const bool isKmh = decodedW == 20 && cacheTileHeight == 16;
++                if (isDigitStrip || isKmh) {
++                    static int sSpeedTexLogs = 0;
++                    if (sSpeedTexLogs < 240) {
++                        ++sSpeedTexLogs;
++                        SPDLOG_ERROR("[speedtex] {} addr={} tmem={} line={} tileWxH={}x{} span={} hash={:08x}",
++                                     isKmh ? "kmh" : "digits", fmt::ptr(origAddr), tmemIdex, lineBytes,
++                                     cacheTileWidth, cacheTileHeight, span, contentHash);
++                    }
++                }
++            }
+         }
+     }
+ 

@@ -1,0 +1,20 @@
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -5986,6 +5986,17 @@
+                              reinterpret_cast<LPCSTR>(i), &module))) {
+         return false;
+     }
++#elif defined(__3DS__)
++    // 3DS userland maps the process image from 0x00100000 and the malloc heap at
++    // 0x08000000 -- BOTH inside the range this guard assumes is unmapped N64
++    // segmented space. The desktop check silently dropped EVERY game texture
++    // (SETTIMG skipped -> no ImportTexture/UploadTexture ever ran -> all textured
++    // draws sampled a stale texture id), the M1 black-top-screen root cause.
++    // Only reject pointers below the process image base, which no valid host
++    // allocation can occupy.
++    if (i < 0x00100000) {
++        return false;
++    }
+ #else
+     if (i <= 0x0FFFFFFF) {
+         return false;

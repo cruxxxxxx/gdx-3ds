@@ -1,0 +1,109 @@
+# Build output
+build/
+/dist/
+/out/
+/cmake-build-*/
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+x64/
+gdiffuser.cfg.json
+imgui.ini
+
+# Extracted assets / archives (built from user's ROM, never committed)
+*.o2r
+*.otr
+/assets/extracted/
+# Generated asset .c files carry real ROM content and are never committed. The matching
+# headers under include/ are the opposite -- extern declarations and #defines, no game data --
+# and they ARE tracked, because a fresh clone cannot build without them: 27 of the 65 come from
+# Torch's `header` mode, which requires the ROM nobody else has. Same reasoning as
+# port/gen/AssetBindings.c below. Regenerate the EK half with tools/gen_ek_assets.py, the rev0
+# half with `gdx-extract header <rom> -s decomp -d include`.
+/src/assets/
+torch.hash.yml
+# Generated asset bindings. These are generator OUTPUT plus hand-maintained rows on
+# top, so they are committed rather than rebuilt: port/CMakeLists.txt requires the
+# Ek* files unconditionally whenever GDX_EXPANSION_KIT is on (the default and the
+# only supported configuration), and a fresh clone cannot configure without them.
+# Regenerate with tools/gen_asset_bindings.py --out <scratch> and DIFF -- never
+# straight over the tracked file, which would drop the hand-added rows.
+/port/gen/*
+!/port/gen/AssetBindings.c
+!/port/gen/LinkStubs.c
+!/port/gen/EkAssetBindings.c
+!/port/gen/EkLinkStubs.c
+!/port/gen/EkTranslatedOverrides.c
+!/port/gen/EkTranslatedOverrides.h
+!/port/gen/EkTranslatedStrings.c
+!/port/gen/EkTranslatedStrings.h
+# Copied to decomp-recipes/ by an UNCONDITIONAL POST_BUILD step (port/CMakeLists.txt
+# ~556 for G-Diffuser, ~957 for the JP target), so a clone without it fails the build.
+!/port/gen/ek_slice_manifest.txt
+# Extraction goldens. These are __has_include-guarded in gdx_extract_launch.cpp, so a
+# clone without them still builds -- but it silently falls back to placeholder
+# expectations and every extraction is treated as unverifiable. Track them so a
+# cloner gets the same validation the owner does.
+!/port/gen/gdx_o2r_expected.h
+!/port/gen/gdx_disk_expected.h
+!/port/gen/gdx_ipl_expected.h
+baserom*
+*.z64
+*.n64
+*.ndd
+*.z64dd
+
+# Local build helpers (machine-specific absolute paths) and logs
+build-lus.bat
+build.bat
+*.log
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.user
+.atl
+
+# OS
+.DS_Store
+Thumbs.db
+.idea/
+
+# Internal working notes — local only, not for the repo.
+# docs/ IS tracked: it holds the three documents that ship with a release
+# (ARCHITECTURE.md, DIAGNOSTICS.md, MODDING_GUIDE.md). Everything else --
+# scopes, plans, audits, investigation write-ups -- lives in devdocs/.
+devdocs/
+
+# Session build/scratch artifacts
+build_x64/
+__pycache__/
+.allyrc
+
+# Runtime output written at the process CWD.
+# dump/ is gdx_dump_launch's asset dump (wav/json/tsv), rebuilt from the user's
+# ROM. *.log was already ignored, but the logs/ directory itself was not.
+dump/
+logs/
+
+# Internal one-off investigation toolkits and their output. Not needed to build,
+# extract assets, or mod -- ek_recovery/ is a manually-invoked 64DD disk-forensics
+# kit whose conclusions are already baked into tools/gen_translated_ek_table.py,
+# and ek_translated_validate/ is just the PNG renders it emits for eyeballing.
+/tools/ek_recovery/
+/tools/ek_translated_validate/
+# o2r_harness scratch: whole extraction runs written side by side for comparison.
+# Regenerated from the user's ROM by the harness itself; never a repo input.
+/tools/o2r_harness/bless_out/
+/tools/o2r_harness/golden_out/
+build-3ds/
+build-3ds-clean/
+build-host-stub/
+build-port-host/
+# Local CIA packaging binaries (makerom, bannertool) -- downloaded/built per
+# port/3ds/packaging/README.md, never committed.
+/tools/3ds-bin/

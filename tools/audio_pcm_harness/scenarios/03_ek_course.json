@@ -1,0 +1,20 @@
+{
+  "id": "ek_course",
+  "title": "Expansion Kit course (last to green)",
+  "status": "needs-recording",
+  "autoinput": "03_ek_course.autoinput.txt",
+  "capture_frames": 320000,
+  "timeout_seconds": 300,
+  "env": {
+    "GDX_RAND_SEED1": "1",
+    "GDX_RAND_SEED2": "2",
+    "GDX_AUDIO_THREAD": "0"
+  },
+  "notes": [
+    "Scenario 3 of the C-R2.3 matrix. An Expansion Kit (64DD) course. Contract note: EK is the",
+    "LAST scenario expected to go green — it exercises the disk audio-table path and the EK-only",
+    "boot sequencing, so it is the most likely to surface a residual nondeterminism after 1 and 2",
+    "pass. The autoinput file is a PLACEHOLDER (NEEDS-RECORDING). Requires the EK disk mounted",
+    "(the same first-boot data the normal EK build needs)."
+  ]
+}

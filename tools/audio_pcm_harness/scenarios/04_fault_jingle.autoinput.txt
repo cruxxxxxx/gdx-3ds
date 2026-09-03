@@ -1,0 +1,6 @@
+# NEEDS-RECORDING placeholder — scenario 04 (64DD fault jingle).
+# BLOCKED: do not use until leo_fault_dd.c wall-clock retry-gating is traced (see the scenario
+# JSON notes). TICK format; see 02_gp_course.autoinput.txt for the syntax. The input needed here
+# is whatever provokes the disk-fault path once its determinism is established.
+ticks
+120 START 20

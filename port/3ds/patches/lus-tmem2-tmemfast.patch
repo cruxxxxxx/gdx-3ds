@@ -1,0 +1,490 @@
+diff --git a/include/fast/interpreter.h b/include/fast/interpreter.h
+index 0724ad9..097e624 100644
+--- a/include/fast/interpreter.h
++++ b/include/fast/interpreter.h
+@@ -373,6 +373,12 @@ struct RDP {
+     // from any span whose TMEM bytes a later load's mirror overwrote beyond that load's own
+     // word range (unaligned LOADTILE row strides / scaled transfers can overhang).
+     uint8_t tmem_span_load_kind[512];
++    // [tmem2] Valid at a span's base index only: how many INTERIOR words (word != base) of
++    // the span have been materialized (fresh) since the span was recorded. Bumped by
++    // MaterializeTmemSlot, reset by StoreLoadedTexture at record time and when a span is
++    // torn down. The tmemfast store path replaces a span in O(1) only while this is 0 (the
++    // base is then the span's only fresh slot, so there is nothing else to release).
++    uint16_t tmem_span_fresh[512];
+     void MaterializeTmemSlot(uint16_t tmemWord);
+     inline const LoadedTexture& LoadedTextureAt(uint16_t tmemWord) {
+         if (tmem_slot_stale[tmemWord] != 0) {
+@@ -383,9 +389,19 @@ struct RDP {
+     LoadedTexture& MutableLoadedTextureAt(uint16_t tmemWord);
+     // Emulated 4 KiB TMEM. Import decodes from here using only tile-descriptor state, like
+     // hardware, which makes slot-reuse-heavy frames immune to stale per-slot load bookkeeping.
+-    uint8_t tmem[4096];
++    // [tmem2] Keep the mirror word-aligned whatever precedes it: a 2-byte-aligned TMEM sent
++    // every mirror memcpy (and the content-hash word reads) down the unaligned path
++    // (measured 4 -> 14-18 us per LOADBLOCK in the emulator).
++    alignas(8) uint8_t tmem[4096];
+     // Bumped on every TMEM write so the texture cache can key on content.
+     uint32_t tmem_generation;
++    // [tmem2] Live span bases (unordered, swap-removed), so a store can find the spans
++    // overlapping its range without visiting TMEM words. Maintained by both store paths;
++    // tmem_span_list_n == 0xFFFF marks it invalid (overflow), rebuilt from tmem_span_base
++    // by the next tmemfast store. Bases whose map entry died stay listed until seen.
++    // Declared after `tmem` so it cannot shift the mirror's offset.
++    uint16_t tmem_span_list[64];
++    uint16_t tmem_span_list_n;
+     struct {
+         uint8_t fmt;
+         uint8_t siz;
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index cc06a5f..8667bd7 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -954,6 +954,60 @@ static inline float GdxFminExact(float x, float y) {
+     return x < y ? x : y;
+ }
+ #endif
++// [tmem2] LOADBLOCK/LOADTILE store-path phase timers + census (LOCKED-60 Task B: F3 costs
++// ~12 us/call on hardware, 144-199 calls per crowd frame). The tick accumulators run only
++// under the latched gputrace gate (gdx3ds_prof_active, one int test per site when off);
++// the counters are plain increments. Both are drained on the [race-dl] cadence by the port
++// bridge ([tmem2] line). Ticks are svcGetSystemTick units, so per-phase numbers include one
++// timer read each — the bridge prints the measured per-read overhead next to them.
++// Killswitch mirror: [debug] tmemfast (3DS, latched per gfx task by the bridge) or the
++// GDX_TMEMFAST env (desktop). 1 = fast path, 0 = the byte-identical legacy path.
++enum {
++    kTmem2PhDerive = 0, // LOADBLOCK: byte counts + the render-tile stride scan + metadata copy
++    kTmem2PhPath = 1,   // resource path -> masked-texture lookup
++    kTmem2PhCmp = 2,    // GdxTmemSameContentLoad
++    kTmem2PhMirror = 3, // TMEM mirror memcpy
++    kTmem2PhWalk = 4,   // StoreLoadedTexture: overlap invalidation walk
++    kTmem2PhRecord = 5, // StoreLoadedTexture: span record + base entry copy
++    kTmem2PhNote = 6,   // GdxNoteTmemLoadKind + dirty arms
++    kTmem2PhTotal = 7   // handler entry -> exit (excludes the local's destructor)
++};
++enum {
++    kTmem2StLbCalls = 0, kTmem2StLbSkips = 1, kTmem2StLtCalls = 2, kTmem2StLtSkips = 3,
++    kTmem2StResource = 4, kTmem2StRaw = 5, kTmem2StWords = 6, kTmem2StMirrorBytes = 7,
++    kTmem2StWalkIters = 8, kTmem2StWalkRelease = 9, kTmem2StWalkSpans = 10,
++    kTmem2StFastHit = 11, kTmem2StFastMiss = 12,
++    kTmem2StMissInterior = 13, kTmem2StMissDivergent = 14, kTmem2StMissList = 15
++};
++extern "C" {
++uint64_t gdx_tmem2_ph_ticks[8];
++uint32_t gdx_tmem2_stat[16];
++}
++static int GdxTmem2FastInitFromEnv() {
++    const char* e = std::getenv("GDX_TMEMFAST");
++    return (e != nullptr && e[0] == '0') ? 0 : 1;
++}
++extern "C" int gdx_tmem2_fast_enabled = GdxTmem2FastInitFromEnv();
++#ifdef __3DS__
++static inline bool GdxTmem2ProfOn() {
++    return gdx3ds_prof_active != 0;
++}
++static inline uint64_t GdxTmem2Now(bool on) {
++    return on ? static_cast<uint64_t>(gdx3ds_prof_now()) : 0u;
++}
++#else
++static inline bool GdxTmem2ProfOn() {
++    return false;
++}
++static inline uint64_t GdxTmem2Now(bool) {
++    return 0u;
++}
++#endif
++static inline void GdxTmem2Acc(bool on, int phase, uint64_t t0, uint64_t t1) {
++    if (on) {
++        gdx_tmem2_ph_ticks[phase] += t1 - t0;
++    }
++}
+ 
+ // Workshop texture-dump hooks (port/gdx_workshop.cpp).
+ extern "C" int gdx_workshop_texture_dump_enabled(void);
+@@ -5521,6 +5575,122 @@ void Interpreter::GfxDpLoadTlut(uint8_t tile, uint32_t high_index) {
+     mRdp->textures_changed[1] = true;
+ }
+ 
++// [tmem2] Live-span list maintenance (see RDP::tmem_span_list). Both store paths keep it
++// consistent so the killswitch can flip between frames.
++static constexpr uint16_t kTmem2ListInvalid = 0xFFFFu;
++static constexpr uint32_t kTmem2ListCap = 64;
++static inline void GdxTmem2ListRemove(RDP& rdp, uint32_t base) {
++    if (rdp.tmem_span_list_n == kTmem2ListInvalid) {
++        return;
++    }
++    for (uint32_t i = 0; i < rdp.tmem_span_list_n; ++i) {
++        if (rdp.tmem_span_list[i] == base) {
++            rdp.tmem_span_list[i] = rdp.tmem_span_list[--rdp.tmem_span_list_n];
++            return;
++        }
++    }
++}
++static inline void GdxTmem2ListInsert(RDP& rdp, uint32_t base) {
++    if (rdp.tmem_span_list_n == kTmem2ListInvalid) {
++        return;
++    }
++    for (uint32_t i = 0; i < rdp.tmem_span_list_n; ++i) {
++        if (rdp.tmem_span_list[i] == base) {
++            return;
++        }
++    }
++    if (rdp.tmem_span_list_n >= kTmem2ListCap) {
++        rdp.tmem_span_list_n = kTmem2ListInvalid;
++        return;
++    }
++    rdp.tmem_span_list[rdp.tmem_span_list_n++] = static_cast<uint16_t>(base);
++}
++static bool GdxTmem2ListRebuild(RDP& rdp) {
++    uint32_t n = 0;
++    for (uint32_t w = 0; w < 512u; ++w) {
++        if (rdp.tmem_span_base[w] == static_cast<uint16_t>(w + 1u)) {
++            if (n >= kTmem2ListCap) {
++                rdp.tmem_span_list_n = kTmem2ListInvalid;
++                return false;
++            }
++            rdp.tmem_span_list[n++] = static_cast<uint16_t>(w);
++        }
++    }
++    rdp.tmem_span_list_n = static_cast<uint16_t>(n);
++    return true;
++}
++
++// [tmem2] tmemfast teardown (see StoreLoadedTexture). Finds the spans overlapping
++// [start, end) through the live-span list — never through the per-word map — checks them
++// all first (a bail-out leaves the map untouched for the legacy walk), then mutates.
++// Accepted shapes: any set of spans with no fresh interior view and a base record that
++// still describes the span. Returns false for anything else.
++static bool GdxTmem2FastTeardown(RDP& rdp, uint32_t start, uint32_t end, uint32_t wordCount, bool& sameRange) {
++    if (rdp.tmem_span_list_n == kTmem2ListInvalid && !GdxTmem2ListRebuild(rdp)) {
++        gdx_tmem2_stat[kTmem2StMissList]++;
++        return false;
++    }
++    uint32_t overlapping = 0;
++    bool same = false;
++    for (uint32_t i = 0; i < rdp.tmem_span_list_n;) {
++        const uint32_t base = rdp.tmem_span_list[i];
++        if (rdp.tmem_span_base[base] != static_cast<uint16_t>(base + 1u)) {
++            rdp.tmem_span_list[i] = rdp.tmem_span_list[--rdp.tmem_span_list_n]; // dead entry
++            continue;
++        }
++        const uint32_t words = rdp.tmem_span_words[base];
++        const uint32_t spanEnd = base + words;
++        ++i;
++        if (words == 0 || spanEnd <= start || base >= end) {
++            continue;
++        }
++        if (rdp.tmem_span_fresh[base] != 0) {
++            gdx_tmem2_stat[kTmem2StMissInterior]++;
++            return false; // interior views to release: legacy walk
++        }
++        if (rdp.tmem_slot_stale[base] == 0) {
++            // A fresh base must still describe exactly this span. A detached base (an
++            // in-place mutator zeroed its word count) is the one shape the legacy walk
++            // leaves inconsistent after a partial overwrite, so it takes the legacy walk.
++            const LoadedTexture& baseEntry = rdp.loaded_texture[base];
++            if (baseEntry.tmem_start != base || baseEntry.tmem_word_count != words) {
++                gdx_tmem2_stat[kTmem2StMissDivergent]++;
++                return false;
++            }
++        }
++        overlapping++;
++        same = base == start && words == wordCount;
++    }
++    // Mutate: release each overlapping span's fresh base (the refs the legacy walk
++    // released), drop its base-indexed records, unmap the words it owned OUTSIDE the new
++    // range (the record step re-maps the inside ones), and delist it. Interior words are
++    // all stale by the check above, exactly as after the legacy walk.
++    for (uint32_t i = 0; i < rdp.tmem_span_list_n;) {
++        const uint32_t base = rdp.tmem_span_list[i];
++        const uint32_t words = rdp.tmem_span_words[base];
++        const uint32_t spanEnd = base + words;
++        if (spanEnd <= start || base >= end) {
++            ++i;
++            continue;
++        }
++        if (rdp.tmem_slot_stale[base] == 0) {
++            rdp.loaded_texture[base] = {};
++        }
++        rdp.tmem_span_words[base] = 0;
++        rdp.tmem_span_load_kind[base] = 0;
++        rdp.tmem_span_fresh[base] = 0;
++        if (base < start) {
++            std::fill_n(&rdp.tmem_span_base[base], start - base, static_cast<uint16_t>(0));
++        }
++        if (spanEnd > end) {
++            std::fill_n(&rdp.tmem_span_base[end], spanEnd - end, static_cast<uint16_t>(0));
++        }
++        rdp.tmem_span_list[i] = rdp.tmem_span_list[--rdp.tmem_span_list_n];
++    }
++    sameRange = overlapping == 1 && same;
++    return true;
++}
++
+ void Interpreter::StoreLoadedTexture(uint16_t tmemStart, const LoadedTexture& texture) {
+     constexpr uint32_t kTmemWordBytes = 8;
+     constexpr uint32_t kTmemWordCount = 512;
+@@ -5555,6 +5725,8 @@ void Interpreter::StoreLoadedTexture(uint16_t tmemStart, const LoadedTexture& te
+                             texture.addr, texture.size_bytes);
+ #endif
+ 
++    const bool tmem2On = GdxTmem2ProfOn(); // [tmem2]
++    const uint64_t tmem2TA = GdxTmem2Now(tmem2On);
+     const uint32_t logicalSize = texture.orig_size_bytes != 0 ? texture.orig_size_bytes : texture.size_bytes;
+     const uint32_t requestedWords = std::max<uint32_t>(1u, (logicalSize + kTmemWordBytes - 1u) / kTmemWordBytes);
+     const uint32_t wordCount = std::min(requestedWords, kTmemWordCount - tmemStart);
+@@ -5574,6 +5746,25 @@ void Interpreter::StoreLoadedTexture(uint16_t tmemStart, const LoadedTexture& te
+     // per-word overlap re-check below keeps one legacy subtlety intact: an entry whose own
+     // recorded word count is 0 (the port's VI-fallback slot detaches itself that way) was
+     // never cleared by the old walk, and still is not.
++    // [tmem2] tmemfast: O(1) span replacement. Measured in a 30-machine crowd (emulator,
++    // [tmem2] census): every load replaces exactly ONE live span (span == calls) whose only
++    // fresh slot is its base (rel == calls), yet the legacy walk below visits every word of
++    // that span (walk == words, ~100 per load) to zero three per-word arrays that the record
++    // step then rewrites for the very same words — ~50 % of the F3 handler. When every span
++    // touching [tmemStart, newEnd) lies entirely inside it and has no fresh interior slot,
++    // the teardown is: release each such span's fresh base (exactly the refs the walk
++    // released), drop its base-indexed records, unmap only the words outside the new
++    // range, done — found through a live-span list, so no TMEM word is visited. If the old
++    // span IS this range (same base, same word count) the per-word span_base fill and
++    // stale stamp are no-ops as well. Fresh interior views or a detached/divergent base
++    // fall through to the legacy walk unchanged. Off = the legacy walk, always.
++    bool tmem2SameRange = false;
++    bool tmem2FastDone = false;
++    if (gdx_tmem2_fast_enabled != 0) {
++        tmem2FastDone = GdxTmem2FastTeardown(rdp, tmemStart, newEnd, wordCount, tmem2SameRange);
++        gdx_tmem2_stat[tmem2FastDone ? kTmem2StFastHit : kTmem2StFastMiss]++;
++    }
++
+     const auto slotRange = [&rdp](uint32_t word, uint32_t& start, uint32_t& end) {
+         if (rdp.tmem_slot_stale[word] == 0) {
+             // Fresh slot: its own recorded range is authoritative (old-code semantics,
+@@ -5588,7 +5779,7 @@ void Interpreter::StoreLoadedTexture(uint16_t tmemStart, const LoadedTexture& te
+             start = end = 0;
+         }
+     };
+-    uint32_t w = tmemStart;
++    uint32_t w = tmem2FastDone ? newEnd : tmemStart; // [tmem2] fast teardown already ran
+     while (w < newEnd) {
+         uint32_t spanStart;
+         uint32_t spanEnd;
+@@ -5597,7 +5788,13 @@ void Interpreter::StoreLoadedTexture(uint16_t tmemStart, const LoadedTexture& te
+             ++w;
+             continue;
+         }
++        gdx_tmem2_stat[kTmem2StWalkSpans]++; // [tmem2]
++        if (spanStart < kTmemWordCount) {
++            rdp.tmem_span_fresh[spanStart] = 0; // [tmem2] the span (or claimed base) is going away
++            GdxTmem2ListRemove(rdp, spanStart);
++        }
+         for (uint32_t k = spanStart; k < spanEnd && k < kTmemWordCount; ++k) {
++            gdx_tmem2_stat[kTmem2StWalkIters]++; // [tmem2]
+             // A stale member's logical range IS the span's (captured above — the map entries
+             // are being torn down as this loop runs); only a fresh slot can carry a diverging
+             // record of its own (the detached zero-count case).
+@@ -5613,6 +5810,7 @@ void Interpreter::StoreLoadedTexture(uint16_t tmemStart, const LoadedTexture& te
+                     // where the old eager walk released it; the slot stays fresh because a
+                     // physical {} equals the logical empty state.
+                     rdp.loaded_texture[k] = {};
++                    gdx_tmem2_stat[kTmem2StWalkRelease]++; // [tmem2]
+                 } // else: stale slots are ref-free by invariant; span_base = 0 below makes the
+                   // next read materialize the {}.
+                 rdp.tmem_span_base[k] = 0;
+@@ -5622,21 +5820,40 @@ void Interpreter::StoreLoadedTexture(uint16_t tmemStart, const LoadedTexture& te
+         }
+         w = spanEnd > w ? spanEnd : w + 1;
+     }
++    const uint64_t tmem2TB = GdxTmem2Now(tmem2On); // [tmem2]
++    GdxTmem2Acc(tmem2On, kTmem2PhWalk, tmem2TA, tmem2TB);
++    gdx_tmem2_stat[kTmem2StWords] += wordCount;
+ 
+     // Record ONE span for the new load. Render tiles are legal at offsets inside a
+     // LOADBLOCK/LOADTILE range, not only at its base, so the old code materialized a
+     // derived view at every covered word here; those views now materialize lazily in
+     // RDP::MaterializeTmemSlot (same math, verbatim) on first read.
+-    std::fill_n(&rdp.tmem_span_base[tmemStart], wordCount, static_cast<uint16_t>(tmemStart + 1u));
+-    memset(&rdp.tmem_slot_stale[tmemStart], 1, wordCount);
++    if (!tmem2SameRange) { // [tmem2] same-range replacement: every word already maps here
++        std::fill_n(&rdp.tmem_span_base[tmemStart], wordCount, static_cast<uint16_t>(tmemStart + 1u));
++        // (and, with no fresh interior view — the fast path's precondition — every interior
++        // word is already stale, so the stale stamp below is a no-op there too)
++        memset(&rdp.tmem_slot_stale[tmemStart], 1, wordCount);
++    }
++    GdxTmem2ListInsert(rdp, tmemStart);
+     rdp.tmem_span_words[tmemStart] = static_cast<uint16_t>(wordCount);
+     rdp.tmem_span_load_kind[tmemStart] = 0; // caller re-arms after a completed TMEM mirror
+-
+-    LoadedTexture baseEntry = texture;
+-    baseEntry.tmem_start = tmemStart;
+-    baseEntry.tmem_word_count = static_cast<uint16_t>(wordCount);
+-    rdp.loaded_texture[tmemStart] = std::move(baseEntry);
++    rdp.tmem_span_fresh[tmemStart] = 0;     // [tmem2] fresh span: no interior views yet
++
++    if (tmem2FastDone) {
++        // [tmem2] One copy straight into the slot (the legacy copy + move pair below lands
++        // the same bytes; the old base payload is released by the assignment either way).
++        LoadedTexture& baseSlot = rdp.loaded_texture[tmemStart];
++        baseSlot = texture;
++        baseSlot.tmem_start = tmemStart;
++        baseSlot.tmem_word_count = static_cast<uint16_t>(wordCount);
++    } else {
++        LoadedTexture baseEntry = texture;
++        baseEntry.tmem_start = tmemStart;
++        baseEntry.tmem_word_count = static_cast<uint16_t>(wordCount);
++        rdp.loaded_texture[tmemStart] = std::move(baseEntry);
++    }
+     rdp.tmem_slot_stale[tmemStart] = 0;
++    GdxTmem2Acc(tmem2On, kTmem2PhRecord, tmem2TB, GdxTmem2Now(tmem2On)); // [tmem2]
+ }
+ 
+ // Lazy per-word view materialization: byte-identical to the loop StoreLoadedTexture ran
+@@ -5672,6 +5889,7 @@ void RDP::MaterializeTmemSlot(uint16_t tmemWord) {
+         // these views into one-pixel-high stripes.
+         entry.line_size_bytes = 0;
+         entry.full_image_line_size_bytes = 0;
++        tmem_span_fresh[base]++; // [tmem2] one more interior slot to release at teardown
+     }
+     loaded_texture[tmemWord] = std::move(entry);
+     tmem_slot_stale[tmemWord] = 0;
+@@ -5775,6 +5993,9 @@ static bool GdxTmemSameContentLoad(RDP& rdp, uint16_t base, uint8_t kind, const
+ }
+ 
+ void Interpreter::GfxDpLoadBlock(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t dxt) {
++    const bool tmem2On = GdxTmem2ProfOn(); // [tmem2] phase timers (gputrace-gated)
++    const uint64_t tmem2T0 = GdxTmem2Now(tmem2On);
++    gdx_tmem2_stat[kTmem2StLbCalls]++;
+     const auto byteCountForTexels = [](uint64_t texels, uint8_t siz) -> uint32_t {
+         uint64_t bytes = 0;
+         switch (siz) {
+@@ -5881,6 +6102,8 @@ void Interpreter::GfxDpLoadBlock(uint8_t tile, uint32_t uls, uint32_t ult, uint3
+     // fprintf(stderr, "GfxDpLoadBlock: line_size = 0x%x; orig = 0x%x; bpp=%d; lrs=%d\n", size_bytes,
+     // orig_size_bytes,
+     //         mRdp->texture_to_load.siz, lrs);
++    const uint64_t tmem2T1 = GdxTmem2Now(tmem2On); // [tmem2]
++    GdxTmem2Acc(tmem2On, kTmem2PhDerive, tmem2T0, tmem2T1);
+ 
+     const std::string_view texPath =
+         mRdp->texture_to_load.raw_tex_metadata.resource != nullptr
+@@ -5895,6 +6118,10 @@ void Interpreter::GfxDpLoadBlock(uint8_t tile, uint32_t uls, uint32_t ult, uint3
+         loaded.blended = false;
+     }
+ 
++    const uint64_t tmem2T2 = GdxTmem2Now(tmem2On); // [tmem2]
++    GdxTmem2Acc(tmem2On, kTmem2PhPath, tmem2T1, tmem2T2);
++    gdx_tmem2_stat[loaded.raw_tex_metadata.resource != nullptr ? kTmem2StResource : kTmem2StRaw]++;
++
+     // LOADBLOCK-OPT same-content skip: menus replay an identical load sequence every frame
+     // (82 LOADBLOCKs/frame of unchanged o2r-backed textures on the measured device). When
+     // re-running this load would provably reproduce the span, the slots and the TMEM mirror
+@@ -5906,7 +6133,12 @@ void Interpreter::GfxDpLoadBlock(uint8_t tile, uint32_t uls, uint32_t ult, uint3
+     // eviction nulling the binding while the span stayed live — now arms at the eviction
+     // site itself (see TextureCacheLookup/TextureCacheDelete). This is what lets a machine
+     // part re-asserting its already-loaded texture keep the draw memo and its batch.
+-    if (kGdxTmemSameContentSkip && GdxTmemSameContentLoad(*mRdp, tmemIndex, 1, loaded)) {
++    const bool tmem2Same = kGdxTmemSameContentSkip && GdxTmemSameContentLoad(*mRdp, tmemIndex, 1, loaded);
++    const uint64_t tmem2T3 = GdxTmem2Now(tmem2On); // [tmem2]
++    GdxTmem2Acc(tmem2On, kTmem2PhCmp, tmem2T2, tmem2T3);
++    if (tmem2Same) {
++        gdx_tmem2_stat[kTmem2StLbSkips]++;
++        GdxTmem2Acc(tmem2On, kTmem2PhTotal, tmem2T0, tmem2T3);
+         return;
+     }
+ 
+@@ -5926,9 +6158,12 @@ void Interpreter::GfxDpLoadBlock(uint8_t tile, uint32_t uls, uint32_t ult, uint3
+                 memcpy(mRdp->tmem + tmemByteOffset, loaded.addr, copyBytes);
+                 mRdp->tmem_generation++;
+                 tmemWriteEndByte = tmemByteOffset + copyBytes;
++                gdx_tmem2_stat[kTmem2StMirrorBytes] += copyBytes; // [tmem2]
+             }
+         }
+     }
++    const uint64_t tmem2T4 = GdxTmem2Now(tmem2On); // [tmem2]
++    GdxTmem2Acc(tmem2On, kTmem2PhMirror, tmem2T3, tmem2T4);
+ 
+     /* One line per distinct (tmem, siz, lrs, dxt): if a decode's slot sizes disagree with what
+        this LOADBLOCK stored, the slot was replaced between load and import. */
+@@ -5959,16 +6194,23 @@ void Interpreter::GfxDpLoadBlock(uint8_t tile, uint32_t uls, uint32_t ult, uint3
+     }
+ 
+     StoreLoadedTexture(tmemIndex, loaded);
++    const uint64_t tmem2T5 = GdxTmem2Now(tmem2On); // [tmem2]
+     GdxNoteTmemLoadKind(*mRdp, tmemIndex, 1, tmemWriteEndByte);
+     // [crowd2] LOADBLOCK is table-whitelisted now; a real store re-creates the legacy
+     // dirty contribution here (the draw-state derivation reads the loaded slot's sizes).
+     sGfxS7DirtyMask |= static_cast<uint8_t>(kGfxS7DirtyTri | kGfxS7DirtyRect | kGfxS7DirtyRectViewport);
+     mRdp->textures_changed[0] = true;
+     mRdp->textures_changed[1] = true;
++    const uint64_t tmem2T6 = GdxTmem2Now(tmem2On); // [tmem2]
++    GdxTmem2Acc(tmem2On, kTmem2PhNote, tmem2T5, tmem2T6);
++    GdxTmem2Acc(tmem2On, kTmem2PhTotal, tmem2T0, tmem2T6);
+ }
+ 
+ void Interpreter::GfxDpLoadTile(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t lrt) {
+     SUPPORT_CHECK(tile == G_TX_LOADTILE);
++    const bool tmem2On = GdxTmem2ProfOn(); // [tmem2] phase timers (gputrace-gated)
++    const uint64_t tmem2T0 = GdxTmem2Now(tmem2On);
++    gdx_tmem2_stat[kTmem2StLtCalls]++;
+ 
+     uint32_t word_size_shift = 0;
+     switch (mRdp->texture_to_load.siz) {
+@@ -6021,6 +6263,8 @@ void Interpreter::GfxDpLoadTile(uint8_t tile, uint32_t uls, uint32_t ult, uint32
+     loaded.tex_flags = mRdp->texture_to_load.tex_flags;
+     loaded.raw_tex_metadata = mRdp->texture_to_load.raw_tex_metadata;
+     loaded.addr = mRdp->texture_to_load.addr != nullptr ? mRdp->texture_to_load.addr + start_offset_bytes : nullptr;
++    const uint64_t tmem2T1 = GdxTmem2Now(tmem2On); // [tmem2]
++    GdxTmem2Acc(tmem2On, kTmem2PhDerive, tmem2T0, tmem2T1);
+ 
+     const std::string_view texPath =
+         mRdp->texture_to_load.raw_tex_metadata.resource != nullptr
+@@ -6035,12 +6279,21 @@ void Interpreter::GfxDpLoadTile(uint8_t tile, uint32_t uls, uint32_t ult, uint32
+         loaded.blended = false;
+     }
+ 
++    const uint64_t tmem2T2 = GdxTmem2Now(tmem2On); // [tmem2]
++    GdxTmem2Acc(tmem2On, kTmem2PhPath, tmem2T1, tmem2T2);
++    gdx_tmem2_stat[loaded.raw_tex_metadata.resource != nullptr ? kTmem2StResource : kTmem2StRaw]++;
++
+     // LOADTILE same-content skip, mirroring GfxDpLoadBlock's: the row-strided TMEM write
+     // below is a pure function of the payload's line/full-line sizes, tile_height
+     // (= orig_size / line_size, both compared) and addr, so payload equality under an
+     // armed kind==2 stamp implies a bit-identical re-run. F4 measured 3.15 ms/frame over
+     // 11 calls on the same device — the same textures re-loaded every steady menu frame.
+-    if (kGdxTmemSameContentSkip && GdxTmemSameContentLoad(*mRdp, tmemIndex, 2, loaded)) {
++    const bool tmem2Same = kGdxTmemSameContentSkip && GdxTmemSameContentLoad(*mRdp, tmemIndex, 2, loaded);
++    const uint64_t tmem2T3 = GdxTmem2Now(tmem2On); // [tmem2]
++    GdxTmem2Acc(tmem2On, kTmem2PhCmp, tmem2T2, tmem2T3);
++    if (tmem2Same) {
++        gdx_tmem2_stat[kTmem2StLtSkips]++;
++        GdxTmem2Acc(tmem2On, kTmem2PhTotal, tmem2T0, tmem2T3);
+         // [crowd2] The load tile's extent writes ride the same value gate as
+         // GfxDpSetTileSize; the skip itself no longer arms (see GfxDpLoadBlock).
+         const auto& t = mRdp->texture_tile[tile];
+@@ -6078,14 +6331,18 @@ void Interpreter::GfxDpLoadTile(uint8_t tile, uint32_t uls, uint32_t ult, uint32
+                 memcpy(mRdp->tmem + destOff, loaded.addr + srcOff, rowBytes);
+                 wrote = true;
+                 tmemWriteEndByte = destOff + rowBytes;
++                gdx_tmem2_stat[kTmem2StMirrorBytes] += rowBytes; // [tmem2]
+             }
+             if (wrote) {
+                 mRdp->tmem_generation++;
+             }
+         }
+     }
++    const uint64_t tmem2T4 = GdxTmem2Now(tmem2On); // [tmem2]
++    GdxTmem2Acc(tmem2On, kTmem2PhMirror, tmem2T3, tmem2T4);
+ 
+     StoreLoadedTexture(tmemIndex, loaded);
++    const uint64_t tmem2T5 = GdxTmem2Now(tmem2On); // [tmem2]
+     GdxNoteTmemLoadKind(*mRdp, tmemIndex, 2, tmemWriteEndByte);
+     mRdp->texture_tile[tile].uls = uls;
+     mRdp->texture_tile[tile].ult = ult;
+@@ -6097,6 +6354,9 @@ void Interpreter::GfxDpLoadTile(uint8_t tile, uint32_t uls, uint32_t ult, uint32
+     sGfxS7DirtyMask |= static_cast<uint8_t>(kGfxS7DirtyTri | kGfxS7DirtyRect | kGfxS7DirtyRectViewport);
+     mRdp->textures_changed[0] = true;
+     mRdp->textures_changed[1] = true;
++    const uint64_t tmem2T6 = GdxTmem2Now(tmem2On); // [tmem2]
++    GdxTmem2Acc(tmem2On, kTmem2PhNote, tmem2T5, tmem2T6);
++    GdxTmem2Acc(tmem2On, kTmem2PhTotal, tmem2T0, tmem2T6);
+ }
+ 
+ /*static uint8_t color_comb_component(uint32_t v) {

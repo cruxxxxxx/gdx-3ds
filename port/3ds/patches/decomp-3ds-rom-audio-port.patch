@@ -1,0 +1,1107 @@
+diff --git a/src/audio/rom/external.c b/src/audio/rom/external.c
+index 61367d1..f57b608 100644
+--- a/src/audio/rom/external.c
++++ b/src/audio/rom/external.c
+@@ -77,6 +77,11 @@ s32 Audio_AdjustPan(u8 pan) {
+         var_v1 = (pan < 0x20) ? 0 : pan * 2 - 0x3F;
+         return var_v1;
+     }
++#ifdef PORT
++    /* AVOID_UB (mirrors audio/disk/external.c): the branches are exhaustive for u8 pan,
++       but the compiler cannot prove it. */
++    return 0x3F;
++#endif
+ }
+ 
+ void Audio_LevelSEStart(u8 playerIndex, u8 sfxId) {
+@@ -1122,7 +1127,50 @@ void Audio_UpdateImpl(void) {
+ 
+ void Audio_Update(void) {
+ #ifdef PORT
+-    return; // Audio_Init is skipped on PORT; nothing to update.
++    /* This early-return stub dated from the pre-EK desktop bring-up, when Audio_Init really
++       was skipped and this rom driver was dead code (desktop builds EXPANSION_KIT=1 and
++       compiles audio/disk instead). On the 3DS build (GDX_EXPANSION_KIT=OFF) this driver is
++       live and sys_audio.c's PORT branch DOES call Audio_Init(), so the stub silenced the
++       game's entire per-frame audio pump -- no engine SE, no SE stacks, no BGM state
++       machine: the mixer stayed empty forever ("nz=0" in [audio-out]). Guard on the audio
++       context instead, so a pre-init frame cannot queue commands that AudioLoad_Init's
++       context clear would drop. */
++    extern bool gAudioContextInitialized;
++    if (!gAudioContextInitialized) {
++        return;
++    }
++    {
++        extern void gdx_dbg_logf(const char* fmt, ...);
++        extern int gdx_diag_audio_enabled(void);
++        static s32 sGdxPumpLive = 0;
++        if (!sGdxPumpLive) {
++            sGdxPumpLive = 1;
++            if (gdx_diag_audio_enabled()) {
++                gdx_dbg_logf("[audio-rom] Audio_Update pump LIVE (rom driver, first game-thread tick)\n");
++            }
++            /* Retail-cart boot audio bootstrap. On console Game_ThreadEntry starts the boot
++               riff via Audio_GuitarSeqStart -- which on this rom driver ALSO issues the
++               AUDIOCMD_GLOBAL_INIT_SEQPLAYER(0, SEQ_SOUND_EFFECTS) that every later SE and
++               BGM (all routed through seq player 0's channel IO) depends on. The port gated
++               that call on gLeoDriveConnectionState != 0 (a 64DD-ism protecting the EK/disk
++               build's MEDIUM_LBA loader), and every other Audio_SESeqStart site in title.c
++               is DD-gated too, so on a cart-only boot NO sequence player was ever
++               initialized: the [audio-seq] receipt showed seq0{en=0} notesOn=0 forever.
++               Issue it here instead of un-gating sys_gfx.c: Game_ThreadEntry runs before
++               AudioLoad_Init's queue reset would drop the commands, while this pump tick is
++               explicitly guarded on gAudioContextInitialized above. */
++            {
++                extern s32 gLeoDriveConnectionState;
++                if (gLeoDriveConnectionState == 0) {
++                    if (gdx_diag_audio_enabled()) {
++                        gdx_dbg_logf("[audio-rom] cart boot bootstrap: Audio_GuitarSeqStart "
++                                     "(INIT_SEQPLAYER guitar + SE)\n");
++                    }
++                    Audio_GuitarSeqStart();
++                }
++            }
++        }
++    }
+ #endif
+     Audio_UpdateImpl();
+     AudioThread_ScheduleProcessCmds();
+@@ -1239,10 +1287,8 @@ void Audio_Init(void) {
+ 
+ // Na_SetOutMode
+ void Audio_SetOutMode(u8 soundMode) {
+-#ifdef PORT
+-    (void) soundMode;
+-    return; // Audio_Init is skipped on PORT.
+-#endif
++    /* Formerly stubbed under PORT alongside Audio_Update (stale "Audio_Init is skipped"
++       rationale -- see Audio_Update). The command is a plain global queue write; live now. */
+     AUDIOCMD_GLOBAL_SET_SOUND_MODE(soundMode);
+ }
+ 
+@@ -1833,9 +1879,10 @@ void Audio_DisablePlayerSE(void) {
+ 
+ // Na_Guitor_Start
+ void Audio_GuitarSeqStart(void) {
+-#ifdef PORT
+-    return; // Audio_Init is skipped on PORT; the seqplayer init below would crash.
+-#endif
++    /* Formerly stubbed under PORT (stale "Audio_Init is skipped" rationale -- see
++       Audio_Update). In this rom driver SEQ_GUITAR/FONT_GUITAR/SAMPLE_GUITAR are all
++       MEDIUM_CART, served by the audio_blob archive families, so the boot riff is safe to
++       run whenever the caller decides to (sys_gfx.c gates it). */
+     PRINTF("Na_Guitor_Start Called\n");
+     PRINTF("Na_Guitor_Start for ROM Called\n");
+     AUDIOCMD_GLOBAL_INIT_SEQPLAYER(1, SEQ_GUITAR, 0, 0);
+diff --git a/src/audio/rom/lib/audio.h b/src/audio/rom/lib/audio.h
+index ff3f011..285a895 100644
+--- a/src/audio/rom/lib/audio.h
++++ b/src/audio/rom/lib/audio.h
+@@ -84,12 +84,26 @@ typedef struct {
+ typedef struct {
+     /* 0x0 */ union {
+         u32 opArgs;
++#ifdef PORT
++        /* Same fix as audio/disk/lib/audio.h: AUDIO_MK_CMD packs opArgs MSB-first, so on
++           big-endian byte0 aliases op. A little-endian host lays the same u32 store out in
++           reverse, so the fields must be declared reversed to alias the right byte --
++           otherwise the drained cmd->op reads back as 0 (it aliases arg2) and every queued
++           command, INIT_SEQPLAYER included, is silently dropped. */
++        struct {
++            u8 arg2;
++            u8 arg1;
++            u8 arg0;
++            u8 op;
++        };
++#else
+         struct {
+             u8 op;
+             u8 arg0;
+             u8 arg1;
+             u8 arg2;
+         };
++#endif
+     };
+     /* 0x4 */ union {
+         void* data;
+@@ -858,6 +872,13 @@ extern AudioTable* gSequenceTable;
+ extern AudioTable* gSoundFontTable;
+ extern AudioTable* gSampleBankTable;
+ extern u8* gSeqFontTable;
++
++/* gSeqFontTable holds big-endian u16 index pairs (aseq.h's S16() emits hi,lo bytes).
++   Through a host-endian u16* cast S16(0x2E) reads back as 0x2E00 on little-endian,
++   indexing thousands of bytes past the table (same bug the disk driver documents in
++   audio/disk/lib/audio.h). Assemble from bytes: endian-neutral, correct on console too. */
++#define AUDIO_SEQ_FONT_TABLE_U16(table, seqId) \
++    ((u16)(((table)[(seqId) * 2] << 8) | (table)[(seqId) * 2 + 1]))
+ extern u16 gNumSequences;
+ extern SoundFont* gSoundFontList;
+ extern AudioBufferParameters gAudioBufferParams;
+diff --git a/src/audio/rom/lib/heap.c b/src/audio/rom/lib/heap.c
+index cbafd93..675868b 100644
+--- a/src/audio/rom/lib/heap.c
++++ b/src/audio/rom/lib/heap.c
+@@ -799,6 +799,13 @@ void* AudioHeap_AllocPermanent(s32 tableType, s32 id, size_t size) {
+     gPermanentCache.entries[index].tableType = tableType;
+     gPermanentCache.entries[index].id = id;
+     gPermanentCache.entries[index].size = size;
++#ifdef PORT
++    /* AVOID_UB (same fix as audio/disk/lib/heap.c): fell off the end of a non-void
++       function. The MIPS compiler happened to leave ramAddr in the return register; on ARM
++       the garbage return value (observed 0x1) reached AudioLoad_SyncLoad as the font
++       buffer, so every font "loaded" from address 1 and parsed as zeros. */
++    return ramAddr;
++#endif
+ }
+ 
+ void* AudioHeap_AllocTemporarySampleCache(size_t size, s32 fontId, void* sampleAddr, s8 medium) {
+diff --git a/src/audio/rom/lib/load.c b/src/audio/rom/lib/load.c
+index 78091d8..fc28d2b 100644
+--- a/src/audio/rom/lib/load.c
++++ b/src/audio/rom/lib/load.c
+@@ -300,7 +300,7 @@ void AudioLoad_InitTable(AudioTable* table, u32 romAddr, u16 diskLba) {
+ }
+ 
+ void* AudioLoad_SyncLoadSeqFonts(s32 seqId, u32* outFontId) {
+-    s32 index = ((u16*) gSeqFontTable)[AudioLoad_GetLoadTableIndex(SEQUENCE_TABLE, seqId)];
++    s32 index = AUDIO_SEQ_FONT_TABLE_U16(gSeqFontTable, AudioLoad_GetLoadTableIndex(SEQUENCE_TABLE, seqId));
+     s32 fontId = 0xFF;
+     s32 numFonts;
+     void* soundFontData;
+@@ -342,6 +342,9 @@ s32 AudioLoad_SyncLoadSample(Sample* sample, s32 fontId) {
+         sample->medium = MEDIUM_RAM;
+         sample->sampleAddr = sampleAddr;
+     }
++#ifdef PORT
++    return 0; /* AVOID_UB: fell off the end (mirrors audio/disk/lib/load.c). */
++#endif
+ }
+ 
+ s32 AudioLoad_SyncLoadInstrument(s32 fontId, s32 instId, s32 drumId) {
+@@ -368,6 +371,9 @@ s32 AudioLoad_SyncLoadInstrument(s32 fontId, s32 instId, s32 drumId) {
+         AudioLoad_SyncLoadSample(drum->tunedSample.sample, fontId);
+         return 0;
+     }
++#ifdef PORT
++    return -1; /* AVOID_UB: fell off the end (mirrors audio/disk/lib/load.c). */
++#endif
+ }
+ 
+ void AudioLoad_AsyncLoadSampleBank(s32 sampleBankId, s32 nChunks, s32 retData, OSMesgQueue* retQueue) {
+@@ -378,7 +384,7 @@ void AudioLoad_AsyncLoadSampleBank(s32 sampleBankId, s32 nChunks, s32 retData, O
+ }
+ 
+ void AudioLoad_AsyncLoadSeq(s32 seqId, s32 nChunks, s32 retData, OSMesgQueue* retQueue) {
+-    s32 index = ((u16*) gSeqFontTable)[AudioLoad_GetLoadTableIndex(SEQUENCE_TABLE, seqId)];
++    s32 index = AUDIO_SEQ_FONT_TABLE_U16(gSeqFontTable, AudioLoad_GetLoadTableIndex(SEQUENCE_TABLE, seqId));
+     s32 fontsLeft;
+ 
+     for (fontsLeft = gSeqFontTable[index++]; fontsLeft > 0; fontsLeft--) {
+@@ -388,7 +394,7 @@ void AudioLoad_AsyncLoadSeq(s32 seqId, s32 nChunks, s32 retData, OSMesgQueue* re
+ }
+ 
+ u8* AudioLoad_GetFontsForSequence(s32 seqId, u32* outNumFonts) {
+-    s32 index = ((u16*) gSeqFontTable)[AudioLoad_GetLoadTableIndex(SEQUENCE_TABLE, seqId)];
++    s32 index = AUDIO_SEQ_FONT_TABLE_U16(gSeqFontTable, AudioLoad_GetLoadTableIndex(SEQUENCE_TABLE, seqId));
+ 
+     *outNumFonts = gSeqFontTable[index++];
+     if (*outNumFonts == 0) {
+@@ -398,7 +404,7 @@ u8* AudioLoad_GetFontsForSequence(s32 seqId, u32* outNumFonts) {
+ }
+ 
+ void AudioLoad_DiscardSeqFonts(s32 seqId) {
+-    s32 index = ((u16*) gSeqFontTable)[AudioLoad_GetLoadTableIndex(SEQUENCE_TABLE, seqId)];
++    s32 index = AUDIO_SEQ_FONT_TABLE_U16(gSeqFontTable, AudioLoad_GetLoadTableIndex(SEQUENCE_TABLE, seqId));
+     s32 numFonts = gSeqFontTable[index++];
+     u32 fontId;
+ 
+@@ -439,6 +445,9 @@ s32 AudioLoad_SyncInitSeqPlayer(s32 seqPlayerIndex, s32 seqId, s32 arg2) {
+     }
+     gSeqPlayers[seqPlayerIndex].skipTicks = 0;
+     AudioLoad_SyncInitSeqPlayerInternal(seqPlayerIndex, seqId, arg2);
++#ifdef PORT
++    return 0; /* AVOID_UB: fell off the end (mirrors audio/disk/lib/load.c). */
++#endif
+ }
+ 
+ s32 AudioLoad_SyncInitSeqPlayerSkipTicks(s32 seqPlayerIndex, s32 seqId, s32 skipTicks) {
+@@ -447,6 +456,9 @@ s32 AudioLoad_SyncInitSeqPlayerSkipTicks(s32 seqPlayerIndex, s32 seqId, s32 skip
+     }
+     gSeqPlayers[seqPlayerIndex].skipTicks = skipTicks;
+     AudioLoad_SyncInitSeqPlayerInternal(seqPlayerIndex, seqId, 0);
++#ifdef PORT
++    return 0; /* AVOID_UB: fell off the end (mirrors audio/disk/lib/load.c). */
++#endif
+ }
+ 
+ void AudioLoad_SyncInitSeqPlayerInternal(s32 seqPlayerIndex, s32 seqId, s32 arg2) {
+@@ -458,7 +470,7 @@ void AudioLoad_SyncInitSeqPlayerInternal(s32 seqPlayerIndex, s32 seqId, s32 arg2
+ 
+     seqId = AudioLoad_GetLoadTableIndex(SEQUENCE_TABLE, seqId);
+     AudioSeq_SequencePlayerDisable(&gSeqPlayers[seqPlayerIndex]);
+-    index = ((u16*) gSeqFontTable)[seqId];
++    index = AUDIO_SEQ_FONT_TABLE_U16(gSeqFontTable, seqId);
+     fontId = 0xFF;
+     for (numFonts = gSeqFontTable[index++]; numFonts > 0; numFonts--) {
+         fontId = gSeqFontTable[index++];
+@@ -595,10 +607,27 @@ void* AudioLoad_SyncLoad(u32 tableType, u32 id, bool* didAllocate) {
+         }
+ 
+         *didAllocate = true;
+-        if (medium == MEDIUM_LBA) {
+-            AudioLoad_SyncDiskDrive(romAddr, ramAddr, size, table->header.diskLba);
+-        } else {
+-            AudioLoad_SyncDma(romAddr, ramAddr, size, medium);
++        {
++#ifdef PORT
++            /* [audio-load] receipt (diag_audio/verbose only): which table/id loads when and
++               for how long — the hardware-verification oracle for the boot/race-start
++               hitch fixes. One line per first load of an entry; cache hits skip this. */
++            extern int gdx_diag_audio_enabled(void);
++            extern double gdx_host_ms_now(void);
++            extern void gdx_dbg_logf(const char* fmt, ...);
++            double gdxT0 = gdx_diag_audio_enabled() ? gdx_host_ms_now() : 0.0;
++#endif
++            if (medium == MEDIUM_LBA) {
++                AudioLoad_SyncDiskDrive(romAddr, ramAddr, size, table->header.diskLba);
++            } else {
++                AudioLoad_SyncDma(romAddr, ramAddr, size, medium);
++            }
++#ifdef PORT
++            if (gdx_diag_audio_enabled()) {
++                gdx_dbg_logf("[audio-load] sync table=%u id=%u size=%u ms=%d\n", (unsigned) tableType,
++                             (unsigned) id, (unsigned) size, (int) (gdx_host_ms_now() - gdxT0));
++            }
++#endif
+         }
+         loadStatus = (cachePolicy == CACHEPOLICY_0) ? LOAD_STATUS_PERMANENTLY_LOADED : LOAD_STATUS_COMPLETE;
+     }
+@@ -659,6 +688,390 @@ AudioTable* AudioLoad_GetLoadTable(s32 tableType) {
+     return table;
+ }
+ 
++#ifdef PORT
++/* Host soundfont conversion, ported from audio/disk/lib/load.c's gdx_fontconv layer. The
++ * console relocation (AudioLoad_RelocateFont/RelocateSample below, now compiled out) patches
++ * the font binary in place: 32-bit big-endian offset slots become KSEG0 pointers and the
++ * Drum/Instrument/Sample structs are read straight out of that binary. On a little-endian
++ * host every multi-byte field reads byte-swapped, so the "relocated" font is garbage --
++ * pointers into nowhere, sizes in the megabytes. Parse the raw image into freshly allocated
++ * host-native structs instead.
++ *
++ * ROM-build font image layout (offsets relative to image start, all big-endian; this is the
++ * cart audio_bank layout, which has NO sound-effect array -- unlike the EK disk fonts):
++ *   u32[0]            drum pointer-array offset (u32[numDrums] entries)
++ *   u32[1 + i]        instrument i offset
++ *   Instrument (0x20): u8 isRelocated, u8 rangeLo, u8 rangeHi, u8 adsrDecayIndex,
++ *                      u32 envelope, 3 x {u32 sample, f32 tuning}
++ *   Drum (0x10):       u8 adsrDecayIndex, u8 pan, u8 isRelocated, pad,
++ *                      {u32 sample, f32 tuning}, u32 envelope
++ *   Sample (0x10):     u32 flags (codec:4 medium:2 bit26:1 isRel:1 size:24),
++ *                      u32 sampleAddr, u32 loop, u32 book
++ *   AdpcmLoop:         u32 start, end, count, pad; +s16[16] if count != 0
++ *   AdpcmBook:         s32 order, s32 numPredictors, s16[8*order*numPred]
++ *   EnvelopePoint:     s16 delay, s16 arg
++ */
++
++extern void gdx_cki(const char* s, int v);
++
++#define GDX_FONTCONV_MAX_OBJS 256
++#define GDX_FONTCONV_ENV_POINTS 64
++
++typedef struct {
++    u32 offset;
++    void* host;
++} GdxFontConvEntry;
++
++typedef struct {
++    const u8* data;
++    SampleBankRelocInfo* reloc;
++    s32 fontId;
++    GdxFontConvEntry samples[GDX_FONTCONV_MAX_OBJS];
++    s32 numSamples;
++    GdxFontConvEntry loops[GDX_FONTCONV_MAX_OBJS];
++    s32 numLoops;
++    GdxFontConvEntry books[GDX_FONTCONV_MAX_OBJS];
++    s32 numBooks;
++    GdxFontConvEntry envs[GDX_FONTCONV_MAX_OBJS];
++    s32 numEnvs;
++} GdxFontConv;
++
++static void* gdx_fontconv_alloc(s32 fontId, size_t size) {
++    /* Allocate from the persistent top-of-RDRAM arena, not the CRT heap: these
++       AdpcmBook/AdpcmLoop pointers get packed into 32-bit Acmd words and reconstructed by
++       the audio HLE via low32 lookup, and fonts here are CACHEPOLICY_0 (permanent), so the
++       backing store must never be rewound. `unsigned int` spelling: unambiguously 32 bits
++       inside decomp TUs on every target this driver builds for (ILP32 3DS; x64 desktop
++       passes u32 args in the same registers, zero-extended). */
++    extern void* gdx_rdram_persist_alloc_raw(unsigned int size, unsigned int align);
++    void* p = gdx_rdram_persist_alloc_raw((unsigned int) size, 16u);
++    if (p != NULL) {
++        u8* b = p;
++        size_t i;
++        for (i = 0; i < size; i++) {
++            b[i] = 0;
++        }
++    }
++    (void) fontId;
++    return p;
++}
++
++static u32 gdx_rd_u32(const u8* p) {
++    return ((u32) p[0] << 24) | ((u32) p[1] << 16) | ((u32) p[2] << 8) | (u32) p[3];
++}
++
++static s16 gdx_rd_s16(const u8* p) {
++    return (s16) (((u16) p[0] << 8) | (u16) p[1]);
++}
++
++static f32 gdx_rd_f32(const u8* p) {
++    union {
++        u32 w;
++        f32 f;
++    } u;
++    u.w = gdx_rd_u32(p);
++    return u.f;
++}
++
++static void* gdx_fontconv_find(GdxFontConvEntry* list, s32 count, u32 offset) {
++    s32 i;
++    for (i = 0; i < count; i++) {
++        if (list[i].offset == offset) {
++            return list[i].host;
++        }
++    }
++    return NULL;
++}
++
++static void gdx_fontconv_remember(GdxFontConvEntry* list, s32* count, u32 offset, void* host) {
++    if (*count < GDX_FONTCONV_MAX_OBJS) {
++        list[*count].offset = offset;
++        list[*count].host = host;
++        (*count)++;
++    }
++}
++
++/* Capped warning when a converted envelope would overrun the copied window (ADSR_GOTO
++   target outside [0, GDX_FONTCONV_ENV_POINTS)), or never terminates within the cap. */
++static void gdx_fontconv_env_warn(s32 fontId, u32 offset, s32 index, s32 target, s32 kind) {
++    static s32 sEnvWarns = 0;
++
++    if (sEnvWarns >= 8) {
++        return;
++    }
++    sEnvWarns++;
++    if (kind == 0) {
++        gdx_cki("[fontconv] WARN ADSR_GOTO target out of range, clamped -- fontId", (int) fontId);
++    } else {
++        gdx_cki("[fontconv] WARN envelope exceeds cap (no terminator) -- fontId", (int) fontId);
++    }
++    gdx_cki("[fontconv]   envOffset", (int) offset);
++    gdx_cki("[fontconv]   pointIndex<<16|targetOrCap", (index << 16) | (target & 0xFFFF));
++}
++
++static EnvelopePoint* gdx_fontconv_envelope(GdxFontConv* conv, u32 offset) {
++    EnvelopePoint* env;
++    s32 i;
++    s32 terminated;
++
++    if (offset == 0) {
++        return NULL;
++    }
++    env = gdx_fontconv_find(conv->envs, conv->numEnvs, offset);
++    if (env != NULL) {
++        return env;
++    }
++    /* Envelope length is implicit (terminated by delay <= 0, but ADSR_GOTO can jump within
++       the array); copy a fixed window of GDX_FONTCONV_ENV_POINTS points. */
++    env = gdx_fontconv_alloc(conv->fontId, GDX_FONTCONV_ENV_POINTS * sizeof(EnvelopePoint));
++    if (env == NULL) {
++        return NULL;
++    }
++    for (i = 0; i < GDX_FONTCONV_ENV_POINTS; i++) {
++        env[i].delay = gdx_rd_s16(conv->data + offset + i * 4);
++        env[i].arg = gdx_rd_s16(conv->data + offset + i * 4 + 2);
++    }
++    terminated = 0;
++    for (i = 0; i < GDX_FONTCONV_ENV_POINTS; i++) {
++        s16 delay = env[i].delay;
++        if (delay == ADSR_GOTO) {
++            s16 target = env[i].arg;
++            if ((target < 0) || (target >= GDX_FONTCONV_ENV_POINTS)) {
++                gdx_fontconv_env_warn(conv->fontId, offset, i, target, 0);
++                env[i].arg = (s16) (GDX_FONTCONV_ENV_POINTS - 1);
++            }
++        }
++        if (delay <= 0) {
++            terminated = 1;
++            break;
++        }
++    }
++    if (!terminated) {
++        gdx_fontconv_env_warn(conv->fontId, offset, GDX_FONTCONV_ENV_POINTS, 0, 1);
++    }
++    gdx_fontconv_remember(conv->envs, &conv->numEnvs, offset, env);
++    return env;
++}
++
++static AdpcmLoop* gdx_fontconv_loop(GdxFontConv* conv, u32 offset) {
++    AdpcmLoop* loop;
++    s32 i;
++
++    if (offset == 0) {
++        return NULL;
++    }
++    loop = gdx_fontconv_find(conv->loops, conv->numLoops, offset);
++    if (loop != NULL) {
++        return loop;
++    }
++    loop = gdx_fontconv_alloc(conv->fontId, sizeof(AdpcmLoop));
++    if (loop == NULL) {
++        return NULL;
++    }
++    loop->header.start = gdx_rd_u32(conv->data + offset);
++    loop->header.end = gdx_rd_u32(conv->data + offset + 4);
++    loop->header.count = gdx_rd_u32(conv->data + offset + 8);
++    if (loop->header.count != 0) {
++        for (i = 0; i < 16; i++) {
++            loop->predictorState[i] = gdx_rd_s16(conv->data + offset + 0x10 + i * 2);
++        }
++    }
++    gdx_fontconv_remember(conv->loops, &conv->numLoops, offset, loop);
++    return loop;
++}
++
++static AdpcmBook* gdx_fontconv_book(GdxFontConv* conv, u32 offset) {
++    AdpcmBook* book;
++    s32 order;
++    s32 numPredictors;
++    s32 numEntries;
++    s32 i;
++
++    if (offset == 0) {
++        return NULL;
++    }
++    book = gdx_fontconv_find(conv->books, conv->numBooks, offset);
++    if (book != NULL) {
++        return book;
++    }
++    order = (s32) gdx_rd_u32(conv->data + offset);
++    numPredictors = (s32) gdx_rd_u32(conv->data + offset + 4);
++    if ((order < 1) || (order > 8) || (numPredictors < 1) || (numPredictors > 8)) {
++        /* Insane header = we are parsing the wrong bytes. */
++        return NULL;
++    }
++    numEntries = 8 * order * numPredictors;
++    book = gdx_fontconv_alloc(conv->fontId, sizeof(AdpcmBookHeader) + numEntries * sizeof(s16));
++    if (book == NULL) {
++        return NULL;
++    }
++    book->header.order = order;
++    book->header.numPredictors = numPredictors;
++    for (i = 0; i < numEntries; i++) {
++        book->book[i] = gdx_rd_s16(conv->data + offset + 8 + i * 2);
++    }
++    gdx_fontconv_remember(conv->books, &conv->numBooks, offset, book);
++    return book;
++}
++
++static Sample* gdx_fontconv_sample(GdxFontConv* conv, u32 offset) {
++    Sample* sample;
++    u32 flags;
++    u32 rawAddr;
++    u32 origMedium;
++
++    if (offset == 0) {
++        return NULL;
++    }
++    sample = gdx_fontconv_find(conv->samples, conv->numSamples, offset);
++    if (sample != NULL) {
++        return sample;
++    }
++    sample = gdx_fontconv_alloc(conv->fontId, sizeof(Sample));
++    if (sample == NULL) {
++        return NULL;
++    }
++
++    /* ROM-build Sample flags word: codec:4 medium:2 unk_bit26:1 isRelocated:1 size:24
++       (MSB-first, per this driver's Sample bitfield -- note the disk build spells the top
++       nibble unk0:1 codec:3 instead). */
++    flags = gdx_rd_u32(conv->data + offset);
++    sample->codec = (flags >> 28) & 0xF;
++    origMedium = (flags >> 26) & 3;
++    sample->unk_bit26 = (flags >> 25) & 1;
++    sample->size = flags & 0xFFFFFF;
++    rawAddr = gdx_rd_u32(conv->data + offset + 4);
++
++    switch (origMedium) {
++        case MEDIUM_RAM:
++            sample->sampleAddr = (u8*) (uintptr_t) ((u32) conv->reloc->baseAddr1 + rawAddr);
++            sample->medium = conv->reloc->medium1;
++            break;
++        case MEDIUM_LBA:
++            sample->sampleAddr = (u8*) (uintptr_t) ((u32) conv->reloc->baseAddr2 + rawAddr);
++            sample->medium = conv->reloc->medium2;
++            break;
++        default:
++            /* Cart / disk-drive: sampleAddr stays a device address. */
++            sample->sampleAddr = (u8*) (uintptr_t) rawAddr;
++            sample->medium = origMedium;
++            break;
++    }
++
++    sample->loop = gdx_fontconv_loop(conv, gdx_rd_u32(conv->data + offset + 8));
++    sample->book = gdx_fontconv_book(conv, gdx_rd_u32(conv->data + offset + 0xC));
++    sample->isRelocated = 1;
++
++    if (sample->unk_bit26 && (sample->medium != MEDIUM_RAM) &&
++        (gNumUsedSamples < (s32) ARRAY_COUNT(gUsedSamples))) {
++        gUsedSamples[gNumUsedSamples++] = sample;
++    }
++
++    gdx_fontconv_remember(conv->samples, &conv->numSamples, offset, sample);
++    return sample;
++}
++
++static void gdx_fontconv_tuned_sample(GdxFontConv* conv, TunedSample* dest, u32 entryOffset) {
++    dest->sample = gdx_fontconv_sample(conv, gdx_rd_u32(conv->data + entryOffset));
++    dest->tuning = gdx_rd_f32(conv->data + entryOffset + 4);
++}
++
++static void gdx_audio_convert_font(s32 fontId, const u8* fontData, SampleBankRelocInfo* relocInfo) {
++    static GdxFontConv sConv; /* large; audio thread only */
++    s32 numDrums = gSoundFontList[fontId].numDrums;
++    s32 numInstruments = gSoundFontList[fontId].numInstruments;
++    u32 drumBaseOffset;
++    Drum** drumPtrs = NULL;
++    Instrument** instPtrs = NULL;
++    s32 i;
++
++    bzero(&sConv, sizeof(sConv));
++    sConv.data = fontData;
++    sConv.reloc = relocInfo;
++    sConv.fontId = fontId;
++
++    drumBaseOffset = gdx_rd_u32(fontData);
++
++    {
++        extern void gdx_dbg_logf(const char* fmt, ...);
++        extern int gdx_diag_audio_enabled(void);
++        if (gdx_diag_audio_enabled()) {
++            gdx_dbg_logf("[fontconv] font=%d data=%08X hdr=%08X %08X %08X %08X\n", (int) fontId,
++                         (unsigned) (uintptr_t) fontData, (unsigned) gdx_rd_u32(fontData),
++                         (unsigned) gdx_rd_u32(fontData + 4), (unsigned) gdx_rd_u32(fontData + 8),
++                         (unsigned) gdx_rd_u32(fontData + 12));
++        }
++    }
++
++    if (numDrums > 0) {
++        drumPtrs = gdx_fontconv_alloc(fontId, numDrums * sizeof(Drum*));
++        if ((drumPtrs != NULL) && (drumBaseOffset != 0)) {
++            for (i = 0; i < numDrums; i++) {
++                u32 drumOffset = gdx_rd_u32(fontData + drumBaseOffset + i * 4);
++                if (drumOffset != 0) {
++                    Drum* drum = gdx_fontconv_alloc(fontId, sizeof(Drum));
++                    if (drum == NULL) {
++                        continue;
++                    }
++                    drum->adsrDecayIndex = fontData[drumOffset];
++                    drum->pan = fontData[drumOffset + 1];
++                    drum->isRelocated = 1;
++                    gdx_fontconv_tuned_sample(&sConv, &drum->tunedSample, drumOffset + 4);
++                    drum->envelope = gdx_fontconv_envelope(&sConv, gdx_rd_u32(fontData + drumOffset + 0xC));
++                    drumPtrs[i] = drum;
++                }
++            }
++        }
++    }
++
++    if (numInstruments > 126) {
++        numInstruments = 126;
++    }
++    if (numInstruments > 0) {
++        instPtrs = gdx_fontconv_alloc(fontId, numInstruments * sizeof(Instrument*));
++        if (instPtrs != NULL) {
++            for (i = 0; i < numInstruments; i++) {
++                /* ROM layout: instrument i offset slot is u32[1 + i]. */
++                u32 instOffset = gdx_rd_u32(fontData + 4 + i * 4);
++                if (instOffset != 0) {
++                    Instrument* inst = gdx_fontconv_alloc(fontId, sizeof(Instrument));
++                    if (inst == NULL) {
++                        continue;
++                    }
++                    inst->isRelocated = 1;
++                    inst->normalRangeLo = fontData[instOffset + 1];
++                    inst->normalRangeHi = fontData[instOffset + 2];
++                    inst->adsrDecayIndex = fontData[instOffset + 3];
++                    inst->envelope = gdx_fontconv_envelope(&sConv, gdx_rd_u32(fontData + instOffset + 4));
++                    if (inst->normalRangeLo != 0) {
++                        gdx_fontconv_tuned_sample(&sConv, &inst->lowPitchTunedSample, instOffset + 8);
++                    }
++                    gdx_fontconv_tuned_sample(&sConv, &inst->normalPitchTunedSample, instOffset + 0x10);
++                    if (inst->normalRangeHi != 0x7F) {
++                        gdx_fontconv_tuned_sample(&sConv, &inst->highPitchTunedSample, instOffset + 0x18);
++                    }
++                    instPtrs[i] = inst;
++                }
++            }
++        }
++    }
++
++    gSoundFontList[fontId].drums = drumPtrs;
++    gSoundFontList[fontId].instruments = instPtrs;
++
++    {
++        extern void gdx_dbg_logf(const char* fmt, ...);
++        extern int gdx_diag_audio_enabled(void);
++        if (gdx_diag_audio_enabled()) {
++            gdx_dbg_logf("[fontconv] font=%d drums=%d insts=%d samples=%d loops=%d books=%d envs=%d\n",
++                         (int) fontId, (int) numDrums, (int) numInstruments, (int) sConv.numSamples,
++                         (int) sConv.numLoops, (int) sConv.numBooks, (int) sConv.numEnvs);
++        }
++    }
++}
++#endif /* PORT */
++
++#ifndef PORT
+ void AudioLoad_RelocateFont(s32 fontId, uintptr_t fontBaseAddr, void* relocData) {
+     uintptr_t* fontDataPtrs = fontBaseAddr;
+     Drum*** drumDataPtrs = fontBaseAddr;
+@@ -709,10 +1122,25 @@ void AudioLoad_RelocateFont(s32 fontId, uintptr_t fontBaseAddr, void* relocData)
+     gSoundFontList[fontId].drums = fontDataPtrs[0];
+     gSoundFontList[fontId].instruments = (Instrument**) &fontDataPtrs[1];
+ }
++#endif /* !PORT */
+ 
+ void AudioLoad_SyncDma(uintptr_t devAddr, u8* ramAddr, size_t size, s32 medium) {
+     size = ALIGN16(size);
+     osInvalDCache(ramAddr, size);
++#ifdef PORT
++    /* The 0x400-byte chunk loop below exists for N64 PI-bus fairness (a long audio DMA
++       must not starve higher-priority PI traffic). On the port every AudioLoad_Dma is a
++       synchronous in-RAM copy through the osEPiStartDma shim (GdxSegmentSourceRead), so
++       chunking only multiplies per-call overhead — family lookup + message round trip per
++       KB. One whole-size read replaces size/1KB round trips; measurable on race-start
++       font/sample loads (hundreds of KB) on the 268 MHz 3DS game core. */
++    if (size != 0) {
++        AudioLoad_Dma(&gSyncDmaIoMsg, OS_MESG_PRI_HIGH, OS_READ, devAddr, ramAddr, size, &gSyncDmaQueue, medium,
++                      D_800D0C20);
++        MQ_WAIT_FOR_MESG(&gSyncDmaQueue, NULL);
++    }
++    return;
++#endif
+     while (true) {
+         if (size < 0x400) {
+             break;
+@@ -1299,6 +1727,7 @@ void AudioLoad_AsyncDma(AudioAsyncLoad* asyncLoad, size_t size) {
+ void AudioLoad_AsyncDiskDrive(uintptr_t devAddr, u8* ramAddr, size_t size, s32 lba) {
+ }
+ 
++#ifndef PORT
+ void AudioLoad_RelocateSample(TunedSample* tSample, uintptr_t fontDataAddr, SampleBankRelocInfo* relocInfo) {
+     void* reloc;
+     Sample* sample;
+@@ -1330,6 +1759,7 @@ void AudioLoad_RelocateSample(TunedSample* tSample, uintptr_t fontDataAddr, Samp
+         }
+     }
+ }
++#endif /* !PORT */
+ 
+ void AudioLoad_RelocateFontAndPreloadSamples(s32 fontId, uintptr_t fontDataAddr, SampleBankRelocInfo* relocData,
+                                              s32 async) {
+@@ -1340,6 +1770,14 @@ void AudioLoad_RelocateFontAndPreloadSamples(s32 fontId, uintptr_t fontDataAddr,
+     s32 pad;
+     u32 nChunks;
+     s32 inProgress;
++#ifdef PORT
++    /* [audio-load] per-font total (diag_audio/verbose only): the sample preload below is
++       the bulk of a race-start font load — one line quantifies it on hardware. */
++    extern int gdx_diag_audio_enabled(void);
++    extern double gdx_host_ms_now(void);
++    extern void gdx_dbg_logf(const char* fmt, ...);
++    double gdxT0 = gdx_diag_audio_enabled() ? gdx_host_ms_now() : 0.0;
++#endif
+ 
+     inProgress = false;
+     if (gPreloadSampleStackTop != 0) {
+@@ -1348,7 +1786,13 @@ void AudioLoad_RelocateFontAndPreloadSamples(s32 fontId, uintptr_t fontDataAddr,
+         D_800F8AB8 = 0;
+     }
+     gNumUsedSamples = 0;
++#ifdef PORT
++    /* Host-native conversion instead of the in-place big-endian relocation; fills
++       gUsedSamples the same way (see gdx_audio_convert_font above). */
++    gdx_audio_convert_font(fontId, (const u8*) fontDataAddr, relocData);
++#else
+     AudioLoad_RelocateFont(fontId, fontDataAddr, relocData);
++#endif
+     size = 0;
+     for (i = 0; i < gNumUsedSamples; i++) {
+         size += ALIGN16(gUsedSamples[i]->size);
+@@ -1410,6 +1854,12 @@ void AudioLoad_RelocateFontAndPreloadSamples(s32 fontId, uintptr_t fontDataAddr,
+                 break;
+         }
+     }
++#ifdef PORT
++    if (gdx_diag_audio_enabled()) {
++        gdx_dbg_logf("[audio-load] font=%d preload: samples=%d async=%d ms=%d\n", (int) fontId,
++                     (int) gNumUsedSamples, (int) async, (int) (gdx_host_ms_now() - gdxT0));
++    }
++#endif
+     gNumUsedSamples = 0;
+     if ((gPreloadSampleStackTop != 0) && !inProgress) {
+         sample = gPreloadSampleStack[gPreloadSampleStackTop - 1].sample;
+diff --git a/src/audio/rom/lib/seqplayer.c b/src/audio/rom/lib/seqplayer.c
+index d0b3a94..9720d43 100644
+--- a/src/audio/rom/lib/seqplayer.c
++++ b/src/audio/rom/lib/seqplayer.c
+@@ -2,6 +2,60 @@
+ #include "audio.h"
+ #include "aseq.h"
+ 
++#ifdef PORT
++/* Ported from audio/disk/lib/seqplayer.c. Envelopes referenced by the layer/channel ENV
++   ops live inside the raw sequence blob, which stays big-endian on this port (the script
++   interpreter reads it bytewise), while Audio_AdsrUpdate consumes EnvelopePoint.delay/.arg
++   as host-order s16s. The font loader converts font envelopes; these never were. The blob
++   itself must stay untouched -- layer scripts re-run per note, so an in-place swap would
++   double-swap -- hence the pointer-keyed cache. GOTO/RESTART are non-terminal (GOTO indexes
++   within the same envelope), so conversion stops only at DISABLE/HANG or the point cap.
++   Audio-thread-only state. */
++static EnvelopePoint* AudioSeq_PortConvertSeqEnvelope(u8* raw) {
++    enum { kMaxEnvs = 64, kMaxPoints = 32 };
++    static struct {
++        u8* raw;
++        EnvelopePoint pts[32];
++    } sCache[64];
++    static s32 sCount = 0;
++    s32 i;
++    s32 p;
++
++    for (i = 0; i < sCount; i++) {
++        if (sCache[i].raw == raw) {
++            return sCache[i].pts;
++        }
++    }
++    if (sCount >= kMaxEnvs) {
++        /* Fail open to the raw pointer. 64 slots is far above the handful of distinct
++           envelopes the SE/BGM sequences define; log once if this ever trips. */
++        extern void gdx_cki(const char* s, int v);
++        static s32 sOverflowLogged = 0;
++        if (!sOverflowLogged) {
++            sOverflowLogged = 1;
++            gdx_cki("[seq-env] conversion cache FULL, failing open", kMaxEnvs);
++        }
++        return (EnvelopePoint*) raw;
++    }
++    for (p = 0; p < kMaxPoints; p++) {
++        s16 delay = (s16) ((raw[p * 4 + 0] << 8) | raw[p * 4 + 1]);
++        s16 arg = (s16) ((raw[p * 4 + 2] << 8) | raw[p * 4 + 3]);
++        sCache[sCount].pts[p].delay = delay;
++        sCache[sCount].pts[p].arg = arg;
++        if (delay == ADSR_DISABLE || delay == ADSR_HANG) {
++            break;
++        }
++    }
++    if (p == kMaxPoints) {
++        /* Unterminated within the cap: force a hang so the ADSR can never walk past the
++           converted copy. */
++        sCache[sCount].pts[kMaxPoints - 1].delay = ADSR_HANG;
++    }
++    sCache[sCount].raw = raw;
++    return sCache[sCount++].pts;
++}
++#endif
++
+ #define PORTAMENTO_IS_SPECIAL(x) ((x).mode & 0x80)
+ #define PORTAMENTO_MODE(x) ((x).mode & ~0x80)
+ 
+@@ -391,6 +445,19 @@ void AudioSeq_SequenceChannelEnable(SequencePlayer* seqPlayer, u8 channelIndex,
+ }
+ 
+ void AudioSeq_SequencePlayerDisable(SequencePlayer* seqPlayer) {
++#ifdef PORT
++    /* [audio-seq] receipt: who turns the players off (script end, error, or explicit). */
++    {
++        extern void gdx_dbg_logf(const char* fmt, ...);
++        extern int gdx_diag_audio_enabled(void);
++        static s32 sGdxDisableLogs = 0;
++        if (gdx_diag_audio_enabled() && seqPlayer->enabled && sGdxDisableLogs < 12) {
++            sGdxDisableLogs++;
++            gdx_dbg_logf("[audio-seq] SequencePlayerDisable seqId=%d finished=%d\n",
++                         (int) seqPlayer->seqId, (int) seqPlayer->finished);
++        }
++    }
++#endif
+     AudioSeq_SequencePlayerDisableChannels(seqPlayer, 0xFFFF);
+     Audio_NotePoolClear(&seqPlayer->notePool);
+ 
+@@ -673,7 +740,12 @@ s32 AudioSeq_SeqLayerProcessScriptStep2(SequenceLayer* layer) {
+ 
+             case ASEQ_OP_LAYER_ENV:
+                 cmdArg = AudioSeq_ScriptReadS16(state);
++#ifdef PORT
++                /* See AudioSeq_PortConvertSeqEnvelope: the seq blob stays big-endian. */
++                layer->adsr.envelope = AudioSeq_PortConvertSeqEnvelope(seqPlayer->seqData + (u16) cmdArg);
++#else
+                 layer->adsr.envelope = (EnvelopePoint*) (seqPlayer->seqData + (u16) cmdArg);
++#endif
+                 /* fallthrough */
+             case ASEQ_OP_LAYER_RELEASERATE:
+                 layer->adsr.decayIndex = AudioSeq_ScriptReadU8(state);
+@@ -914,7 +986,9 @@ s32 AudioSeq_SeqLayerProcessScriptStep3(SequenceLayer* layer, s32 cmd) {
+ 
+     if (channel->gateTimeRandomVariance != 0) {
+         //! @bug should probably be gateTimeRandomVariance
+-        intDelta = (layer->gateDelay * (gAudioRandom % channel->velocityRandomVariance)) / 100;
++        /* AVOID_UB (mirrors audio/disk/lib/seqplayer.c): modulo by velocityRandomVariance
++           divides by zero whenever gate variance is set but velocity variance is not. */
++        intDelta = (layer->gateDelay * (gAudioRandom % channel->gateTimeRandomVariance)) / 100;
+         if ((gAudioRandom & 0x4000) != 0) {
+             intDelta = -intDelta;
+         }
+@@ -1078,7 +1152,7 @@ void AudioSeq_SequenceChannelProcessScript(SequenceChannel* channel) {
+                 case ASEQ_OP_CHAN_FONTINSTR:
+                     cmd = (u8) cmdArgs[0];
+ 
+-                    cmdArgU16 = ((u16*) gSeqFontTable)[seqPlayer->seqId];
++                    cmdArgU16 = AUDIO_SEQ_FONT_TABLE_U16(gSeqFontTable, seqPlayer->seqId);
+                     lowBits = gSeqFontTable[cmdArgU16];
+                     cmd = gSeqFontTable[cmdArgU16 + lowBits - cmd];
+ 
+@@ -1152,7 +1226,12 @@ void AudioSeq_SequenceChannelProcessScript(SequenceChannel* channel) {
+ 
+                 case ASEQ_OP_CHAN_ENV:
+                     cmdArgU16 = (u16) cmdArgs[0];
++#ifdef PORT
++                    /* Same BE seq-blob envelope conversion as the layer ENV op. */
++                    channel->adsr.envelope = AudioSeq_PortConvertSeqEnvelope(&seqPlayer->seqData[cmdArgU16]);
++#else
+                     channel->adsr.envelope = (EnvelopePoint*) &seqPlayer->seqData[cmdArgU16];
++#endif
+                     break;
+ 
+                 case ASEQ_OP_CHAN_RELEASERATE:
+@@ -1168,7 +1247,7 @@ void AudioSeq_SequenceChannelProcessScript(SequenceChannel* channel) {
+                 case ASEQ_OP_CHAN_FONT:
+                     cmd = (u8) cmdArgs[0];
+ 
+-                    cmdArgU16 = ((u16*) gSeqFontTable)[seqPlayer->seqId];
++                    cmdArgU16 = AUDIO_SEQ_FONT_TABLE_U16(gSeqFontTable, seqPlayer->seqId);
+                     lowBits = gSeqFontTable[cmdArgU16];
+                     cmd = gSeqFontTable[cmdArgU16 + lowBits - cmd];
+ 
+@@ -1284,7 +1363,11 @@ void AudioSeq_SequenceChannelProcessScript(SequenceChannel* channel) {
+ 
+                 case ASEQ_OP_CHAN_LDSEQTOPTR:
+                     cmdArgU16 = (u16) cmdArgs[0];
+-                    channel->unkB8 = *(u16*) (seqPlayer->seqData + (u32) (cmdArgU16 + scriptState->value * 2));
++                    /* seqData stays big-endian; a host u16* read would byte-swap it. */
++                    {
++                        u8* seqPtr = seqPlayer->seqData + (u32) (cmdArgU16 + scriptState->value * 2);
++                        channel->unkB8 = (u16) ((seqPtr[0] << 8) | seqPtr[1]);
++                    }
+                     break;
+ 
+                 case ASEQ_OP_CHAN_PTRTODYNTBL:
+@@ -1292,7 +1375,11 @@ void AudioSeq_SequenceChannelProcessScript(SequenceChannel* channel) {
+                     break;
+ 
+                 case ASEQ_OP_CHAN_DYNTBLTOPTR:
+-                    channel->unkB8 = ((u16*) (channel->dynTable))[scriptState->value];
++                    /* dynTable points into big-endian seqData; byte-assemble. */
++                    {
++                        u8* dynPtr = (u8*) channel->dynTable + scriptState->value * 2;
++                        channel->unkB8 = (u16) ((dynPtr[0] << 8) | dynPtr[1]);
++                    }
+                     break;
+ 
+                 case ASEQ_OP_CHAN_DYNTBLV:
+diff --git a/src/audio/rom/lib/thread.c b/src/audio/rom/lib/thread.c
+index 4f39cd8..86991b3 100644
+--- a/src/audio/rom/lib/thread.c
++++ b/src/audio/rom/lib/thread.c
+@@ -26,7 +26,18 @@ AudioTask* AudioThread_CreateTask(void) {
+ 
+     gTotalTaskCount++;
+ 
++#ifdef PORT
++    /* Same fix as audio/disk/lib/thread.c: this per-tick osSendMesg runs on the dedicated
++       audio OS thread and races the game fiber's libultra run-queue mutations (documented
++       glibc heap abort on desktop). taskStartQueue has no consumer in this port, so post to
++       the host-side atomic counter instead and keep this thread out of libultra entirely. */
++    {
++        extern void gdx_audio_taskstart_post(unsigned int token);
++        gdx_audio_taskstart_post((unsigned int) gTotalTaskCount);
++    }
++#else
+     osSendMesg(gAudioTaskStartQueuePtr, (OSMesg) gTotalTaskCount, OS_MESG_NOBLOCK);
++#endif
+     gRspTaskIndex ^= 1;
+     gCurAiBufIndex++;
+     gCurAiBufIndex %= 3;
+@@ -77,14 +88,53 @@ AudioTask* AudioThread_CreateTask(void) {
+ 
+     i = 0;
+     if (gResetStatus == 0) {
++#ifdef PORT
++        /* Drain the lock-free cmd ring (port/gdx_audio_thread.cpp) instead of osRecvMesg,
++           mirroring audio/disk/lib/thread.c: neither the game thread's ScheduleProcessCmds
++           nor this drain may touch the libultra queue machinery across OS threads. */
++        {
++            extern int gdx_audio_cmdring_pop(unsigned int* out);
++            unsigned int cmdToken;
++            while (gdx_audio_cmdring_pop(&cmdToken) != -1) {
++                AudioThread_ProcessCmds((u32) cmdToken);
++                i++;
++            }
++        }
++        (void) msg;
++#else
+         while (MQ_GET_MESG(gThreadCmdProcQueuePtr, &msg)) {
+             AudioThread_ProcessCmds(msg);
+             i++;
+         }
++#endif
+         if (i == 0 && gThreadCmdQueueFinished) {
+             AudioThread_ScheduleProcessCmds();
+         }
+     }
++#ifdef PORT
++    /* [audio-seq] receipt: names the first zero link game-side. Every 512 tasks (~4 s) log
++       seq player 0/1 state and the live note count feeding the mixer. seq0 enabled with
++       notes=0 forever means commands/notes never start; seq0 disabled means INIT_SEQPLAYER
++       never landed (or its load failed). */
++    {
++        extern void gdx_dbg_logf(const char* fmt, ...);
++        extern int gdx_diag_audio_enabled(void);
++        static u32 sGdxSeqReceiptTick = 0;
++        if (gdx_diag_audio_enabled() && (sGdxSeqReceiptTick++ & 0x1FF) == 0) {
++            s32 gdxNotesOn = 0;
++            s32 gdxN;
++            for (gdxN = 0; gdxN < gNumNotes; gdxN++) {
++                if (gNotes[gdxN].noteSubEu.bitField.enabled) {
++                    gdxNotesOn++;
++                }
++            }
++            gdx_dbg_logf("[audio-seq] task=%u seq0{en=%d id=%d} seq1{en=%d id=%d} notesOn=%d/%d\n",
++                         (unsigned) gTotalTaskCount, (int) gSeqPlayers[0].enabled, (int) gSeqPlayers[0].seqId,
++                         (int) gSeqPlayers[1].enabled, (int) gSeqPlayers[1].seqId, (int) gdxNotesOn,
++                         (int) gNumNotes);
++        }
++    }
++#endif
+     gCurAbiCmdBuffer = AudioSynth_Update(gCurAbiCmdBuffer, &abiCmdCount, aiBuffer, gAiBufLengths[aiBufIndex]);
+     gAudioRandom = osGetCount() * (gAudioRandom + gTotalTaskCount);
+     gAudioRandom = gAiBuffers[aiBufIndex][gTotalTaskCount & 0xFF] + gAudioRandom;
+@@ -141,6 +191,18 @@ void AudioThread_ProcessGlobalCmd(AudioCmd* cmd) {
+             break;
+         case AUDIOCMD_OP_GLOBAL_INIT_SEQPLAYER:
+         case AUDIOCMD_OP_GLOBAL_INIT_SEQPLAYER_ALT:
++#ifdef PORT
++            {
++                extern void gdx_dbg_logf(const char* fmt, ...);
++                extern int gdx_diag_audio_enabled(void);
++                static s32 sGdxInitLogs = 0;
++                if (gdx_diag_audio_enabled() && sGdxInitLogs < 8) {
++                    sGdxInitLogs++;
++                    gdx_dbg_logf("[audio-cmd] INIT_SEQPLAYER player=%d seqId=%d arg2=%d\n",
++                                 (int) cmd->arg0, (int) cmd->arg1, (int) cmd->arg2);
++                }
++            }
++#endif
+             AudioLoad_SyncInitSeqPlayer(cmd->arg0, cmd->arg1, cmd->arg2);
+             AudioThread_SetFadeInTimer(cmd->arg0, cmd->data);
+             break;
+@@ -244,15 +306,28 @@ void AudioThread_InitQueues(void) {
+ }
+ 
+ void AudioThread_QueueCmd(u32 opArgs, void** data) {
+-    AudioCmd* audioCmd = &gThreadCmdBuffer[gThreadCmdWritePos & 0xFF];
++#ifdef PORT
++    /* The game thread writes this ring while the dedicated audio thread drains it inside
++       gdx_audio_thread.cpp's mutexed tick. Take that same mutex here -- the single
++       chokepoint every QueueCmd* variant funnels through (same as audio/disk). */
++    extern void gdx_audio_ctx_lock(void);
++    extern void gdx_audio_ctx_unlock(void);
++    gdx_audio_ctx_lock();
++#endif
++    {
++        AudioCmd* audioCmd = &gThreadCmdBuffer[gThreadCmdWritePos & 0xFF];
+ 
+-    audioCmd->opArgs = opArgs;
+-    audioCmd->data = *data;
++        audioCmd->opArgs = opArgs;
++        audioCmd->data = *data;
+ 
+-    gThreadCmdWritePos++;
+-    if (gThreadCmdWritePos == gThreadCmdReadPos) {
+-        gThreadCmdWritePos--;
++        gThreadCmdWritePos++;
++        if (gThreadCmdWritePos == gThreadCmdReadPos) {
++            gThreadCmdWritePos--;
++        }
+     }
++#ifdef PORT
++    gdx_audio_ctx_unlock();
++#endif
+ }
+ 
+ void AudioThread_QueueCmdF32(u32 opArgs, f32 data) {
+@@ -264,13 +339,28 @@ void AudioThread_QueueCmdU32(u32 opArgs, u32 data) {
+ }
+ 
+ void AudioThread_QueueCmdS8(u32 opArgs, s8 data) {
++#ifdef PORT
++    /* Same "root cause of total SFX silence" fix as audio/disk/lib/thread.c: AudioCmd's
++       data union puts every member at byte offset 0 regardless of endianness. The console
++       shift (data << 24) targets the top byte because big-endian offset 0 IS the top byte;
++       on a little-endian host it lands at offset 3 and cmd->asSbyte always reads 0 --
++       which zeroed every AUDIOCMD_CHANNEL_SET_IO payload (Audio_SEStart's sfxId included),
++       so no SE channel script ever started a note. Store the byte at offset 0 unshifted. */
++    u32 uData = (u8) data;
++#else
+     u32 uData = data << 0x18;
++#endif
+ 
+     AudioThread_QueueCmd(opArgs, (void**) &uData);
+ }
+ 
+ void AudioThread_QueueCmdU16(u32 opArgs, u16 data) {
++#ifdef PORT
++    /* Same little-endian fix as AudioThread_QueueCmdS8, for the asUShort union member. */
++    u32 uData = data;
++#else
+     u32 uData = data << 0x10;
++#endif
+ 
+     AudioThread_QueueCmd(opArgs, (void**) &uData);
+ }
+@@ -283,11 +373,26 @@ void AudioThread_ScheduleProcessCmds(void) {
+         D_800D185C = (((gThreadCmdWritePos - gThreadCmdReadPos) + 0x100) & 0xFF);
+     }
+ 
++#ifdef PORT
++    /* Route the cross-thread cmd token over the lock-free ring in port/gdx_audio_thread.cpp
++       instead of osSendMesg (same as audio/disk/lib/thread.c): callers include the game
++       thread (Audio_Update / Audio_SESeqStart) while the consumer drain runs on the
++       dedicated audio thread. Same OS_MESG_NOBLOCK convention: 0 = queued, -1 = full. */
++    {
++        extern int gdx_audio_cmdring_push(unsigned int token);
++        if (gdx_audio_cmdring_push(
++                (unsigned int) (((gThreadCmdReadPos & 0xFF) << 8) | (gThreadCmdWritePos & 0xFF))) != -1) {
++            gThreadCmdReadPos = gThreadCmdWritePos;
++        }
++    }
++    (void) msg;
++#else
+     msg = ((gThreadCmdReadPos & 0xFF) << 8) | (gThreadCmdWritePos & 0xFF);
+ 
+     if (osSendMesg(gThreadCmdProcQueuePtr, msg, OS_MESG_NOBLOCK) != -1) {
+         gThreadCmdReadPos = gThreadCmdWritePos;
+     }
++#endif
+ }
+ 
+ static char devstr11[] = "Continue Port\n";

@@ -1,0 +1,325 @@
+Subject: [trifast] s7 memo per-unit textures_changed predicate + bit-exact packed vertex loop (LOCKED-60 Task C)
+
+Pure delta on top of the full README stack (after lus-tri2-phase-census.patch).
+Killswitch [debug] trifast=0 (3DS, latched per task in SpReset) / GDX_TRIFAST=1 (desktop
+opt-in). Receipt: [trifast] line (port bridge, [race-dl] cadence). See the block comment
+at gdx_trifast_stat in interpreter.cpp for the bit-identity argument of each change.
+---
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -869,6 +869,90 @@
+ #define GDX_TRI2_CNT(c) \
+     do {                \
+     } while (0)
++#endif
++
++// [trifast] LOCKED-60 Task C lever. Killswitch: 3DS `[debug] trifast=0` (latched per gfx task
++// in SpReset, default ON), desktop env GDX_TRIFAST=1 (default OFF). Off = the pre-existing
++// code paths byte for byte. What it changes, each provably bit-identical in output:
++//  1. s7 draw-state memo predicate: the hit test demanded BOTH textures_changed flags clear,
++//     but the slow path only clears the flag of a unit the combiner USES — so after any
++//     SETTILE/LOAD arm (which arms both), a single-texture material left textures_changed[1]
++//     armed forever and every subsequent draw (tri AND rect) missed the memo: the [tri2]
++//     census measured memo=0/27527 in a 30-machine race window. A unit the combiner does not
++//     use contributes nothing to the banked derivation (its extents stay zero, its import is
++//     never run), so its flag is irrelevant to the hit; the flag itself is left armed for the
++//     next combiner that does use the unit (that draw misses on the comb key and imports).
++//  2. Packed vertex emission ([triloop] path) arithmetic: uint8/255.0f through a 256-entry
++//     table of the same expression; UV normalisation by a power-of-two extent as a multiply by
++//     the exact reciprocal (division and multiplication by 2^k are both correctly rounded
++//     results of the same real number); the shifts>0..10 divide by 1<<shifts likewise;
++//     newlib's fminf (two __fpclassifyf calls) inlined with its exact NaN policy; the SHADE
++//     combiner-input case read straight from the vertex; the per-vertex fog-line note hoisted
++//     to one call per tri (same arguments, last write wins, no reader in between).
++extern "C" uint32_t gdx_trifast_stat[13];
++enum {
++    kGdxTfHit = 0,     // memo hits
++    kGdxTfHitNew,      // hits the legacy predicate would have refused (tc[unused] armed)
++    kGdxTfMissDirty,   // miss reasons, first failing test in legacy order
++    kGdxTfMissInvalid,
++    kGdxTfMissComb,
++    kGdxTfMissTile,
++    kGdxTfMissTc0,
++    kGdxTfMissTc1,
++    kGdxTfUvMul,       // vertex-unit UV normalisations taken as an exact multiply
++    kGdxTfUvDiv,       // ... left as a divide (non-pow2 extent)
++    kGdxTfFastTris,    // tris emitted through the fast packed loop
++    kGdxTfVfyPack,     // trifast=2: fast-loop tris whose 36 floats differ from the legacy loop
++    kGdxTfVfyMemo,     // trifast=2: new-predicate hits whose banked extents the slow path disagrees with
++    kGdxTfCount
++};
++extern "C" uint32_t gdx_trifast_stat[kGdxTfCount] = {};
++#ifdef __3DS__
++extern "C" int gdx3ds_config_get_int(const char* section, const char* key, int fallback) __attribute__((weak));
++static bool sGdxTriFast = true;
++// trifast=2: VERIFY mode — the fast paths run and are then shadowed by the legacy computation
++// (memo hit re-derived through the slow path, fast packed tri re-emitted by the legacy loop into
++// scratch) with every disagreement counted in the receipt. Parity proof independent of game
++// nondeterminism; not a performance mode.
++static bool sGdxTriFastVerify = false;
++static void GdxTriFastRefresh() {
++    int mode = 1;
++    if (&gdx3ds_config_get_int != nullptr) {
++        mode = gdx3ds_config_get_int("debug", "trifast", 1);
++    } else if (std::getenv("GDX_TRIFAST_OFF") != nullptr) {
++        mode = 0;
++    }
++    sGdxTriFast = mode != 0;
++    sGdxTriFastVerify = mode == 2;
++}
++extern "C" int gdx_trifast_enabled(void) {
++    return sGdxTriFastVerify ? 2 : (sGdxTriFast ? 1 : 0);
++}
++#else
++static const bool sGdxTriFast = std::getenv("GDX_TRIFAST") != nullptr;
++static const bool sGdxTriFastVerify = false;
++#endif
++#ifdef __3DS__
++// uint8 -> [0,1] float, bit-identical to `(int)b / 255.0f` (int->float is exact, then one
++// correctly rounded divide — the table holds exactly those results).
++static const struct GdxByteToUnitTable {
++    float v[256];
++    GdxByteToUnitTable() {
++        for (int k = 0; k < 256; k++) {
++            v[k] = k / 255.0f;
++        }
++    }
++} sGdxByteToUnit;
++// newlib s_fminf.c verbatim semantics: NaN x -> y, NaN y -> x, else the smaller.
++static inline float GdxFminExact(float x, float y) {
++    if (x != x) {
++        return y;
++    }
++    if (y != y) {
++        return x;
++    }
++    return x < y ? x : y;
++}
+ #endif
+ 
+ // Workshop texture-dump hooks (port/gdx_workshop.cpp).
+@@ -3910,12 +3994,27 @@
+     // first_tile key covers the switch BACK, where textures_changed stays clear.
+     GfxS7TriStateMemo& s7Memo = is_rect ? sGfxS7RectMemo : sGfxS7TriMemo;
+     const uint8_t s7DirtyBit = is_rect ? kGfxS7DirtyRect : kGfxS7DirtyTri;
++    // [trifast] per-unit textures_changed test (see the block comment at gdx_trifast_stat).
++    const bool s7TcLegacyOk = !mRdp->textures_changed[0] && !mRdp->textures_changed[1];
++    const bool s7TcOk = sGdxTriFast ? ((!comb->usedTextures[0] || !mRdp->textures_changed[0]) &&
++                                       (!comb->usedTextures[1] || !mRdp->textures_changed[1]))
++                                    : s7TcLegacyOk;
+     const bool s7TexMemoHit = (sGfxS7DirtyMask & s7DirtyBit) == 0 && s7Memo.valid &&
+                               s7Memo.comb == static_cast<const void*>(comb) &&
+-                              (!is_rect || s7Memo.first_tile == mRdp->first_tile_index) &&
+-                              !mRdp->textures_changed[0] && !mRdp->textures_changed[1];
+-    if (s7TexMemoHit) {
++                              (!is_rect || s7Memo.first_tile == mRdp->first_tile_index) && s7TcOk;
++    // [trifast] verify: a hit the legacy predicate refuses is re-derived by the slow path below
++    // and compared against the banked record afterwards (GdxS7VerifyBank).
++    const bool s7VerifyNewHit = sGdxTriFastVerify && s7TexMemoHit && !s7TcLegacyOk;
++    GfxS7TriStateMemo s7VerifyBank;
++    if (s7VerifyNewHit) {
++        s7VerifyBank = s7Memo;
++    }
++    if (s7TexMemoHit && !s7VerifyNewHit) {
+         GDX_TRI2_CNT(MemoHit);
++        gdx_trifast_stat[kGdxTfHit]++;
++        if (!s7TcLegacyOk) {
++            gdx_trifast_stat[kGdxTfHitNew]++;
++        }
+         tm = s7Memo.tm;
+         for (int i = 0; i < 2; i++) {
+             tex_width[i] = s7Memo.tex_width[i];
+@@ -3926,6 +4025,14 @@
+         }
+     } else {
+     GDX_TRI2_CNT(MemoMiss);
++    // [trifast] receipt: first failing test, legacy order (verify re-derivations are hits).
++    if (!s7VerifyNewHit)
++    gdx_trifast_stat[(sGfxS7DirtyMask & s7DirtyBit) != 0 ? kGdxTfMissDirty
++                     : !s7Memo.valid                      ? kGdxTfMissInvalid
++                     : s7Memo.comb != static_cast<const void*>(comb) ? kGdxTfMissComb
++                     : (is_rect && s7Memo.first_tile != mRdp->first_tile_index) ? kGdxTfMissTile
++                     : mRdp->textures_changed[0] ? kGdxTfMissTc0
++                                                 : kGdxTfMissTc1]++;
+     for (int i = 0; i < 2; i++) {
+         uint32_t tile = (i == 1) ? texel1Tile : texel0Tile;
+         effective_tile[i] = tile;
+@@ -4135,6 +4242,21 @@
+         s7Memo.first_tile = mRdp->first_tile_index;
+         s7Memo.valid = true;
+         sGfxS7DirtyMask &= static_cast<uint8_t>(~s7DirtyBit);
++        if (s7VerifyNewHit) {
++            gdx_trifast_stat[kGdxTfHit]++; // a hit of the new predicate, re-derived for checking
++            gdx_trifast_stat[kGdxTfHitNew]++;
++            bool same = s7VerifyBank.tm == tm;
++            for (int i = 0; i < 2; i++) {
++                same = same && s7VerifyBank.tex_width[i] == tex_width[i] &&
++                       s7VerifyBank.tex_height[i] == tex_height[i] &&
++                       s7VerifyBank.tex_width2[i] == tex_width2[i] &&
++                       s7VerifyBank.tex_height2[i] == tex_height2[i] &&
++                       s7VerifyBank.effective_tile[i] == effective_tile[i];
++            }
++            if (!same) {
++                gdx_trifast_stat[kGdxTfVfyMemo]++;
++            }
++        }
+     }
+     }
+     GDX_TRI2_LAP(Memo);
+@@ -4197,7 +4319,7 @@
+     // [perf-s7] Both calls are virtual round trips into the backend that only depend on prg and
+     // the bound framebuffer, and every opcode that can switch either invalidates the memo.
+     // [texrect] Rect draws bank/consume via their own instance (s7Memo aliases it above).
+-    if (s7TexMemoHit && s7Memo.prg == static_cast<const void*>(prg)) {
++    if (s7TexMemoHit && !s7VerifyNewHit && s7Memo.prg == static_cast<const void*>(prg)) {
+         numInputs = s7Memo.numInputs;
+         usedTextures[0] = s7Memo.usedTextures[0];
+         usedTextures[1] = s7Memo.usedTextures[1];
+@@ -4402,8 +4524,125 @@
+         }
+ 
+         float* gdxOut = sGdxPackDst + (size_t)mBufVboNumTris * (3 * GDX3DS_VBOPACK_STRIDE);
++        if (sGdxTriFast) {
++            // [trifast] Same emission as the loop below with the per-vertex divides, library
++            // calls and mux switches lifted out (each substitution bit-identical, see the
++            // gdx_trifast_stat block comment). Per-tri prep, then three straight-line vertices.
++            gdx_trifast_stat[kGdxTfFastTris]++;
++            const bool bilerp = (mRdp->other_mode_h & (3U << G_MDSFT_TEXTFILT)) == G_TF_BILERP;
++            const bool halfTexel = bilerp && (!is_rect || !sGdxRectHalfTexelDisabled);
++            struct GdxUvPrep {
++                float uOff, vOff;      // uls/4, ult/4
++                float uPre, vPre;      // 2^-shift for shifts in 1..10 (exact), else 2^(16-shift)
++                float uNormMul, vNormMul; // exact reciprocal when the extent is a power of two
++                float uNormDiv, vNormDiv; // (float)extent for the divide fallback
++                bool uMul, vMul;
++            } prep[2];
++            for (int t = 0; t < 2; t++) {
++                if (!usedTextures[t]) {
++                    continue;
++                }
++                const uint32_t uv_tile = effective_tile[t];
++                const int shifts = mRdp->texture_tile[uv_tile].shifts;
++                const int shiftt = mRdp->texture_tile[uv_tile].shiftt;
++                // Legacy: `u /= 1 << shifts` for 1..10 — a divide by 2^k, which equals a
++                // multiply by 2^-k exactly; `u *= 1 << (16 - shifts)` above 10 (unchanged).
++                prep[t].uPre = shifts == 0 ? 1.0f : (shifts <= 10 ? 1.0f / (float)(1 << shifts) : (float)(1 << (16 - shifts)));
++                prep[t].vPre = shiftt == 0 ? 1.0f : (shiftt <= 10 ? 1.0f / (float)(1 << shiftt) : (float)(1 << (16 - shiftt)));
++                prep[t].uOff = mRdp->texture_tile[uv_tile].uls / 4.0f;
++                prep[t].vOff = mRdp->texture_tile[uv_tile].ult / 4.0f;
++                const uint32_t tw = tex_width[t];
++                const uint32_t th = tex_height[t];
++                prep[t].uMul = (tw & (tw - 1u)) == 0u;
++                prep[t].vMul = (th & (th - 1u)) == 0u;
++                prep[t].uNormDiv = (float)tw;
++                prep[t].vNormDiv = (float)th;
++                prep[t].uNormMul = prep[t].uMul ? 1.0f / (float)tw : 1.0f;
++                prep[t].vNormMul = prep[t].vMul ? 1.0f / (float)th : 1.0f;
++                gdx_trifast_stat[prep[t].uMul ? kGdxTfUvMul : kGdxTfUvDiv] += 3;
++            }
++            // Combiner input muxes are per-tri constants; the SHADE case (the race norm) reads
++            // the vertex directly, anything else goes through the verbatim lambda.
++            const int ci = sGdxPackParams.vtxColorInput - 1;
++            const bool colorIsShade = ci >= 0 && comb->shader_input_mapping[0][ci] == G_CCMUX_SHADE;
++            const int ai = sGdxPackParams.vtxAlphaInput - 1;
++            const bool alphaIsShade = ai >= 0 && comb->shader_input_mapping[1][ai] == G_CCMUX_SHADE;
++            const bool fogFactorConst = sGdxPackParams.fogFactorToAlpha && use_blend_color;
++            const float fogFactorConstVal = fogFactorConst ? sGdxByteToUnit.v[mRdp->fog_color.a] : 0.0f;
++            const bool shadeAlphaIsOne = use_fog && !use_blend_color;
++            for (int i = 0; i < 3; i++) {
++                float* out = gdxOut + i * GDX3DS_VBOPACK_STRIDE;
++                const LoadedVertex* vv = v_arr[i];
++                float z = vv->z, w = vv->w;
++                if (clip_parameters.z_is_from_0_to_1) {
++                    z = (z + w) / 2.0f;
++                }
++                out[0] = vv->x;
++                out[1] = clip_parameters.invertY ? -vv->y : vv->y;
++                out[2] = z;
++                out[3] = w;
++                for (int t = 0; t < 2; t++) {
++                    const int slot = (t == 0) ? 4 : 10;
++                    if (!usedTextures[t]) {
++                        out[slot] = 0.0f;
++                        out[slot + 1] = 0.0f;
++                        continue;
++                    }
++                    float u = vv->u / 32.0f;
++                    float v = vv->v / 32.0f;
++                    u *= prep[t].uPre;
++                    v *= prep[t].vPre;
++                    u -= prep[t].uOff;
++                    v -= prep[t].vOff;
++                    if (halfTexel) {
++                        u += 0.5f;
++                        v += 0.5f;
++                    }
++                    const float nu = prep[t].uMul ? u * prep[t].uNormMul : u / prep[t].uNormDiv;
++                    const float nv = prep[t].vMul ? v * prep[t].vNormMul : v / prep[t].vNormDiv;
++                    out[slot] = GdxFminExact(nu * sGdxPackParams.uScale[t], gdxClampU[t]);
++                    out[slot + 1] = GdxFminExact(nv * sGdxPackParams.vScale[t], gdxClampV[t]);
++                }
++                if (ci >= 0) {
++                    if (colorIsShade) {
++                        out[6] = sGdxByteToUnit.v[vv->color.r];
++                        out[7] = sGdxByteToUnit.v[vv->color.g];
++                        out[8] = sGdxByteToUnit.v[vv->color.b];
++                    } else {
++                        const GdxPackInput cv = gdxInput(ci, 0, i);
++                        out[6] = sGdxByteToUnit.v[cv.c.r];
++                        out[7] = sGdxByteToUnit.v[cv.c.g];
++                        out[8] = sGdxByteToUnit.v[cv.c.b];
++                    }
++                } else {
++                    out[6] = out[7] = out[8] = 1.0f;
++                }
++                if (sGdxPackParams.fogFactorToAlpha) {
++                    out[9] = fogFactorConst ? fogFactorConstVal : sGdxByteToUnit.v[vv->color.a];
++                } else if (sGdxPackParams.wantVtxAlpha) {
++                    if (alphaIsShade) {
++                        out[9] = shadeAlphaIsOne ? 1.0f : sGdxByteToUnit.v[vv->color.a];
++                    } else {
++                        const GdxPackInput av = gdxInput(ai, 1, i);
++                        out[9] = (shadeAlphaIsOne && av.isShade) ? 1.0f : sGdxByteToUnit.v[av.c.a];
++                    }
++                } else {
++                    out[9] = 1.0f;
++                }
++            }
++            if (use_fog) {
++                if (use_blend_color) {
++                    gdx3ds_fog_note_params(0, 0, 0);
++                } else {
++                    gdx3ds_fog_note_params(mRsp->fog_mul, mRsp->fog_offset, 1);
++                }
++            }
++        }
++        float gdxVerifyScratch[3 * GDX3DS_VBOPACK_STRIDE];
++        float* const gdxLegacyBase = sGdxTriFast ? gdxVerifyScratch : gdxOut;
++        if (!sGdxTriFast || sGdxTriFastVerify) {
+         for (int i = 0; i < 3; i++) {
+-            float* out = gdxOut + i * GDX3DS_VBOPACK_STRIDE;
++            float* out = gdxLegacyBase + i * GDX3DS_VBOPACK_STRIDE;
+             float z = v_arr[i]->z, w = v_arr[i]->w;
+             if (clip_parameters.z_is_from_0_to_1) {
+                 z = (z + w) / 2.0f;
+@@ -4490,6 +4729,10 @@
+                 }
+             }
+         }
++        } // [trifast] legacy packed loop (verify mode: into scratch)
++        if (sGdxTriFastVerify && memcmp(gdxOut, gdxVerifyScratch, sizeof(gdxVerifyScratch)) != 0) {
++            gdx_trifast_stat[kGdxTfVfyPack]++;
++        }
+         mBufVboLen += 3 * GDX3DS_VBOPACK_STRIDE;
+         GDX_TRI2_LAP(Pack);
+     } else {
+@@ -8703,6 +8946,9 @@
+ 
+ void Interpreter::SpReset() {
+     GfxS7InvalidateDrawMemos(); // [perf-s7] per-task boundary
++#ifdef __3DS__
++    GdxTriFastRefresh(); // [trifast] per-task killswitch latch
++#endif
+     while (!mShaderStack.empty()) {
+         mShaderStack.pop();
+     }

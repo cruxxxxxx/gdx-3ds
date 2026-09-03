@@ -1,0 +1,208 @@
+<title>Locked Sixty</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#EEF1F5; --surface:#FFFFFF; --ink:#16212B; --ink-2:#5E6B78; --ink-3:#8A96A3; --line:#D6DCE3; --grid:#E3E8EE;
+  --accent:#2F6BDB; --target:#C96A1E; --good:#2E8B57; --crit:#B3261E;
+  --c1:#2F6BDB; --c2:#C96A1E; --c3:#0E9A8E; --c4:#9B59D9; --c5:#8C7A1A; --c6:#C7397F;
+  --hist:#2F6BDB; --hist-cap:#C96A1E; --hist-low:#B9C6D6;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0F1519; --surface:#171F26; --ink:#E6EBF0; --ink-2:#98A4B0; --ink-3:#6E7B88; --line:#2A343D; --grid:#222B33;
+  --accent:#4A7BE0; --target:#CF7226; --good:#4FBF7A; --crit:#E5655A;
+  --c1:#4A7BE0; --c2:#CF7226; --c3:#1F9A8F; --c4:#9B6FE0; --c5:#A8902A; --c6:#D04E92;
+  --hist:#4A7BE0; --hist-cap:#CF7226; --hist-low:#3A4756;
+}}
+:root[data-theme="dark"]{
+  --bg:#0F1519; --surface:#171F26; --ink:#E6EBF0; --ink-2:#98A4B0; --ink-3:#6E7B88; --line:#2A343D; --grid:#222B33;
+  --accent:#4A7BE0; --target:#CF7226; --good:#4FBF7A; --crit:#E5655A;
+  --c1:#4A7BE0; --c2:#CF7226; --c3:#1F9A8F; --c4:#9B6FE0; --c5:#A8902A; --c6:#D04E92;
+  --hist:#4A7BE0; --hist-cap:#CF7226; --hist-low:#3A4756;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1040px;margin:0 auto;padding:40px 24px 72px}
+h1,h2,h3{font-family:"Barlow Condensed","Arial Narrow",sans-serif;text-wrap:balance;margin:0}
+h1{font-size:64px;font-weight:700;line-height:.95;letter-spacing:-.01em}
+h2{font-size:30px;font-weight:600;margin-top:56px;margin-bottom:6px}
+h3{font-size:20px;font-weight:600}
+.eyebrow{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2)}
+p{max-width:68ch}
+.lede{font-size:18px;color:var(--ink-2);max-width:62ch;margin-top:14px}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.hero{display:grid;grid-template-columns:1.3fr 1fr;gap:32px;align-items:end;border-bottom:1px solid var(--line);padding-bottom:28px}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}
+.tile{background:var(--surface);padding:14px 16px}
+.tile .k{font-size:12px;color:var(--ink-2);letter-spacing:.06em;text-transform:uppercase}
+.tile .v{font-family:"Barlow Condensed",sans-serif;font-size:40px;font-weight:600;line-height:1.05;font-variant-numeric:tabular-nums;margin-top:4px}
+.tile .d{font-size:13px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.tile .d b{color:var(--good);font-weight:600}
+figure{margin:18px 0 0;background:var(--surface);border:1px solid var(--line);padding:18px 18px 12px}
+figcaption{font-size:13px;color:var(--ink-2);margin-top:8px;max-width:none}
+.hist-row{display:grid;grid-template-columns:200px 1fr;gap:16px;align-items:start;padding:12px 0;border-top:1px solid var(--grid)}
+.hist-row:first-of-type{border-top:0}
+.hist-row .lbl .n{font-family:"Barlow Condensed",sans-serif;font-size:22px;font-weight:600;line-height:1.1}
+.hist-row .lbl .s{font-size:13px;color:var(--ink-2);line-height:1.35}
+.hist-row .lbl .c{font-size:12px;color:var(--ink-3);font-family:"IBM Plex Mono",monospace;margin-top:4px}
+.stats{display:flex;gap:14px;font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--ink-2);margin-top:6px;font-variant-numeric:tabular-nums}
+.stats b{color:var(--ink);font-weight:500}
+svg text{font-family:"IBM Plex Mono",ui-monospace,monospace;fill:var(--ink-2);font-size:11px}
+.axis line,.axis path{stroke:var(--line)}
+.grid line{stroke:var(--grid)}
+.bar{fill:var(--hist)} .bar.cap{fill:var(--hist-cap)} .bar.low{fill:var(--hist-low)}
+.bar:hover{opacity:.85}
+.marker{stroke:var(--ink);stroke-width:1.5}
+.legend{display:flex;flex-wrap:wrap;gap:14px 20px;font-size:13px;color:var(--ink-2);margin:10px 0 4px}
+.legend span{display:inline-flex;align-items:center;gap:7px}
+.sw{width:12px;height:12px;border-radius:2px;display:inline-block}
+table{border-collapse:collapse;width:100%;font-size:14px;margin-top:14px;table-layout:fixed;min-width:760px}
+table col.c-lever{width:17%} table col.c-what{width:41%} table col.c-num{width:15%} table col.c-status{width:12%}
+table.fixes col.c-sym{width:28%} table.fixes col.c-cause{width:38%} table.fixes col.c-fix{width:34%}
+th{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-2);text-align:left;font-weight:500;padding:8px 10px;border-bottom:1px solid var(--line)}
+td{padding:9px 10px;border-bottom:1px solid var(--grid);vertical-align:top}
+td.num{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;font-size:13px}
+.tw{overflow-x:auto}
+.pill{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:11px;padding:2px 7px;border-radius:3px;border:1px solid var(--line);color:var(--ink-2);line-height:1.4}
+.pill.on{color:var(--good);border-color:var(--good)}
+.pill.off{color:var(--ink-3)}
+.pill.hw{color:var(--accent);border-color:var(--accent)}
+.note{border-left:3px solid var(--target);padding:8px 14px;background:var(--surface);margin-top:14px;font-size:14px;max-width:none}
+.tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--bg);font:12px/1.4 "IBM Plex Mono",monospace;padding:6px 8px;border-radius:3px;display:none;z-index:9}
+.foot{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-size:13px;color:var(--ink-2);max-width:none}
+@media (max-width:720px){h1{font-size:44px}.hero{grid-template-columns:1fr}.hist-row{grid-template-columns:1fr}.tiles{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:no-preference){.bar{transition:opacity .15s}}
+</style>
+
+<div class="wrap">
+<header class="hero">
+  <div>
+    <div class="eyebrow">F-Zero X · New Nintendo 3DS · performance ledger</div>
+    <h1>Locked Sixty</h1>
+    <p class="lede">Five hardware rounds of a 30-machine Grand Prix, measured in 5-second frame-rate beats on a real New 3DS. What each change did, in the order it shipped.</p>
+  </div>
+  <div class="tiles" id="tiles"></div>
+</header>
+
+<h2>Frame-rate distribution, round by round</h2>
+<p>Each row is one hardware session under play conditions (no profiler tracing). The watchdog thread counts frames every 5 seconds, so every bar is a share of those beats. The orange bar is the 60 fps cap. Markers show the median and the 10th percentile, the floor a player feels in crowds.</p>
+<figure id="hist"></figure>
+
+<h2>Where a crowd frame's CPU goes</h2>
+<p>Three traced sessions, same course, profiler on (which adds ~2 ms per frame, so compare bars to each other, not to 16.7). Crowd frames are windows with 800–1400 transformed vertices; steady race frames 400–800. The render thread moved this whole bar off the game's core; the ahead mode then let the game run a frame in front of it.</p>
+<figure id="buckets"></figure>
+
+<h2>The change ledger</h2>
+<p>Every lever shipped with a kill switch and a receipt line in the log, was A/B'd in the emulator on frame-aligned windows, then verified on hardware before merging. Emulator deltas are per crowd frame; hardware deltas are what the card measured.</p>
+<div class="tw"><table>
+<colgroup><col class="c-lever"><col class="c-what"><col class="c-num"><col class="c-num"><col class="c-status"></colgroup>
+<thead><tr><th>Lever</th><th>What it changes</th><th>Emulator</th><th>Hardware</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td><b>Bridge memos</b><br><span class="mono">brfast</span></td><td>Each sub-display-list was classified and scanned 3–4× per frame; per-list facts and address resolution are now memoized.</td><td class="num">br 11.5 → 4.9 ms</td><td class="num">br 6.4 → 3.7 ms<br>median 46 → 49</td><td><span class="pill on">mainline</span></td></tr>
+<tr><td><b>HUD texture atlas</b><br><span class="mono">trectbatch</span></td><td>HUD sprites (digits, bars, portraits) packed into shared pages with exact clamp gutters; runs of texrects become one draw. LRU page eviction.</td><td class="num">draws 136 → 26<br>texrect −2.6 ms</td><td class="num">draws/frame 67 → 55</td><td><span class="pill on">mainline</span></td></tr>
+<tr><td><b>Triangle memo fix</b><br><span class="mono">trifast</span></td><td>The per-triangle draw-state memo had never hit once (a texture-unit flag was never cleared). Fixed, plus an exact packed vertex loop.</td><td class="num">tri −17 %</td><td class="num">tri 5.6 → 4.6 ms</td><td><span class="pill on">mainline</span></td></tr>
+<tr><td><b>TMEM span fast path</b><br><span class="mono">tmemfast</span></td><td>LOADBLOCK bookkeeping walked every word of the replaced span; now a live-span list. Also fixed an 8-byte alignment that tripled mirror copies.</td><td class="num">LOADBLOCK −22 %</td><td class="num">within dispatch bucket</td><td><span class="pill on">mainline</span></td></tr>
+<tr><td><b>Boot audio</b><br><span class="mono">audioprime · o2r</span></td><td>Ring primed before playback; the 10.7 MB audio table stored uncompressed so boot preload is a read, not an inflate.</td><td class="num">underruns 3/3 → 0/3</td><td class="num">preload 4.3 → 2.0 s</td><td><span class="pill on">mainline</span></td></tr>
+<tr><td><b>Render thread</b><br><span class="mono">renderthread=1</span></td><td>Display-list interpretation and citro3d draws run on core 2 at a priority below audio; game logic stays on core 0. First N64 port to do this.</td><td class="num">n/a (emulator time-slices core 2)</td><td class="num">median 49 → 56<br>p10 42 → 48</td><td><span class="pill on">mainline</span></td></tr>
+<tr><td><b>Ahead mode</b><br><span class="mono">renderthread=2</span></td><td>"DP done" is acknowledged when the game parks on it, so logic runs a frame ahead; fences on every RDRAM writer in between.</td><td class="num">waitMain ≈ render − logic</td><td class="num">see Round 5</td><td><span class="pill hw">round 5</span></td></tr>
+<tr><td><b>Bridge on main</b><br><span class="mono">bridgemain</span></td><td>The command pre-pass runs on the submitting core while core 2 draws the previous frame.</td><td class="num">render-side br 4.0 → 0</td><td class="num">see Round 5</td><td><span class="pill hw">round 5</span></td></tr>
+<tr><td><b>Auto rival detail</b><br><span class="mono">rival_detail_auto</span></td><td>Render time over 15 ms raises the distant-rival LOD tier; under 12 ms lowers it. The manual setting is the floor.</td><td class="num">tier moves both ways</td><td class="num">see Round 5</td><td><span class="pill hw">round 5</span></td></tr>
+<tr><td><b>Prim/env colour folding</b><br><span class="mono">dspfast</span></td><td>Colour changes become batch segments instead of flushes.</td><td class="num">≈ 0 (texture switch splits anyway)</td><td class="num">—</td><td><span class="pill off">off by default</span></td></tr>
+<tr><td><b>Machine texture atlas</b><br><span class="mono">atlas3d</span></td><td>Same page machinery for machine parts. Census: only 8 clamp-safe switches per frame; two thirds of machine textures wrap or mirror.</td><td class="num">draws −7, ≈ 0 ms</td><td class="num">—</td><td><span class="pill off">off by default</span></td></tr>
+<tr><td><b>Bridge output cache</b></td><td>Cache translated lists across frames.</td><td class="num">ceiling 1.5 ms</td><td class="num">—</td><td><span class="pill off">not built: 87 % of commands are rebuilt every frame</span></td></tr>
+<tr><td><b>GPU vertex transform</b></td><td>N64 T&amp;L in the PICA200 vertex shader.</td><td class="num">vtx −62 % (unlit)</td><td class="num">imperceptible</td><td><span class="pill off">shelved: vtx is ~1 ms on hardware</span></td></tr>
+</tbody></table></div>
+
+<h2>Fixed along the way</h2>
+<div class="tw"><table class="fixes">
+<colgroup><col class="c-sym"><col class="c-cause"><col class="c-fix"></colgroup>
+<thead><tr><th>Symptom on hardware</th><th>Cause</th><th>Fix</th></tr></thead>
+<tbody>
+<tr><td>HOME button crashed the game</td><td>Audio threads kept driving the DSP while the OS finalized it.</td><td>Audio threads park on suspend and resume cleanly; clock and syscore share re-applied on restore.</td></tr>
+<tr><td>Close from the HOME menu hung</td><td>Close arrives as a cancel with no restore; the drain thread hot-spun on a shared sticky event and starved the producer on its core.</td><td>One park event per thread; flushed exit receipts per teardown step.</td></tr>
+<tr><td>HUD showed one portrait everywhere</td><td>The triangle lever's fast vertex loop lacked the atlas page offset. Each lever had only been tested alone.</td><td>Offset in both loops; combined race screenshots are now part of staging.</td></tr>
+<tr><td>Touch-menu tab bar scrolled away</td><td>Stray console writes reaching the bottom row.</td><td>A filter device drops all stdout/stderr while the menu owns the screen.</td></tr>
+<tr><td>Boot audio hiccup</td><td>Title-font sample load blocked 2.1 s behind a CPU-bound inflate of the audio table.</td><td>Archive stores it uncompressed.</td></tr>
+<tr><td>Crash after a full GP in the menus (Round 5)</td><td>Render thread's texture-cache LRU spliced while the main core mutated the cache during podium/venue loads.</td><td><span class="pill">in progress</span> cache becomes render-thread-owned; main only enqueues.</td></tr>
+</tbody></table></div>
+
+<h2>How to read the numbers</h2>
+<p>Frame rate comes from the watchdog thread's beat line: frames rendered in each 5-second window, divided by five. That smooths single-frame hitches but is honest about sustained dips, which is what the 10th percentile captures. Sessions differ in length and content (Round 1 is an hour of mixed play; Round 5 is one full Grand Prix), so the histograms are normalized to shares.</p>
+<p>The CPU buckets come from the port's sectioned profiler on hardware. Tracing costs about 2 ms per frame, so those three sessions are compared with each other only. Stereo 3D was off in the first two rounds and on afterwards, which doubles draw calls; the like-for-like pairs in the ledger were always measured with the same 3D setting.</p>
+<div class="note">Emulator numbers never rank levers. Azahar time-slices the 3DS cores on one host thread and its per-instruction costs differ; it was used for correctness, A/B deltas on frame-aligned windows, and screenshot parity. Every lever's magnitude claim above comes from the card.</div>
+
+<div class="foot">Build lineage: mainline <span class="mono">feat/3ds-hwaudio</span>; Round 5 is <span class="mono">feat/3ds-hwtest4 @ 978f31d</span>. Fan-made, educational, no game assets distributed; not affiliated with Nintendo.</div>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const DATA = {"sessions": [{"name": "Round 1", "sub": "Mainline before the campaign", "cond": "stereo off \u00b7 trace off", "size": "754 beats \u00b7 63 min", "fps": [54.2, 60.0, 42.8, 41.6, 38.0, 50.0, 48.2, 51.4, 51.2, 56.2, 50.4, 47.6, 58.6, 59.8, 59.8, 59.4, 60.0, 57.2, 60.0, 60.0, 59.8, 58.8, 60.0, 59.4, 60.0, 60.0, 60.0, 53.6, 35.4, 29.4, 37.0, 48.6, 43.6, 45.8, 48.2, 50.8, 49.0, 47.8, 52.6, 50.2, 53.0, 49.8, 52.6, 57.6, 49.6, 49.0, 54.4, 56.8, 60.0, 46.8, 47.4, 46.4, 42.8, 49.4, 42.8, 48.2, 47.2, 50.6, 53.4, 50.0, 54.8, 56.6, 56.4, 55.0, 52.2, 51.2, 54.2, 57.6, 51.4, 57.6, 59.2, 51.4, 51.4, 58.0, 59.8, 56.6, 60.0, 48.8, 48.0, 43.6, 43.0, 49.6, 54.8, 59.4, 52.8, 53.2, 50.2, 60.0, 57.6, 53.6, 59.8, 58.2, 51.2, 60.0, 48.4, 47.6, 45.6, 41.8, 48.0, 52.2, 57.6, 48.0, 47.6, 52.8, 50.6, 52.4, 52.2, 56.8, 58.6, 51.6, 54.2, 53.0, 49.4, 44.6, 37.0, 48.0, 42.2, 42.6, 51.0, 55.0, 57.4, 51.4, 49.8, 49.6, 55.6, 56.4, 52.2, 58.8, 55.8, 55.4, 57.8, 54.6, 57.8, 59.4, 58.8, 59.8, 58.2, 54.8, 50.8, 50.6, 58.2, 57.8, 48.6, 36.0, 48.6, 40.6, 43.2, 50.2, 53.8, 55.4, 50.6, 52.8, 49.4, 50.8, 52.6, 53.6, 58.2, 56.4, 55.8, 54.0, 54.2, 58.4, 56.0, 57.2, 60.0, 59.4, 56.6, 53.2, 53.6, 57.2, 56.0, 58.6, 29.4, 59.4, 49.2, 36.6, 42.4, 51.0, 49.2, 46.0, 53.6, 49.6, 48.6, 52.4, 53.4, 48.6, 54.0, 54.6, 57.8, 57.2, 51.8, 54.6, 53.4, 50.6, 50.6, 52.6, 59.0, 58.4, 55.4, 59.8, 53.4, 51.4, 58.4, 40.8, 59.8, 58.0, 57.8, 47.2, 41.6, 41.4, 43.2, 49.2, 46.4, 49.2, 45.0, 47.2, 48.4, 44.2, 51.6, 54.6, 55.8, 59.4, 55.0, 55.2, 55.2, 58.6, 59.0, 57.2, 55.6, 56.2, 58.0, 60.0, 59.8, 60.0, 59.8, 59.8, 54.2, 50.0, 27.8, 29.0, 29.0, 46.8, 42.4, 42.2, 44.8, 46.0, 49.0, 53.4, 52.4, 53.8, 53.4, 54.8, 55.8, 55.6, 55.4, 56.6, 58.4, 57.6, 57.4, 57.2, 58.8, 59.8, 60.0, 59.8, 60.0, 52.2, 60.0, 49.6, 55.2, 40.4, 25.6, 42.4, 44.8, 43.8, 45.0, 52.8, 54.8, 47.0, 54.4, 56.6, 59.0, 58.4, 56.8, 59.2, 56.6, 57.2, 59.8, 59.6, 56.6, 54.6, 59.0, 57.0, 60.0, 59.8, 60.0, 60.0, 49.6, 39.6, 29.2, 34.0, 46.6, 40.4, 38.0, 46.6, 46.0, 43.6, 41.4, 47.6, 54.0, 51.8, 56.8, 55.2, 57.8, 54.8, 53.4, 45.6, 49.0, 54.8, 53.0, 53.4, 48.4, 52.0, 55.8, 50.2, 51.0, 56.2, 58.8, 55.0, 59.4, 54.4, 44.8, 41.4, 42.2, 44.6, 48.8, 47.0, 37.4, 39.2, 45.4, 50.0, 57.4, 42.2, 41.4, 44.6, 48.2, 53.0, 51.2, 54.0, 58.2, 54.0, 54.6, 49.4, 51.8, 54.8, 54.6, 52.8, 51.6, 51.8, 53.4, 51.4, 55.8, 52.8, 51.8, 49.2, 45.4, 53.2, 56.0, 57.0, 57.0, 59.6, 56.8, 37.6, 40.4, 47.6, 45.0, 44.2, 47.0, 52.2, 50.4, 49.6, 51.4, 48.6, 50.4, 53.8, 54.0, 60.0, 50.4, 55.0, 55.4, 52.2, 52.8, 53.8, 55.0, 55.8, 54.6, 57.4, 54.0, 51.8, 57.0, 58.0, 59.6, 48.6, 38.6, 46.0, 40.8, 41.0, 44.2, 40.8, 46.2, 43.8, 51.0, 53.0, 53.6, 60.0, 47.4, 45.0, 46.8, 39.4, 40.4, 44.2, 40.6, 46.6, 45.8, 50.0, 54.0, 54.6, 55.6, 52.4, 53.8, 56.6, 59.2, 55.0, 55.2, 57.6, 57.8, 57.8, 57.8, 57.8, 58.0, 57.8, 53.2, 57.8, 55.2, 55.6, 55.4, 58.8, 57.6, 59.0, 55.4, 41.0, 46.4, 39.6, 39.8, 38.6, 38.8, 38.6, 38.8, 38.6, 38.8, 38.6, 38.8, 38.6, 38.6, 38.8, 38.6, 38.8, 38.6, 38.8, 38.8, 38.6, 38.8, 40.2, 41.2, 47.6, 51.0, 53.0, 53.4, 50.8, 51.0, 50.8, 50.8, 51.0, 50.8, 50.8, 51.0, 50.8, 50.8, 51.0, 50.8, 50.8, 51.0, 50.8, 50.8, 51.0, 50.8, 50.8, 51.0, 50.8, 50.8, 51.0, 50.8, 51.0, 50.8, 50.8, 50.8, 51.0, 50.8, 51.0, 50.8, 50.8, 50.8, 51.0, 51.2, 46.0, 44.4, 44.4, 44.4, 44.4, 44.4, 44.4, 44.4, 44.2, 44.4, 44.4, 44.4, 44.4, 53.4, 54.0, 54.6, 54.6, 54.8, 56.4, 58.0, 54.8, 53.2, 55.0, 55.2, 53.2, 54.6, 55.4, 56.4, 57.4, 56.6, 56.4, 55.8, 57.0, 58.0, 58.0, 53.8, 45.8, 47.6, 46.6, 46.6, 48.4, 45.2, 44.2, 45.8, 44.8, 48.2, 47.4, 45.2, 45.4, 43.2, 47.2, 47.6, 47.0, 45.8, 47.2, 47.4, 49.0, 44.6, 46.2, 47.0, 48.0, 44.0, 46.2, 43.8, 45.4, 46.8, 46.2, 55.6, 58.8, 53.4, 51.6, 52.2, 50.6, 51.4, 40.6, 41.8, 43.6, 51.2, 54.4, 53.8, 56.2, 60.0, 54.0, 59.0, 58.2, 46.2, 45.8, 59.6, 59.4, 57.0, 58.4, 59.8, 59.0, 58.6, 35.8, 26.6, 27.0, 26.8, 27.0, 26.8, 27.0, 26.8, 47.6, 56.2, 60.0, 37.4, 26.6, 26.6, 38.8, 59.0, 46.2, 38.2, 38.4, 41.6, 43.4, 45.8, 49.4, 51.6, 48.2, 48.0, 48.0, 48.2, 51.0, 49.2, 51.4, 52.4, 49.0, 49.2, 50.0, 53.0, 49.6, 50.8, 49.0, 45.6, 54.6, 54.8, 52.8, 57.2, 57.2, 55.8, 49.8, 46.4, 45.4, 44.0, 40.0, 35.6, 41.2, 45.6, 46.8, 51.8, 50.2, 49.6, 48.8, 46.8, 48.4, 51.2, 54.0, 55.8, 51.2, 50.0, 51.8, 52.2, 56.8, 54.6, 54.4, 59.6, 51.8, 45.6, 47.4, 47.6, 50.8, 30.8, 42.8, 54.8, 49.6, 53.8, 59.8, 50.8, 46.8, 55.0, 55.2, 53.0, 52.6, 38.0, 25.4, 25.6, 25.4, 25.6, 25.4, 25.4, 25.6, 25.6, 25.4, 25.4, 25.6, 25.4, 25.6, 25.4, 25.6, 25.4, 38.0, 52.2, 28.2, 25.8, 26.0, 39.2, 52.6, 59.8, 59.8, 60.0, 59.8, 60.0, 60.0, 60.0, 60.0, 59.8, 60.0, 60.0, 60.0, 60.0, 59.8, 58.8, 60.0, 60.0, 60.0, 60.0, 59.8, 58.6, 58.8, 60.0, 53.8, 46.6, 53.8, 52.4, 42.8, 42.6, 46.0, 44.2, 49.0, 51.4, 7.0], "median": 51.4, "p10": 39.2, "cap": 9}, {"name": "Round 2", "sub": "Bridge memos (brfast)", "cond": "stereo off \u00b7 trace off", "size": "78 beats \u00b7 6.5 min", "fps": [52.6, 53.6, 43.4, 43.4, 24.2, 31.0, 45.6, 51.6, 49.6, 48.4, 53.0, 59.8, 58.6, 58.8, 60.0, 59.6, 59.0, 59.2, 59.4, 59.8, 60.0, 60.0, 60.0, 58.0, 58.0, 40.8, 53.0, 47.2, 42.0, 49.8, 54.6, 46.6, 52.8, 58.0, 55.0, 58.4, 59.8, 56.6, 55.0, 55.0, 56.8, 54.8, 52.8, 59.4, 58.8, 54.0, 55.4, 57.4, 55.8, 56.4, 56.0, 58.4, 57.4, 48.0, 50.8, 52.6, 57.2, 54.8, 55.0, 55.0, 57.2, 55.0, 58.4, 60.0, 59.8, 60.0, 59.8, 59.8, 60.0, 60.0, 59.8, 60.0, 59.8, 60.0, 60.0, 59.8, 60.0, 60.0], "median": 57.2, "p10": 46.6, "cap": 29}, {"name": "Round 3", "sub": "HUD atlas \u00b7 triangle memo \u00b7 TMEM \u00b7 audio", "cond": "stereo on \u00b7 trace off", "size": "237 beats \u00b7 20 min", "fps": [48.4, 51.6, 54.6, 39.8, 49.4, 47.8, 36.2, 53.0, 58.6, 54.2, 50.0, 51.6, 52.4, 51.2, 58.4, 60.0, 60.0, 59.2, 60.0, 59.8, 59.8, 59.8, 60.0, 60.0, 60.0, 59.8, 59.4, 60.0, 59.8, 59.8, 49.2, 40.6, 52.0, 48.6, 48.0, 51.4, 57.4, 50.0, 51.4, 56.2, 51.6, 57.2, 58.2, 58.0, 54.0, 50.2, 53.2, 56.2, 59.2, 54.4, 57.4, 59.6, 50.6, 54.2, 42.4, 35.8, 51.8, 47.6, 50.4, 52.0, 53.2, 47.2, 49.8, 54.6, 56.8, 56.0, 58.6, 59.8, 56.0, 52.6, 54.4, 56.6, 60.0, 51.0, 49.4, 51.2, 46.8, 52.6, 51.2, 53.4, 48.2, 46.6, 54.0, 48.6, 51.8, 57.0, 56.4, 55.4, 50.8, 56.8, 54.4, 60.0, 57.6, 59.8, 59.8, 54.0, 54.2, 57.0, 58.4, 57.2, 60.0, 55.8, 55.4, 48.2, 47.4, 53.2, 58.4, 58.2, 50.4, 51.8, 48.6, 54.8, 47.0, 53.6, 59.8, 58.8, 52.8, 50.8, 55.2, 59.6, 56.0, 59.6, 59.8, 59.8, 60.0, 59.4, 59.0, 59.8, 60.0, 59.8, 60.0, 56.2, 44.4, 52.0, 47.4, 47.4, 55.0, 53.2, 47.2, 53.4, 50.6, 49.2, 45.0, 59.6, 48.4, 60.0, 55.4, 59.8, 59.4, 52.6, 60.0, 55.8, 59.8, 55.0, 60.0, 60.0, 56.8, 49.0, 60.0, 60.0, 56.8, 40.0, 52.4, 49.2, 49.8, 48.2, 46.8, 51.8, 55.8, 60.0, 59.8, 57.4, 53.6, 55.8, 59.6, 59.6, 57.8, 59.8, 55.0, 59.8, 60.0, 60.0, 60.0, 51.4, 47.2, 48.2, 49.4, 49.8, 52.6, 58.4, 59.8, 60.0, 59.8, 59.8, 60.0, 60.0, 60.0, 59.8, 60.0, 59.6, 60.0, 60.0, 60.0, 59.8, 60.0, 60.0, 60.0, 60.0, 59.8, 60.0, 60.0, 53.2, 60.0, 60.0, 59.8, 49.6, 52.4, 53.4, 50.6, 51.4, 48.6, 57.4, 50.0, 58.0, 60.0, 59.6, 59.2, 47.4, 54.6, 60.0, 55.2, 59.4, 59.8, 58.2, 59.0, 30.8, 17.0], "median": 56.0, "p10": 48.0, "cap": 32}, {"name": "Round 4", "sub": "Render thread on core 2 (pipe)", "cond": "stereo on \u00b7 trace off", "size": "58 beats \u00b7 5 min", "fps": [52.0, 56.0, 44.6, 50.6, 28.8, 48.4, 43.8, 45.2, 43.8, 47.8, 52.2, 49.4, 51.8, 58.0, 58.2, 57.8, 57.8, 58.0, 56.2, 57.6, 57.6, 57.8, 58.0, 58.2, 58.0, 57.8, 57.6, 57.4, 58.4, 58.0, 54.0, 34.4, 43.4, 54.2, 50.0, 54.6, 54.2, 57.4, 54.4, 57.6, 59.6, 60.0, 59.8, 59.6, 59.4, 54.8, 58.6, 58.8, 60.0, 58.4, 58.6, 59.6, 56.6, 58.4, 59.0, 59.8, 60.0, 58.4], "median": 57.6, "p10": 44.6, "cap": 14}, {"name": "Round 5", "sub": "Ahead mode \u00b7 bridge on main \u00b7 auto rival detail", "cond": "stereo on \u00b7 trace off \u00b7 full GP", "size": "229 beats \u00b7 19 min", "fps": [54.2, 60.6, 57.6, 51.4, 57.2, 59.8, 60.2, 59.4, 54.6, 55.6, 31.0, 45.4, 55.6, 56.8, 59.0, 60.0, 55.8, 58.6, 59.8, 60.0, 60.0, 60.0, 60.0, 59.6, 60.0, 60.0, 60.0, 60.0, 59.8, 60.0, 60.0, 60.0, 29.4, 4.4, 59.2, 40.4, 45.4, 54.4, 48.2, 54.2, 51.2, 58.6, 56.8, 59.6, 59.4, 60.0, 59.8, 59.8, 59.4, 55.4, 58.8, 59.8, 60.0, 60.0, 59.8, 59.6, 57.8, 59.2, 60.0, 59.2, 59.6, 59.6, 59.0, 46.0, 58.4, 58.8, 59.0, 59.6, 58.4, 50.2, 48.4, 56.8, 60.0, 59.2, 51.0, 49.0, 56.0, 60.0, 59.8, 59.8, 60.0, 59.8, 60.0, 58.8, 56.6, 58.6, 59.8, 59.8, 60.0, 60.0, 57.4, 58.8, 58.6, 59.8, 60.0, 60.0, 60.0, 53.2, 56.6, 53.0, 50.4, 58.2, 55.6, 57.2, 58.8, 58.0, 59.2, 57.0, 59.2, 55.4, 60.0, 58.8, 60.0, 59.6, 60.0, 60.0, 59.8, 60.0, 58.2, 60.0, 59.0, 60.0, 59.8, 59.0, 60.0, 59.6, 59.8, 59.6, 58.6, 54.4, 35.4, 52.6, 52.6, 50.2, 52.6, 52.6, 53.4, 58.6, 60.0, 60.0, 57.6, 4.2, 54.2, 59.4, 60.0, 59.4, 60.0, 60.0, 58.0, 58.8, 60.0, 60.0, 60.0, 60.0, 57.2, 40.6, 55.2, 50.8, 52.2, 54.2, 56.6, 60.0, 60.0, 60.0, 60.0, 60.0, 59.8, 60.0, 60.0, 60.0, 60.0, 60.0, 58.0, 49.0, 52.2, 50.0, 53.8, 58.6, 60.0, 60.0, 59.8, 60.0, 60.0, 60.0, 60.0, 60.0, 59.8, 60.0, 60.0, 60.0, 60.0, 60.0, 59.8, 60.0, 60.0, 60.0, 60.0, 60.0, 59.8, 60.0, 55.8, 59.2, 60.0, 60.0, 59.4, 60.0, 60.0, 56.6, 55.0, 59.8, 60.0, 60.0, 60.0, 60.0, 59.8, 58.4, 50.4, 60.0, 60.0, 59.8, 60.0, 60.0, 60.0, 60.0, 60.0, 59.8, 58.8, 58.6, 57.6], "median": 59.6, "p10": 51.4, "cap": 53}], "profs": [{"name": "Campaign levers off", "sub": "control, same course", "crowd": {"n": 42, "br": 2.96, "dsp": 8.26, "vtx": 1.12, "tri": 5.58, "imp": 0.78, "drw": 1.48, "total": 20.2, "nD": 67}, "steady": {"n": 55, "br": 2.2, "dsp": 7.63, "vtx": 0.66, "tri": 3.98, "imp": 0.76, "drw": 1.18, "total": 16.4, "nD": 54}}, {"name": "Campaign levers on", "sub": "atlas \u00b7 tri memo \u00b7 TMEM \u00b7 brfast", "crowd": {"n": 45, "br": 3.07, "dsp": 7.84, "vtx": 1.18, "tri": 4.64, "imp": 0.78, "drw": 1.24, "total": 18.8, "nD": 55}, "steady": {"n": 52, "br": 2.17, "dsp": 7.35, "vtx": 0.65, "tri": 3.22, "imp": 0.72, "drw": 0.79, "total": 14.9, "nD": 35}}, {"name": "Render thread (pipe)", "sub": "core 2 renders, main waits", "crowd": {"n": 37, "br": 3.12, "dsp": 4.89, "vtx": 1.01, "tri": 4.21, "imp": 0.68, "drw": 1.16, "total": 15.1, "nD": 55}, "steady": {"n": 61, "br": 2.72, "dsp": 3.87, "vtx": 0.7, "tri": 3.12, "imp": 0.66, "drw": 0.95, "total": 12.0, "nD": 45}}]};
+const $ = s => document.querySelector(s);
+const fmt = n => (Math.round(n*10)/10).toFixed(1);
+
+// hero tiles: first vs latest
+(function(){
+  const a=DATA.sessions[0], b=DATA.sessions[DATA.sessions.length-1];
+  const rows=[['Median fps',a.median,b.median,''],['10th percentile fps',a.p10,b.p10,''],['Beats pinned at 60',a.cap,b.cap,'%']];
+  $('#tiles').innerHTML = rows.map(([k,x,y,u])=>`<div class="tile"><div class="k">${k}</div><div class="v">${fmt(y)}${u}</div><div class="d">Round 1: ${fmt(x)}${u} · <b>+${fmt(y-x)}${u}</b></div></div>`).join('');
+})();
+
+// histograms: bins <30, then 2-fps bins 30..59.5, then cap
+(function(){
+  const edges=[0,30]; for(let e=32;e<=58;e+=2) edges.push(e); edges.push(59.5,61);
+  const W=700,H=86,L=6,R=8,T=8,B=22, pw=W-L-R, ph=H-T-B;
+  const x=v=>L+pw*Math.min(Math.max(v,28),61)/61*(61/61); // linear 0..61 but bins start at 28 visually
+  const xs=v=>L+pw*((Math.max(v,28)-28)/(61-28));
+  let out='';
+  DATA.sessions.forEach((s,i)=>{
+    const n=s.fps.length, counts=new Array(edges.length-1).fill(0);
+    s.fps.forEach(f=>{ for(let k=0;k<edges.length-1;k++){ if(f>=edges[k]&&f<edges[k+1]){counts[k]++;break;} } });
+    const shares=counts.map(c=>c/n), max=Math.max(...shares);
+    let bars='';
+    for(let k=0;k<counts.length;k++){
+      const x0 = k===0? xs(28) : xs(edges[k]); const x1 = xs(edges[k+1]);
+      const h=ph*shares[k]/max; const cls = edges[k]>=59.5?'bar cap':(k===0?'bar low':'bar');
+      const label = k===0?'< 30 fps':(edges[k]>=59.5?'60 fps (cap)':`${edges[k]}–${edges[k+1]} fps`);
+      bars+=`<rect class="${cls}" x="${x0+1}" y="${T+ph-h}" width="${Math.max(1,x1-x0-2)}" height="${h}" rx="2" data-tip="${label}: ${Math.round(shares[k]*100)}% of beats (${counts[k]})"></rect>`;
+    }
+    const ticks=[30,40,50,60].map(t=>`<line class="axis" x1="${xs(t)}" x2="${xs(t)}" y1="${T+ph}" y2="${T+ph+4}"/><text x="${xs(t)}" y="${T+ph+15}" text-anchor="middle">${t}</text>`).join('');
+    const mk=(v,name)=>`<line class="marker" x1="${xs(v)}" x2="${xs(v)}" y1="${T-2}" y2="${T+ph}" stroke-dasharray="${name==='p10'?'3 3':'none'}"/>`;
+    out+=`<div class="hist-row"><div class="lbl"><div class="n">${s.name}</div><div class="s">${s.sub}</div><div class="c">${s.cond}<br>${s.size}</div></div>
+      <div><svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${s.name} frame-rate distribution">
+        <line class="axis" x1="${L}" x2="${W-R}" y1="${T+ph}" y2="${T+ph}"/>${bars}${ticks}${mk(s.median,'median')}${mk(s.p10,'p10')}
+        <text x="${W-R}" y="${T+ph+15}" text-anchor="end">fps</text></svg>
+      <div class="stats"><span>median <b>${fmt(s.median)}</b></span><span>p10 <b>${fmt(s.p10)}</b></span><span>at cap <b>${s.cap}%</b></span><span>beats <b>${n}</b></span></div></div></div>`;
+  });
+  out+=`<figcaption>Solid marker = median, dashed = 10th percentile. Bars share one x scale; heights are normalized within each row. The far-left bar collects everything under 30 fps (transitions, results screens).</figcaption>`;
+  $('#hist').innerHTML=out;
+})();
+
+// CPU buckets: stacked horizontal bars, crowd + steady
+(function(){
+  const keys=[['br','bridge pre-pass'],['dsp','dispatch remainder'],['tri','triangle path'],['drw','draw submission'],['vtx','vertex transform'],['imp','texture import']];
+  const cols=['var(--c1)','var(--c2)','var(--c3)','var(--c4)','var(--c5)','var(--c6)'];
+  const W=700,rowH=26,gap=10,L=200,R=60,T=8; const maxMs=22;
+  const groups=[['crowd','Crowd frames (800–1400 vertices)'],['steady','Steady race (400–800 vertices)']];
+  let out=`<div class="legend">${keys.map((k,i)=>`<span><i class="sw" style="background:${cols[i]}"></i>${k[1]}</span>`).join('')}</div>`;
+  groups.forEach(([g,title])=>{
+    const rows=DATA.profs; const H=T+rows.length*(rowH+gap)+24;
+    let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${title} CPU per frame"><text x="0" y="${T+6}" style="font-size:12px;font-weight:500;fill:var(--ink)">${title}</text>`;
+    rows.forEach((p,ri)=>{
+      const y=T+16+ri*(rowH+gap); let xcur=L; const b=p[g];
+      svg+=`<text x="0" y="${y+rowH/2+4}">${p.name}</text>`;
+      keys.forEach((k,i)=>{ const w=(W-L-R)*b[k[0]]/maxMs; svg+=`<rect x="${xcur}" y="${y}" width="${Math.max(0,w-2)}" height="${rowH}" fill="${cols[i]}" rx="2" data-tip="${p.name} · ${k[1]}: ${fmt(b[k[0]])} ms"></rect>`; xcur+=w; });
+      svg+=`<text x="${xcur+6}" y="${y+rowH/2+4}" style="fill:var(--ink);font-weight:500">${fmt(b.total)} ms</text>`;
+    });
+    [0,5,10,15,20].forEach(t=>{ const x=L+(W-L-R)*t/maxMs; svg+=`<line class="grid" x1="${x}" x2="${x}" y1="${T+12}" y2="${H-14}"/><text x="${x}" y="${H-2}" text-anchor="middle">${t}</text>`; });
+    const x167=L+(W-L-R)*16.7/maxMs; svg+=`<line x1="${x167}" x2="${x167}" y1="${T+12}" y2="${H-14}" stroke="var(--target)" stroke-dasharray="4 3"/><text x="${x167+4}" y="${T+24}" style="fill:var(--target)">16.7 ms</text>`;
+    svg+=`</svg>`; out+=svg;
+  });
+  out+=`<figcaption>Per-frame CPU by profiler section, hardware, profiler on. The render-thread session's bar is the work core 2 does per frame; the game's own logic (~7–9 ms) runs on core 0 alongside it and is not shown.</figcaption>`;
+  $('#buckets').innerHTML=out;
+})();
+
+// tooltip
+(function(){
+  const tip=$('#tip');
+  document.addEventListener('mousemove',e=>{ const t=e.target.closest('[data-tip]'); if(!t){tip.style.display='none';return;} tip.textContent=t.getAttribute('data-tip'); tip.style.display='block'; tip.style.left=(e.clientX+12)+'px'; tip.style.top=(e.clientY+12)+'px'; });
+})();
+</script>

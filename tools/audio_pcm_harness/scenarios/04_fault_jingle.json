@@ -1,0 +1,22 @@
+{
+  "id": "fault_jingle",
+  "title": "64DD fault jingle",
+  "status": "blocked",
+  "autoinput": "04_fault_jingle.autoinput.txt",
+  "capture_frames": 64000,
+  "timeout_seconds": 240,
+  "env": {
+    "GDX_RAND_SEED1": "1",
+    "GDX_RAND_SEED2": "2",
+    "GDX_AUDIO_THREAD": "0"
+  },
+  "notes": [
+    "Scenario 4 of the C-R2.3 matrix. The 64DD fault jingle. STATUS: blocked / determinism",
+    "unproven. OPEN ITEM (contract C-R2.3): leo_fault_dd.c gates its retry behavior on a",
+    "WALL-CLOCK read; that timing determines when/whether the fault jingle plays and for how long,",
+    "which is a nondeterminism source the audioRandom + gRandSeed pins do NOT cover. Do NOT bless a",
+    "golden for this scenario until the leo_fault_dd.c retry-gating entry has been traced and its",
+    "wall-clock dependency either pinned or ruled out of the audio-affecting path. The autoinput",
+    "placeholder here only exists to trigger the fault condition once that trace is done."
+  ]
+}

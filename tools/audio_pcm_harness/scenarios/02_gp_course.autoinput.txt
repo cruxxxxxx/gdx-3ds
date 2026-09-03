@@ -1,0 +1,16 @@
+# NEEDS-RECORDING placeholder — scenario 02 (fixed standard GP course).
+# gdx-autoinput.txt TICK format (see port/input_bridge.c). First non-blank line is the
+# literal marker `ticks`; every later line is: <tick> <INPUT> [holdTicks]
+#   <tick>      integer VI-tick index (one tick == one gdx_controller_poll == one host frame)
+#   <INPUT>     START A B UP DOWN LEFT RIGHT | STICK_UP STICK_DOWN STICK_LEFT STICK_RIGHT
+#   [holdTicks] optional hold duration in ticks (default 15)
+#
+# The events below ONLY walk the boot menus far enough to prove the format; they do NOT drive a
+# real GP race. Replace this whole file with a recorded, transcribed run: select the standard cup
+# + the target course, then hold the racing line to the finish. Determinism REQUIRES the tick
+# timebase (never the legacy seconds format) so the same inputs land on the same frames every run.
+ticks
+120 START 20
+200 START 20
+280 A 20
+360 A 20

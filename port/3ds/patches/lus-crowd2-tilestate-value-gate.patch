@@ -1,0 +1,224 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index 4d7755e..475ff1c 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -865,8 +865,17 @@ bool Interpreter::TextureCacheLookup(int i, const TextureCacheKey& key) {
+         it = mTextureCache.lru.front().it;
+         mTextureCache.free_texture_ids.push_back(it->second.texture_id);
+         for (int j = 0; j < SHADER_MAX_TEXTURES; j++) {
+-            if (mRenderingState.mTextures[j] == &*it)
++            if (mRenderingState.mTextures[j] == &*it) {
+                 mRenderingState.mTextures[j] = nullptr;
++                // [crowd2] EVICTION INVARIANT: nulling a live binding must re-arm the
++                // import pipeline itself — the draw path only re-imports under
++                // textures_changed, and the unconditional SETTILE re-arm that used to
++                // rescue this hole is now value-gated (redundant re-assertions no
++                // longer arm). Both units: j may be a mask/replacement slot whose
++                // refresh rides its base unit's flag.
++                mRdp->textures_changed[0] = true;
++                mRdp->textures_changed[1] = true;
++            }
+         }
+         mTextureCache.map.erase(it);
+         mTextureCache.lru.pop_front();
+@@ -916,8 +925,12 @@ void Interpreter::TextureCacheDelete(const uint8_t* origAddr) {
+         for (auto it = mTextureCache.map.begin(bucket); it != mTextureCache.map.end(bucket); ++it) {
+             if (it->first.texture_addr == origAddr) {
+                 for (int j = 0; j < SHADER_MAX_TEXTURES; j++) {
+-                    if (mRenderingState.mTextures[j] == &*it)
++                    if (mRenderingState.mTextures[j] == &*it) {
+                         mRenderingState.mTextures[j] = nullptr;
++                        // [crowd2] EVICTION INVARIANT (see TextureCacheLookup): re-arm imports.
++                        mRdp->textures_changed[0] = true;
++                        mRdp->textures_changed[1] = true;
++                    }
+                 }
+                 mTextureCache.lru.erase(it->second.lru_location);
+                 mTextureCache.free_texture_ids.push_back(it->second.texture_id);
+@@ -967,6 +980,9 @@ void Interpreter::TextureCacheDeletePalette(const uint8_t* paletteAddr) {
+         for (int j = 0; j < SHADER_MAX_TEXTURES; j++) {
+             if (mRenderingState.mTextures[j] == &*it) {
+                 mRenderingState.mTextures[j] = nullptr;
++                // [crowd2] EVICTION INVARIANT (see TextureCacheLookup): re-arm imports.
++                mRdp->textures_changed[0] = true;
++                mRdp->textures_changed[1] = true;
+             }
+         }
+         mTextureCache.lru.erase(it->second.lru_location);
+@@ -4732,6 +4748,25 @@ void Interpreter::GfxDpSetTile(uint8_t fmt, uint32_t siz, uint32_t line, uint32_
+         cmt = G_TX_CLAMP;
+     }
+ 
++    // [crowd2] Value-gated re-assertion skip: F-Zero X race DLs re-issue bit-identical
++    // SETTILEs per machine part (~513/frame in traffic), each of which armed
++    // textures_changed and dirtied the draw memos, forcing the next TRI into the full
++    // Flush+ImportTexture+extent re-derivation path. When every field this handler would
++    // write (compared post-canonicalization) already holds the incoming value, executing
++    // the write is a no-op — so the arm and the dirty are skipped too. Soundness leans on
++    // the mutation-site invariant: every OTHER way the derived draw state can change
++    // (LOADBLOCK/LOADTILE stores, LOADTLUT palettes, cache evictions nulling bindings,
++    // image-rect in-place descriptor rewrites) arms textures_changed at its own site.
++    {
++        const auto& t = mRdp->texture_tile[tile];
++        if (t.palette == palette && t.fmt == fmt && t.siz == siz && t.cms == cms && t.cmt == cmt &&
++            t.masks == masks && t.maskt == maskt && t.shifts == shifts && t.shiftt == shiftt &&
++            t.line_size_bytes == line * 8 && t.tmem == tmem &&
++            t.tmem_index == static_cast<uint16_t>(tmem)) {
++            return;
++        }
++    }
++
+     mRdp->texture_tile[tile].palette = palette; // palette should set upper 4 bits of color index in 4b mode
+     mRdp->texture_tile[tile].fmt = fmt;
+     mRdp->texture_tile[tile].siz = siz;
+@@ -4746,15 +4781,27 @@ void Interpreter::GfxDpSetTile(uint8_t fmt, uint32_t siz, uint32_t line, uint32_
+     mRdp->texture_tile[tile].tmem = tmem;
+     mRdp->texture_tile[tile].tmem_index = static_cast<uint16_t>(tmem);
+ 
++    // [crowd2] SETTILE is whitelisted in the flat-dispatch dirty table now (its precomputed
++    // contribution is zero); a real descriptor change re-creates the legacy contribution here.
++    sGfxS7DirtyMask |= static_cast<uint8_t>(kGfxS7DirtyTri | kGfxS7DirtyRect | kGfxS7DirtyRectViewport);
+     mRdp->textures_changed[0] = true;
+     mRdp->textures_changed[1] = true;
+ }
+ 
+ void Interpreter::GfxDpSetTileSize(uint8_t tile, uint16_t uls, uint16_t ult, uint16_t lrs, uint16_t lrt) {
++    // [crowd2] Same value-gated skip as GfxDpSetTile: a bit-identical re-assertion leaves
++    // no observable state behind, so it must not arm imports or dirty the draw memos.
++    {
++        const auto& t = mRdp->texture_tile[tile];
++        if (t.uls == uls && t.ult == ult && t.lrs == lrs && t.lrt == lrt) {
++            return;
++        }
++    }
+     mRdp->texture_tile[tile].uls = uls;
+     mRdp->texture_tile[tile].ult = ult;
+     mRdp->texture_tile[tile].lrs = lrs;
+     mRdp->texture_tile[tile].lrt = lrt;
++    sGfxS7DirtyMask |= static_cast<uint8_t>(kGfxS7DirtyTri | kGfxS7DirtyRect | kGfxS7DirtyRectViewport);
+     mRdp->textures_changed[0] = true;
+     mRdp->textures_changed[1] = true;
+ }
+@@ -4804,6 +4851,12 @@ void Interpreter::GfxDpLoadTlut(uint8_t tile, uint32_t high_index) {
+         mRdp->palettes[1] = src;
+         mRdp->palette_dram_addr[1] = src;
+     }
++
++    // [crowd2] A palette (re)load changes what a CI import decodes to, but LOADTLUT never
++    // armed textures_changed — the unconditional SETTILE re-arm on the way to the next draw
++    // was the rescue. That re-arm is now value-gated, so the palette mutation site must arm.
++    mRdp->textures_changed[0] = true;
++    mRdp->textures_changed[1] = true;
+ }
+ 
+ void Interpreter::StoreLoadedTexture(uint16_t tmemStart, const LoadedTexture& texture) {
+@@ -5183,13 +5236,15 @@ void Interpreter::GfxDpLoadBlock(uint8_t tile, uint32_t uls, uint32_t ult, uint3
+     // LOADBLOCK-OPT same-content skip: menus replay an identical load sequence every frame
+     // (82 LOADBLOCKs/frame of unchanged o2r-backed textures on the measured device). When
+     // re-running this load would provably reproduce the span, the slots and the TMEM mirror
+-    // bit-for-bit (see GdxTmemSameContentLoad), skip all three. textures_changed still
+-    // arms so the draw-side import/rebind pipeline behaves exactly as after a real load;
+-    // masked/blended were derived from the LIVE mMaskedTextures above and participate in
+-    // the equality check, so replacement-pack changes fall through to the full store.
++    // bit-for-bit (see GdxTmemSameContentLoad), skip all three. masked/blended were derived
++    // from the LIVE mMaskedTextures above and participate in the equality check, so
++    // replacement-pack changes fall through to the full store.
++    // [crowd2] The skip no longer arms textures_changed: a proven bit-identical replay
++    // leaves no observable state, and the one hazard the blanket arm papered over — a cache
++    // eviction nulling the binding while the span stayed live — now arms at the eviction
++    // site itself (see TextureCacheLookup/TextureCacheDelete). This is what lets a machine
++    // part re-asserting its already-loaded texture keep the draw memo and its batch.
+     if (kGdxTmemSameContentSkip && GdxTmemSameContentLoad(*mRdp, tmemIndex, 1, loaded)) {
+-        mRdp->textures_changed[0] = true;
+-        mRdp->textures_changed[1] = true;
+         return;
+     }
+ 
+@@ -5243,6 +5298,9 @@ void Interpreter::GfxDpLoadBlock(uint8_t tile, uint32_t uls, uint32_t ult, uint3
+ 
+     StoreLoadedTexture(tmemIndex, loaded);
+     GdxNoteTmemLoadKind(*mRdp, tmemIndex, 1, tmemWriteEndByte);
++    // [crowd2] LOADBLOCK is table-whitelisted now; a real store re-creates the legacy
++    // dirty contribution here (the draw-state derivation reads the loaded slot's sizes).
++    sGfxS7DirtyMask |= static_cast<uint8_t>(kGfxS7DirtyTri | kGfxS7DirtyRect | kGfxS7DirtyRectViewport);
+     mRdp->textures_changed[0] = true;
+     mRdp->textures_changed[1] = true;
+ }
+@@ -5321,12 +5379,19 @@ void Interpreter::GfxDpLoadTile(uint8_t tile, uint32_t uls, uint32_t ult, uint32
+     // armed kind==2 stamp implies a bit-identical re-run. F4 measured 3.15 ms/frame over
+     // 11 calls on the same device — the same textures re-loaded every steady menu frame.
+     if (kGdxTmemSameContentSkip && GdxTmemSameContentLoad(*mRdp, tmemIndex, 2, loaded)) {
+-        mRdp->texture_tile[tile].uls = uls;
+-        mRdp->texture_tile[tile].ult = ult;
+-        mRdp->texture_tile[tile].lrs = lrs;
+-        mRdp->texture_tile[tile].lrt = lrt;
+-        mRdp->textures_changed[0] = true;
+-        mRdp->textures_changed[1] = true;
++        // [crowd2] The load tile's extent writes ride the same value gate as
++        // GfxDpSetTileSize; the skip itself no longer arms (see GfxDpLoadBlock).
++        const auto& t = mRdp->texture_tile[tile];
++        if (!(t.uls == uls && t.ult == ult && t.lrs == lrs && t.lrt == lrt)) {
++            mRdp->texture_tile[tile].uls = uls;
++            mRdp->texture_tile[tile].ult = ult;
++            mRdp->texture_tile[tile].lrs = lrs;
++            mRdp->texture_tile[tile].lrt = lrt;
++            sGfxS7DirtyMask |=
++                static_cast<uint8_t>(kGfxS7DirtyTri | kGfxS7DirtyRect | kGfxS7DirtyRectViewport);
++            mRdp->textures_changed[0] = true;
++            mRdp->textures_changed[1] = true;
++        }
+         return;
+     }
+ 
+@@ -5365,6 +5430,9 @@ void Interpreter::GfxDpLoadTile(uint8_t tile, uint32_t uls, uint32_t ult, uint32
+     mRdp->texture_tile[tile].lrs = lrs;
+     mRdp->texture_tile[tile].lrt = lrt;
+ 
++    // [crowd2] LOADTILE is table-whitelisted now; a real store re-creates the legacy
++    // dirty contribution here (see GfxDpLoadBlock).
++    sGfxS7DirtyMask |= static_cast<uint8_t>(kGfxS7DirtyTri | kGfxS7DirtyRect | kGfxS7DirtyRectViewport);
+     mRdp->textures_changed[0] = true;
+     mRdp->textures_changed[1] = true;
+ }
+@@ -5771,11 +5839,14 @@ void Interpreter::GfxDpImageRectangle(int32_t tile, int32_t w, int32_t h, int32_
+     loadtex.full_image_line_size_bytes = loadtex.line_size_bytes = mRdp->texture_tile[tile].line_size_bytes;
+     loadtex.size_bytes = loadtex.orig_size_bytes = loadtex.line_size_bytes * h;
+ 
++    // [crowd2] This handler rewrites the tile descriptor AND the loaded-slot payload in
++    // place (above), without going through GfxDpSetTile/StoreLoadedTexture. The next game
++    // SETTILE may compare equal against the game's own values and skip its re-arm, so the
++    // mutation site itself must arm — unconditionally, not just on a tile switch.
++    mRdp->textures_changed[0] = true;
++    mRdp->textures_changed[1] = true;
++
+     uint8_t saved_tile = mRdp->first_tile_index;
+-    if (saved_tile != tile) {
+-        mRdp->textures_changed[0] = true;
+-        mRdp->textures_changed[1] = true;
+-    }
+     mRdp->first_tile_index = tile;
+ 
+     GfxDrawRectangle(ulx, uly, lrx, lry);
+@@ -7986,6 +8057,22 @@ static inline bool GfxS7OpcodePreservesDrawState(int8_t opcode) {
+         case RDP_G_SETPRIMCOLOR:
+         case RDP_G_SETENVCOLOR:
+         case RDP_G_SETCOMBINE:
++        // [crowd2] Tile-descriptor and load-path opcodes moved to CONDITIONAL dirtying at
++        // their mutation sites: the handlers OR the legacy kGfxS7Dirty* contribution into
++        // sGfxS7DirtyMask (and arm textures_changed) exactly when they change state —
++        // a value-identical SETTILE/SETTILESIZE re-assertion and a same-content
++        // LOADBLOCK/LOADTILE replay leave no observable state and preserve the memos.
++        // SETTIMG only stages texture_to_load (consumed by the loaders, never by the
++        // draw-state derivation), so it is unconditionally preserve. The FB variant
++        // (OTR_G_SETTIMG_FB) binds framebuffer textures and stays OFF the whitelist.
++        case RDP_G_SETTILE:
++        case RDP_G_SETTILESIZE:
++        case RDP_G_LOADBLOCK:
++        case RDP_G_LOADBLOCK_WIDE:
++        case RDP_G_LOADTILE:
++        case RDP_G_SETTIMG:
++        case OTR_G_SETTIMG_OTR_HASH:
++        case OTR_G_SETTIMG_OTR_FILEPATH:
+             return true;
+         default:
+             return false;

@@ -1,0 +1,226 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index c835ea8..94a01fc 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -233,6 +233,58 @@ extern "C" uint64_t gdx3ds_prof_sec_ticks[7];
+ extern "C" uint32_t gdx3ds_prof_sec_calls[7];
+ extern "C" int gdx_trect_census_on = 0; // verbose-gate mirror, written by the bridge
+ extern "C" void gdx_trect_census_dump(const char* line) __attribute__((weak)); // port sink (filelog)
++// [trectbatch] LOCKED-60 Task A lever: HUD atlas + same-page rect batch merge. The census
++// proved same-state rects already share a batch and that EVERY texture switch inside a HUD
++// run (18/frame steady, 113-138/frame on the race-start crowd and rankings frames) costs a
++// batch break = one DrawTriangles + one import lookup (~38 us here). The backend
++// (gfx_citro3d.cpp) packs small clamp-addressed rect textures into shared atlas PAGES as
++// "view" ids with a per-view UV affine; two views of the same page are the same GPU texture,
++// so a rect whose import resolves to a view on the currently bound page keeps the open
++// packed batch (the pack params are refreshed for the new view's offset). Contract is
++// weak-linked: a port without it keeps the lever off. Killswitch [debug] trectbatch=0 ->
++// byte-identical legacy order (flush-before-import, no arming).
++extern "C" int gdx3ds_trectbatch_enabled(void) __attribute__((weak));
++extern "C" void gdx3ds_atlas_arm(int on) __attribute__((weak));
++extern "C" int gdx3ds_tex_page(uint32_t texId) __attribute__((weak));
++extern "C" void gdx3ds_vbopack_refresh(Gdx3dsVboPackParams* params) __attribute__((weak));
++extern "C" void gdx3ds_atlas_stats(unsigned long out[5]) __attribute__((weak));
++namespace {
++bool sTrectBatchOn = false;
++bool sTrectRectAtlasOk = false; // this rect's tile is clamp-addressed, unmirrored, UVs inside
++uint32_t sTrectBatchMerged = 0;   // same-page view re-import kept the batch open
++uint32_t sTrectBatchSwitched = 0; // page changed: batch drawn with its own texture, then split
++uint32_t sTrectBatchBypassed = 0; // guard refused the merge attempt (legacy order taken)
++uint32_t sTrectBatchArmed = 0;    // eligible rect imports that armed the atlas
++uint32_t sTrectViewTriDraws = 0;  // diagnostic: NON-rect imports that resolved to a view
++inline void GdxTrectBatchLatch() {
++    sTrectBatchOn = &gdx3ds_trectbatch_enabled != nullptr && &gdx3ds_atlas_arm != nullptr &&
++                    &gdx3ds_tex_page != nullptr && &gdx3ds_vbopack_refresh != nullptr &&
++                    gdx3ds_trectbatch_enabled() != 0;
++}
++// Atlas eligibility of a rect's tile: clamp (or mask 0 = implicit clamp) on both axes, no
++// mirror, and the rect's texel window inside [uls, lrs+1] x [ult, lrt+1] (the gutter then
++// reproduces N64 clamp sampling exactly).
++inline bool GdxTrectRectEligible(const RDP* rdp, uint8_t tile, int16_t uls, int16_t ult, float lrs, float lrt) {
++    const auto& tt = rdp->texture_tile[tile];
++    const bool clampS = ((tt.cms & G_TX_CLAMP) != 0 || tt.masks == 0) && !((tt.cms & G_TX_MIRROR) != 0 && tt.masks != 0);
++    const bool clampT = ((tt.cmt & G_TX_CLAMP) != 0 || tt.maskt == 0) && !((tt.cmt & G_TX_MIRROR) != 0 && tt.maskt != 0);
++    if (!clampS || !clampT) {
++        return false;
++    }
++    // A shifted tile pre-scales its texel window by 2^-shift on the vertex path; keep such
++    // tiles standalone rather than reason about the post-shift window here.
++    if (tt.shifts != 0 || tt.shiftt != 0) {
++        return false;
++    }
++    const float s0 = (float)uls / 32.0f, s1 = lrs / 32.0f;
++    const float t0 = (float)ult / 32.0f, t1 = lrt / 32.0f;
++    const float sMin = s0 < s1 ? s0 : s1, sMax = s0 < s1 ? s1 : s0;
++    const float tMin = t0 < t1 ? t0 : t1, tMax = t0 < t1 ? t1 : t0;
++    // texture_tile uls/lrs are 10.2 fixed point (see the /4.0f in the packed UV write)
++    return sMin >= tt.uls / 4.0f - 0.01f && sMax <= tt.lrs / 4.0f + 1.01f && tMin >= tt.ult / 4.0f - 0.01f &&
++           tMax <= tt.lrt / 4.0f + 1.01f;
++}
++} // namespace
+ namespace {
+ enum { kTrectProfImp = 4 }; // kGdxProfIMP (declared later in this TU)
+ struct GdxTrectKey {
+@@ -502,6 +554,10 @@ extern "C" int gdx_trect_census_format(char* line1, char* line2, int cap, unsign
+     const double inv = frames != 0 ? 1.0 / (double)frames : 1.0;
+     const double ticksPerMs = 268111.856;
+     const double rectMs = (double)sTrect.rectTicks / ticksPerMs * inv;
++    unsigned long atlasStats[5] = { 0, 0, 0, 0, 0 };
++    if (&gdx3ds_atlas_stats != nullptr) {
++        gdx3ds_atlas_stats(atlasStats);
++    }
+     const double impMs = (double)sTrect.impTicks / ticksPerMs * inv;
+     const double drawMs = (double)sTrect.flushTicks / ticksPerMs * inv;
+     snprintf(line1, (size_t)cap,
+@@ -514,12 +570,15 @@ extern "C" int gdx_trect_census_format(char* line1, char* line2, int cap, unsign
+              sTrect.flushBetween * inv, sTrect.impCalls * inv);
+     snprintf(line2, (size_t)cap,
+              "[trect2] dist=%u/%uKB hist=%u,%u,%u,%u,%u maxrun=%u/%u ms/f rect=%.2f imp=%.2f draw=%.2f "
+-             "rest=%.2f",
++             "rest=%.2f tb=%d/%u/%u/%u/%u vt=%u atlas=%lu/%lu/%lu/%lu lin=%luKB",
+              sTrectWinDistinct, sTrectWinBytes / 1024u, sTrect.runHist[0], sTrect.runHist[1], sTrect.runHist[2],
+              sTrect.runHist[3], sTrect.runHist[4], sTrect.maxRunLen, sTrectRunDistinct > sTrect.maxRunDistinct
+                                                                         ? sTrectRunDistinct
+                                                                         : sTrect.maxRunDistinct,
+-             rectMs, impMs, drawMs, rectMs - impMs - drawMs);
++             rectMs, impMs, drawMs, rectMs - impMs - drawMs, sTrectBatchOn ? 1 : 0, sTrectBatchMerged,
++             sTrectBatchSwitched, sTrectBatchBypassed, sTrectBatchArmed, sTrectViewTriDraws, atlasStats[0],
++             atlasStats[1], atlasStats[2], atlasStats[3], atlasStats[4]);
++    sTrectBatchMerged = sTrectBatchSwitched = sTrectBatchBypassed = sTrectBatchArmed = sTrectViewTriDraws = 0;
+     // [trect-tex] one-shot inventory dumps of the biggest rect-texture sets seen (menus and the
+     // race-start / results crowd), 4 windows total, 3 entries per line, budgeted.
+     if (sTrectDumpsLeft > 0 && sTrectWinDistinct >= 20 && gdx_trect_census_dump != nullptr) {
+@@ -559,6 +618,7 @@ static inline void GfxS7InvalidateDrawMemos() {
+     sGfxS7DirtyMask = 0xFFu;
+ #ifdef __3DS__
+     sTrectPrevValid = false; // [trect] task/frame boundary ends the rect run
++    GdxTrectBatchLatch();    // [trectbatch] killswitch re-read at task/frame boundaries
+ #endif
+ }
+ 
+@@ -4445,8 +4505,68 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+         if (comb->usedTextures[i]) {
+             const auto& activeLoaded = mRdp->LoadedTextureAt(mRdp->texture_tile[tile].tmem_index);
+             if (mRdp->textures_changed[i]) {
++#ifdef __3DS__
++                // [trectbatch] Rect draws: import FIRST (arming the atlas for an eligible rect
++                // texture), then keep the open packed batch when the resolved texture is a view
++                // on the page already bound (same GPU texture; the pack params are refreshed
++                // for the new view's UV offset and the new view inherits the batch's sampler
++                // state so a later sampler split still draws the pending tris right). Any
++                // other outcome draws the pending batch with the texture it was built for
++                // (rebind the previous id around the Flush — the 3DS backend's SelectTexture
++                // only records the id; C3D_TexBind happens in DrawTriangles). Guards keep every
++                // other case on the legacy order: killswitch off, non-rect, empty or
++                // non-packed batch, unit unbound, masked/blended units, cache at capacity (an
++                // eviction could free the pending batch's id for this very import to reuse).
++                TextureCacheNode* const trectPrevNode = mRenderingState.mTextures[i];
++                const bool trectRect = sTrectBatchOn && is_rect;
++                const bool trectDefer = trectRect && mBufVboLen > 0 && sGdxPackBatch && trectPrevNode != nullptr &&
++                                        !activeLoaded.masked && !activeLoaded.blended &&
++                                        mTextureCache.map.size() + 1 < TEXTURE_CACHE_MAX_SIZE;
++                if (trectRect && mBufVboLen > 0 && !trectDefer) {
++                    sTrectBatchBypassed++;
++                }
++                const uint32_t trectPrevId = trectDefer ? trectPrevNode->second.texture_id : 0u;
++                const int trectPrevPage = trectDefer ? gdx3ds_tex_page(trectPrevId) : -1;
++                if (!trectDefer) {
++                    Flush();
++                }
++                // Unit 0 only: eligibility was judged from the rect's own tile, not texel1Tile.
++                const bool trectArm = trectRect && i == 0 && sTrectRectAtlasOk && !activeLoaded.masked && !activeLoaded.blended;
++                if (trectArm) {
++                    gdx3ds_atlas_arm(1);
++                    sTrectBatchArmed++;
++                }
++                ImportTexture(i, tile, false);
++                if (trectArm) {
++                    gdx3ds_atlas_arm(0);
++                }
++                if (trectDefer) {
++                    TextureCacheNode* const trectNewNode = mRenderingState.mTextures[i];
++                    const uint32_t trectNewId = trectNewNode != nullptr ? trectNewNode->second.texture_id : 0u;
++                    const int trectNewPage = trectNewNode != nullptr ? gdx3ds_tex_page(trectNewId) : -1;
++                    if (trectNewNode == trectPrevNode || (trectPrevPage >= 0 && trectNewPage == trectPrevPage)) {
++                        sTrectBatchMerged++;
++                        if (trectNewNode != trectPrevNode) {
++                            mRapi->SetSamplerParameters(i, mRenderingState.sampler_linear_filter[i],
++                                                        mRenderingState.sampler_cms[i], mRenderingState.sampler_cmt[i]);
++                            gdx3ds_vbopack_refresh(&sGdxPackParams);
++                        }
++                    } else {
++                        mRapi->SelectTexture(i, trectPrevId);
++                        Flush();
++                        if (trectNewNode != nullptr) { // a failed import leaves the previous binding, as legacy does
++                            mRapi->SelectTexture(i, trectNewId);
++                        }
++                        sTrectBatchSwitched++;
++                    }
++                } else if (!is_rect && sTrectBatchOn && GdxTrectActive() && mRenderingState.mTextures[i] != nullptr &&
++                           gdx3ds_tex_page(mRenderingState.mTextures[i]->second.texture_id) >= 0) {
++                    sTrectViewTriDraws++; // diagnostic only: a game triangle sampling an atlas view
++                }
++#else
+                 Flush();
+                 ImportTexture(i, tile, false);
++#endif
+                 if (activeLoaded.masked) {
+                     ImportTextureMask(SHADER_FIRST_MASK_TEXTURE + i, tile);
+                 }
+@@ -5005,8 +5125,17 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+                     }
+                     const float nu = prep[t].uMul ? u * prep[t].uNormMul : u / prep[t].uNormDiv;
+                     const float nv = prep[t].vMul ? v * prep[t].vNormMul : v / prep[t].vNormDiv;
+-                    out[slot] = GdxFminExact(nu * sGdxPackParams.uScale[t], gdxClampU[t]);
+-                    out[slot + 1] = GdxFminExact(nv * sGdxPackParams.vScale[t], gdxClampV[t]);
++                    // [trectbatch] atlas view: mirror the legacy loop exactly -- the page
++                    // offset rides AFTER the clamp so the limits stay in view space.
++                    const float pu = GdxFminExact(nu * sGdxPackParams.uScale[t], gdxClampU[t]);
++                    const float pv = GdxFminExact(nv * sGdxPackParams.vScale[t], gdxClampV[t]);
++                    if (sGdxPackParams.hasOff) {
++                        out[slot] = pu + sGdxPackParams.uOff[t];
++                        out[slot + 1] = pv + sGdxPackParams.vOff[t];
++                    } else {
++                        out[slot] = pu;
++                        out[slot + 1] = pv;
++                    }
+                 }
+                 if (ci >= 0) {
+                     if (colorIsShade) {
+@@ -5098,8 +5227,17 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+ 
+                 // normalized UV * pow2-padding scale, clamped — the exact repack
+                 // expression (fminf keeps the NaN policy identical).
+-                out[slot] = fminf((u / tex_width[t]) * sGdxPackParams.uScale[t], gdxClampU[t]);
+-                out[slot + 1] = fminf((v / tex_height[t]) * sGdxPackParams.vScale[t], gdxClampV[t]);
++                if (sGdxPackParams.hasOff) {
++                    // [trectbatch] atlas view: the page offset rides AFTER the clamp so the
++                    // limits stay in the view's own (un-offset) space.
++                    out[slot] = fminf((u / tex_width[t]) * sGdxPackParams.uScale[t], gdxClampU[t]) +
++                                sGdxPackParams.uOff[t];
++                    out[slot + 1] = fminf((v / tex_height[t]) * sGdxPackParams.vScale[t], gdxClampV[t]) +
++                                    sGdxPackParams.vOff[t];
++                } else {
++                    out[slot] = fminf((u / tex_width[t]) * sGdxPackParams.uScale[t], gdxClampU[t]);
++                    out[slot + 1] = fminf((v / tex_height[t]) * sGdxPackParams.vScale[t], gdxClampV[t]);
++                }
+             }
+ 
+             if (sGdxPackParams.vtxColorInput > 0) {
+@@ -7069,6 +7207,8 @@ void Interpreter::GfxDpTextureRectangle(int32_t ulx, int32_t uly, int32_t lrx, i
+     mRdp->first_tile_index = tile;
+ 
+ #ifdef __3DS__
++    // [trectbatch] atlas eligibility of this rect, consumed by GfxSpTri1's import block.
++    sTrectRectAtlasOk = sTrectBatchOn && GdxTrectRectEligible(mRdp, tile, uls, ult, lrs, lrt);
+     // [trect] census bracket (gated; see the block above GfxS7InvalidateDrawMemos).
+     const bool trectCensus = GdxTrectActive();
+     long long trectT0 = 0;
+@@ -7084,6 +7224,7 @@ void Interpreter::GfxDpTextureRectangle(int32_t ulx, int32_t uly, int32_t lrx, i
+ #endif
+     GfxDrawRectangle(ulx, uly, lrx, lry);
+ #ifdef __3DS__
++    sTrectRectAtlasOk = false;
+     if (trectCensus) {
+         sTrectInRect = false;
+         sTrect.rectTicks += (uint64_t)(gdx3ds_prof_now() - trectT0);

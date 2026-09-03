@@ -1,0 +1,25 @@
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -528,6 +528,7 @@
+                     case G_CCMUX_PRIMITIVE_ALPHA:
+                     case G_CCMUX_PRIM_LOD_FRAC:
+                     case G_CCMUX_SHADE:
++                    case G_CCMUX_SHADE_ALPHA:
+                     case G_CCMUX_ENVIRONMENT:
+                     case G_CCMUX_ENV_ALPHA:
+                     case G_CCMUX_LOD_FRACTION:
+@@ -4187,7 +4188,14 @@
+                         break;
+                     case G_CCMUX_SHADE:
+                         color = &v_arr[i]->color;
++                        break;
++                    case G_CCMUX_SHADE_ALPHA: {
++                        // Per-vertex shade alpha broadcast to rgb (F-Zero X machine debris:
++                        // rgb = lerp(SHADE, 1, SHADE_ALPHA) — the white-hot flicker factor).
++                        tmp.r = tmp.g = tmp.b = v_arr[i]->color.a;
++                        color = &tmp;
+                         break;
++                    }
+                     case G_CCMUX_ENVIRONMENT:
+                         color = &mRdp->env_color;
+                         break;

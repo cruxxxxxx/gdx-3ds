@@ -1,0 +1,52 @@
+; port/3ds/gfx/shader.v.pica — G-Diffuser 3DS vertex shader (stream A).
+;
+; The Fast3D interpreter hands the backend fully-transformed clip-space vertices
+; (GetClipParameters: z_is_from_0_to_1 = true, invertY = false), so this shader is a
+; pass-through plus the PICA fixup: the "projection" uniform carries the
+; landscape→portrait rotation (3DS top-screen framebuffers are 240x400 portrait) and
+; the [0,w] → [0,-w] depth remap. gfx_citro3d.cpp owns the matrix values.
+;
+; Fixed input layout (gfx_citro3d.cpp repacks the interpreter's variable-stride VBO
+; into this — see kVertexStrideFloats):
+;   v0 = position (x, y, z, w)  clip space
+;   v1 = texcoord (u, v, 0, 0)  texel0, already rescaled for pow2 padding
+;   v2 = color    (r, g, b, a)  the shader-input routed to GPU_PRIMARY_COLOR
+;   v3 = texcoord (u, v, 0, 0)  texel1 (2-cycle adjacent-tile modes), rescaled too
+;
+; Reference architecture: mkst/sm64-port 3ds-port src/pc/gfx/shader.v.pica.
+
+; Uniforms
+.fvec projection[4]
+
+; Constants
+.constf myconst(0.0, 1.0, -1.0, 0.5)
+.alias  zeros myconst.xxxx
+.alias  ones  myconst.yyyy
+
+; Outputs
+.out outpos position
+.out outtc0 texcoord0
+.out outclr color
+.out outtc1 texcoord1
+
+; Inputs
+.in inpos v0
+.in intex v1
+.in inclr v2
+.in intex1 v3
+
+.entry vmain
+.proc vmain
+	; outpos = projection * inpos (fixup matrix, see BuildFixupMatrix)
+	dp4 outpos.x, projection[0], inpos
+	dp4 outpos.y, projection[1], inpos
+	dp4 outpos.z, projection[2], inpos
+	dp4 outpos.w, projection[3], inpos
+
+	; pass through texcoords and vertex color
+	mov outtc0, intex
+	mov outclr, inclr
+	mov outtc1, intex1
+
+	end
+.end

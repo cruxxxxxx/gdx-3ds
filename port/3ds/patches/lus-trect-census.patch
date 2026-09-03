@@ -1,0 +1,421 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index 8667bd7..c835ea8 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -214,6 +214,342 @@ static inline void GfxS7InvalidateTriMemo() {
+     sGfxS7DirtyMask |= kGfxS7DirtyTri;
+ }
+ 
++#ifdef __3DS__
++// [trect] Texrect-RUN census (LOCKED-60 Task A, docs/research/locked60-campaign.md). Every
++// G_TEXRECT is classified against the previous rect of the same RUN (a run = rects with no
++// game triangle and no task/frame boundary between them): identical draw state, a
++// texture-only delta (HUD atlas candidate: same combiner/othermode/prim-env/scissor, only the
++// tile image differs), or another delta (first differing group recorded). It also records
++// whether the rect cost a BATCH BREAK (a Flush with a non-empty VBO between the previous
++// rect's end and this rect's end, split into "between rects" and "inside the rect"), and the
++// per-rect time split: ImportTexture (prof IMP section delta), the DrawTriangles submit inside
++// Flush, and the remainder (2x GfxSpTri1 tri path + handler). Pure diagnostic: active only
++// under the gputrace ([prof] window) or the bridge-mirrored verbose gate, drained by
++// gdx_trect_census_format on the [prof]/[race-dl] cadence. The only always-on cost is two
++// counter increments (Flush, non-rect GfxSpTri1).
++extern "C" int gdx3ds_prof_active;
++extern "C" long long gdx3ds_prof_now(void);
++extern "C" uint64_t gdx3ds_prof_sec_ticks[7];
++extern "C" uint32_t gdx3ds_prof_sec_calls[7];
++extern "C" int gdx_trect_census_on = 0; // verbose-gate mirror, written by the bridge
++extern "C" void gdx_trect_census_dump(const char* line) __attribute__((weak)); // port sink (filelog)
++namespace {
++enum { kTrectProfImp = 4 }; // kGdxProfIMP (declared later in this TU)
++struct GdxTrectKey {
++    const uint8_t* texAddr;
++    uint32_t texSize, lineSize;
++    float uls, ult, lrs, lrt;
++    uint64_t comb;
++    uint32_t omh, oml;
++    uint32_t prim, env;
++    uint32_t extraGeo;
++    XYWidthHeight scissor;
++    uint16_t primDepth;
++    uint8_t blendA;
++    uint8_t fmt, siz, cms, cmt, masks, maskt, palIdx, tile;
++};
++enum { kTrectClsIdent = 0, kTrectClsTexOnly = 1, kTrectClsOther = 2 };
++enum { kTrectCauseOm = 0, kTrectCauseComb, kTrectCausePrimEnv, kTrectCauseScissor, kTrectCauseTile, kTrectCauseN };
++struct GdxTrectCensus {
++    uint32_t rects, runs;
++    uint32_t ident, identFlushed;
++    uint32_t texOnly, texOnlyFlushed, texOnlyClamp, texOnlyUvIn;
++    uint32_t other, otherFlushed, cause[kTrectCauseN];
++    uint32_t flushIn, flushBetween, impCalls;
++    uint32_t runHist[5], maxRunLen, maxRunDistinct;
++    uint64_t rectTicks, impTicks, flushTicks;
++};
++GdxTrectCensus sTrect = {};
++GdxTrectKey sTrectPrev = {};
++bool sTrectPrevValid = false;
++uint32_t sTrectFlushSeq = 0;          // Flush() calls that submitted a non-empty VBO
++uint32_t sTrectFlushSeqAtPrevEnd = 0;
++uint32_t sTrectFlushSeqAtEnter = 0;
++uint32_t sTrectTriSeq = 0;            // non-rect GfxSpTri1 calls (run breaker)
++uint32_t sTrectTriSeqAtPrevEnd = 0;
++bool sTrectInRect = false;
++// pending classification of the rect in flight, resolved at exit
++bool sTrectPendSameRun = false, sTrectPendFlushedBetween = false, sTrectPendClamp = false, sTrectPendUvIn = false;
++int sTrectPendCls = 0, sTrectPendCause = 0;
++// per-run / per-window distinct texture tracking (address identity; sizes summed once)
++uint32_t sTrectRunLen = 0, sTrectRunDistinct = 0;
++const uint8_t* sTrectRunTex[32];
++enum { kTrectWinTexCap = 256 };
++const uint8_t* sTrectWinTex[kTrectWinTexCap];
++uint32_t sTrectWinDistinct = 0, sTrectWinBytes = 0;
++// [trect-tex] inventory of the window's distinct rect textures (one-shot dumps, see the drain)
++struct GdxTrectTexInfo {
++    uint32_t bytes;
++    uint16_t w, h;
++    uint8_t fmt, siz, cms, cmt, filt, palIdx;
++    char tail[20];
++};
++GdxTrectTexInfo sTrectWinInfo[kTrectWinTexCap];
++uint32_t sTrectDumpsLeft = 4;
++
++inline bool GdxTrectActive() {
++    return gdx3ds_prof_active != 0 || gdx_trect_census_on != 0;
++}
++
++void GdxTrectRunEnd() {
++    if (sTrectRunLen == 0) {
++        return;
++    }
++    const uint32_t d = sTrectRunDistinct;
++    sTrect.runHist[d <= 1 ? 0 : d <= 4 ? 1 : d <= 8 ? 2 : d <= 16 ? 3 : 4]++;
++    if (sTrectRunLen > sTrect.maxRunLen) {
++        sTrect.maxRunLen = sTrectRunLen;
++    }
++    if (d > sTrect.maxRunDistinct) {
++        sTrect.maxRunDistinct = d;
++    }
++    sTrectRunLen = 0;
++    sTrectRunDistinct = 0;
++}
++
++void GdxTrectNoteTexture(const uint8_t* addr, uint32_t bytes, const GdxTrectTexInfo* info) {
++    bool seen = false;
++    for (uint32_t i = 0; i < sTrectRunDistinct && i < 32; i++) {
++        if (sTrectRunTex[i] == addr) {
++            seen = true;
++            break;
++        }
++    }
++    if (!seen) {
++        if (sTrectRunDistinct < 32) {
++            sTrectRunTex[sTrectRunDistinct] = addr;
++        }
++        sTrectRunDistinct++;
++    }
++    seen = false;
++    for (uint32_t i = 0; i < sTrectWinDistinct && i < kTrectWinTexCap; i++) {
++        if (sTrectWinTex[i] == addr) {
++            seen = true;
++            break;
++        }
++    }
++    if (!seen) {
++        if (sTrectWinDistinct < kTrectWinTexCap) {
++            sTrectWinTex[sTrectWinDistinct] = addr;
++            sTrectWinInfo[sTrectWinDistinct] = *info;
++        }
++        sTrectWinDistinct++;
++        sTrectWinBytes += bytes;
++    }
++}
++
++// Which group differs first between two keys; -1 = identical.
++int GdxTrectDiffGroup(const GdxTrectKey& a, const GdxTrectKey& b, bool* texDiffers) {
++    *texDiffers = a.texAddr != b.texAddr || a.texSize != b.texSize || a.lineSize != b.lineSize ||
++                  a.fmt != b.fmt || a.siz != b.siz || a.palIdx != b.palIdx || a.uls != b.uls ||
++                  a.ult != b.ult || a.lrs != b.lrs || a.lrt != b.lrt;
++    if (a.omh != b.omh || a.oml != b.oml) {
++        return kTrectCauseOm;
++    }
++    if (a.comb != b.comb) {
++        return kTrectCauseComb;
++    }
++    if (a.prim != b.prim || a.env != b.env || a.blendA != b.blendA || a.primDepth != b.primDepth) {
++        return kTrectCausePrimEnv;
++    }
++    if (memcmp(&a.scissor, &b.scissor, sizeof(a.scissor)) != 0 || a.extraGeo != b.extraGeo) {
++        return kTrectCauseScissor;
++    }
++    if (a.cms != b.cms || a.cmt != b.cmt || a.masks != b.masks || a.maskt != b.maskt || a.tile != b.tile) {
++        return kTrectCauseTile;
++    }
++    return -1;
++}
++
++inline uint32_t GdxTrectPackRgba(const RGBA& c) {
++    return ((uint32_t)c.r << 24) | ((uint32_t)c.g << 16) | ((uint32_t)c.b << 8) | (uint32_t)c.a;
++}
++
++void GdxTrectEnter(RDP* rdp, const RSP* rsp, uint8_t tile, int16_t uls, int16_t ult, float lrs, float lrt,
++                   uint64_t comb) {
++    const auto& tt = rdp->texture_tile[tile];
++    const LoadedTexture& lt = rdp->LoadedTextureAt(tt.tmem_index);
++    GdxTrectKey k;
++    memset(&k, 0, sizeof(k));
++    k.texAddr = lt.addr;
++    k.texSize = lt.size_bytes;
++    k.lineSize = tt.line_size_bytes;
++    k.uls = tt.uls;
++    k.ult = tt.ult;
++    k.lrs = tt.lrs;
++    k.lrt = tt.lrt;
++    k.comb = comb;
++    k.omh = rdp->other_mode_h;
++    k.oml = rdp->other_mode_l;
++    k.prim = GdxTrectPackRgba(rdp->prim_color);
++    k.env = GdxTrectPackRgba(rdp->env_color);
++    k.extraGeo = rsp->extra_geometry_mode;
++    k.scissor = rdp->scissor;
++    k.primDepth = rdp->prim_depth;
++    k.blendA = rdp->blend_color.a;
++    k.fmt = tt.fmt;
++    k.siz = tt.siz;
++    k.cms = tt.cms;
++    k.cmt = tt.cmt;
++    k.masks = tt.masks;
++    k.maskt = tt.maskt;
++    k.palIdx = tt.palette;
++    k.tile = tile;
++
++    const bool sameRun = sTrectPrevValid && sTrectTriSeq == sTrectTriSeqAtPrevEnd;
++    if (!sameRun) {
++        GdxTrectRunEnd();
++        sTrect.runs++;
++    }
++    sTrect.rects++;
++    sTrectRunLen++;
++    {
++        GdxTrectTexInfo info;
++        memset(&info, 0, sizeof(info));
++        info.bytes = lt.size_bytes;
++        info.w = (uint16_t)((tt.lrs - tt.uls + 4.0f) / 4.0f); // 10.2 fixed -> texels
++        info.h = (uint16_t)((tt.lrt - tt.ult + 4.0f) / 4.0f);
++        info.fmt = tt.fmt;
++        info.siz = tt.siz;
++        info.cms = tt.cms;
++        info.cmt = tt.cmt;
++        info.filt = (uint8_t)((rdp->other_mode_h >> G_MDSFT_TEXTFILT) & 3u);
++        info.palIdx = tt.palette;
++        auto* res = lt.raw_tex_metadata.resource.get();
++        if (res != nullptr && res->GetInitData() != nullptr) {
++            const std::string& path = res->GetInitData()->Path;
++            const size_t n = path.size();
++            const size_t take = n < sizeof(info.tail) - 1 ? n : sizeof(info.tail) - 1;
++            memcpy(info.tail, path.c_str() + (n - take), take);
++            info.tail[take] = 0;
++        } else {
++            snprintf(info.tail, sizeof(info.tail), "@%08lx", (unsigned long)(uintptr_t)lt.addr);
++        }
++        GdxTrectNoteTexture(k.texAddr, k.texSize, &info);
++    }
++
++    sTrectPendSameRun = sameRun;
++    sTrectPendFlushedBetween = sameRun && sTrectFlushSeq != sTrectFlushSeqAtPrevEnd;
++    sTrectPendCls = kTrectClsOther;
++    sTrectPendCause = 0;
++    if (sameRun) {
++        bool texDiffers = false;
++        const int g = GdxTrectDiffGroup(sTrectPrev, k, &texDiffers);
++        if (g >= 0) {
++            sTrectPendCls = kTrectClsOther;
++            sTrectPendCause = g;
++        } else {
++            sTrectPendCls = texDiffers ? kTrectClsTexOnly : kTrectClsIdent;
++        }
++    }
++    // Atlas safety of THIS rect's tile: clamp-addressed (or mask 0 = implicit clamp) on both
++    // axes, no mirror, and the rect's texel window inside the tile's [uls, lrs+1] x [ult, lrt+1].
++    const bool clampS = ((tt.cms & G_TX_CLAMP) != 0 || tt.masks == 0) && !((tt.cms & G_TX_MIRROR) != 0 && tt.masks != 0);
++    const bool clampT = ((tt.cmt & G_TX_CLAMP) != 0 || tt.maskt == 0) && !((tt.cmt & G_TX_MIRROR) != 0 && tt.maskt != 0);
++    sTrectPendClamp = clampS && clampT;
++    const float s0 = (float)uls / 32.0f, s1 = lrs / 32.0f;
++    const float t0 = (float)ult / 32.0f, t1 = lrt / 32.0f;
++    const float sMin = s0 < s1 ? s0 : s1, sMax = s0 < s1 ? s1 : s0;
++    const float tMin = t0 < t1 ? t0 : t1, tMax = t0 < t1 ? t1 : t0;
++    sTrectPendUvIn = sMin >= tt.uls / 4.0f - 0.01f && sMax <= tt.lrs / 4.0f + 1.01f &&
++                     tMin >= tt.ult / 4.0f - 0.01f && tMax <= tt.lrt / 4.0f + 1.01f; // 10.2 fixed tile bounds
++
++    sTrectPrev = k;
++    sTrectPrevValid = true;
++    sTrectFlushSeqAtEnter = sTrectFlushSeq;
++}
++
++void GdxTrectExit() {
++    const bool flushedIn = sTrectFlushSeq != sTrectFlushSeqAtEnter;
++    if (flushedIn) {
++        sTrect.flushIn++;
++    }
++    if (sTrectPendSameRun) {
++        if (sTrectPendFlushedBetween) {
++            sTrect.flushBetween++;
++        }
++        const uint32_t flushed = (flushedIn || sTrectPendFlushedBetween) ? 1u : 0u;
++        switch (sTrectPendCls) {
++            case kTrectClsIdent:
++                sTrect.ident++;
++                sTrect.identFlushed += flushed;
++                break;
++            case kTrectClsTexOnly:
++                sTrect.texOnly++;
++                sTrect.texOnlyFlushed += flushed;
++                sTrect.texOnlyClamp += sTrectPendClamp ? 1u : 0u;
++                sTrect.texOnlyUvIn += (sTrectPendClamp && sTrectPendUvIn) ? 1u : 0u;
++                break;
++            default:
++                sTrect.other++;
++                sTrect.otherFlushed += flushed;
++                sTrect.cause[sTrectPendCause]++;
++                break;
++        }
++    }
++    sTrectFlushSeqAtPrevEnd = sTrectFlushSeq;
++    sTrectTriSeqAtPrevEnd = sTrectTriSeq;
++}
++} // namespace
++
++// Drain: formats two lines (GpuProfLog's buffer is 224 bytes) and resets the window. Returns
++// 0 when no rect was censused. Per-frame figures divide by `frames`; hist/dist are window
++// totals. svcGetSystemTick runs at SYSCLOCK_ARM11 = 268111856 Hz on every 3DS model.
++extern "C" int gdx_trect_census_format(char* line1, char* line2, int cap, unsigned frames) {
++    if (sTrect.rects == 0) {
++        return 0;
++    }
++    const double inv = frames != 0 ? 1.0 / (double)frames : 1.0;
++    const double ticksPerMs = 268111.856;
++    const double rectMs = (double)sTrect.rectTicks / ticksPerMs * inv;
++    const double impMs = (double)sTrect.impTicks / ticksPerMs * inv;
++    const double drawMs = (double)sTrect.flushTicks / ticksPerMs * inv;
++    snprintf(line1, (size_t)cap,
++             "[trect] n=%u r/f=%.1f runs/f=%.1f ident=%.1f/%.1f tex=%.1f/%.1f clamp=%.1f uvin=%.1f "
++             "oth=%.1f/%.1f om=%u cc=%u pe=%u sc=%u tl=%u fIn/f=%.1f fBtw/f=%.1f imp/f=%.1f",
++             frames, sTrect.rects * inv, sTrect.runs * inv, sTrect.ident * inv, sTrect.identFlushed * inv,
++             sTrect.texOnly * inv, sTrect.texOnlyFlushed * inv, sTrect.texOnlyClamp * inv,
++             sTrect.texOnlyUvIn * inv, sTrect.other * inv, sTrect.otherFlushed * inv, sTrect.cause[0],
++             sTrect.cause[1], sTrect.cause[2], sTrect.cause[3], sTrect.cause[4], sTrect.flushIn * inv,
++             sTrect.flushBetween * inv, sTrect.impCalls * inv);
++    snprintf(line2, (size_t)cap,
++             "[trect2] dist=%u/%uKB hist=%u,%u,%u,%u,%u maxrun=%u/%u ms/f rect=%.2f imp=%.2f draw=%.2f "
++             "rest=%.2f",
++             sTrectWinDistinct, sTrectWinBytes / 1024u, sTrect.runHist[0], sTrect.runHist[1], sTrect.runHist[2],
++             sTrect.runHist[3], sTrect.runHist[4], sTrect.maxRunLen, sTrectRunDistinct > sTrect.maxRunDistinct
++                                                                        ? sTrectRunDistinct
++                                                                        : sTrect.maxRunDistinct,
++             rectMs, impMs, drawMs, rectMs - impMs - drawMs);
++    // [trect-tex] one-shot inventory dumps of the biggest rect-texture sets seen (menus and the
++    // race-start / results crowd), 4 windows total, 3 entries per line, budgeted.
++    if (sTrectDumpsLeft > 0 && sTrectWinDistinct >= 20 && gdx_trect_census_dump != nullptr) {
++        sTrectDumpsLeft--;
++        char line[224];
++        int len = 0;
++        const uint32_t n = sTrectWinDistinct < kTrectWinTexCap ? sTrectWinDistinct : kTrectWinTexCap;
++        len = snprintf(line, sizeof(line), "[trect-tex] win=%u distinct=%u:", sTrectDumpsLeft, sTrectWinDistinct);
++        gdx_trect_census_dump(line);
++        for (uint32_t i = 0; i < n && i < 96; i++) {
++            const GdxTrectTexInfo& t = sTrectWinInfo[i];
++            len = 0;
++            line[0] = 0;
++            for (int j = 0; j < 3 && i < n && i < 96; j++, i++) {
++                const GdxTrectTexInfo& u = sTrectWinInfo[i];
++                len += snprintf(line + len, sizeof(line) - (size_t)len, " %s f%u/%u %ux%u b%u c%u%u t%u p%u |", u.tail,
++                                u.fmt, u.siz, u.w, u.h, u.bytes, u.cms, u.cmt, u.filt, u.palIdx);
++            }
++            i--;
++            (void)t;
++            gdx_trect_census_dump(line);
++        }
++    }
++    memset(&sTrect, 0, sizeof(sTrect));
++    sTrectWinDistinct = 0;
++    sTrectWinBytes = 0;
++    return 1;
++}
++#endif
++
+ // [texrect] Full invalidation for events that can invalidate ANY banked draw state (task/frame
+ // boundaries, texture/shader cache clears — freed comb/prg pointers, nulled mRenderingState
+ // textures, re-armed imports): both memos die and every dirty bit arms.
+@@ -221,6 +557,9 @@ static inline void GfxS7InvalidateDrawMemos() {
+     sGfxS7TriMemo.valid = false;
+     sGfxS7RectMemo.valid = false;
+     sGfxS7DirtyMask = 0xFFu;
++#ifdef __3DS__
++    sTrectPrevValid = false; // [trect] task/frame boundary ends the rect run
++#endif
+ }
+ 
+ // [perf-s7] Compute gate for the per-vertex / per-triangle geometry diagnostics (NDC min/max
+@@ -269,6 +608,9 @@ void Interpreter::Flush() {
+         // G_AC_THRESHOLD compares against the SETBLENDCOLOR alpha register, not a constant.
+         mRapi->SetCurrentAlphaCompareThreshold((float)mRdp->blend_color.a / 255.0f);
+ #ifdef __3DS__
++        // [trect] census: time the submit when it lands inside a texrect, count every submit.
++        const bool trectTime = sTrectInRect && gdx3ds_prof_active != 0;
++        const long long trectT0 = trectTime ? gdx3ds_prof_now() : 0;
+         // [triloop] Packed batches were emitted straight into the linear VBO pool in
+         // the final PICA layout; submit repack-free with the batch aux record.
+         if (sGdxPackBatch) {
+@@ -278,6 +620,10 @@ void Interpreter::Flush() {
+         } else {
+             mRapi->DrawTriangles(mBufVbo, mBufVboLen, mBufVboNumTris);
+         }
++        if (trectTime) {
++            sTrect.flushTicks += (uint64_t)(gdx3ds_prof_now() - trectT0);
++        }
++        sTrectFlushSeq++;
+ #else
+         mRapi->DrawTriangles(mBufVbo, mBufVboLen, mBufVboNumTris);
+ #endif
+@@ -3482,6 +3828,11 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
+     if (is_rect) {
+         GDX_TRI2_CNT(Rect);
+     }
++#ifdef __3DS__
++    if (!is_rect) {
++        sTrectTriSeq++; // [trect] a game triangle ends the texrect run
++    }
++#endif
+     // A/B isolation: skip every triangle drawn with the combine mode given in
+     // GDX_DIAG_SKIP_COMBINE (hex). Whatever vanishes from the frame identifies
+     // the mesh that owns that material.
+@@ -6717,7 +7068,30 @@ void Interpreter::GfxDpTextureRectangle(int32_t ulx, int32_t uly, int32_t lrx, i
+     }
+     mRdp->first_tile_index = tile;
+ 
++#ifdef __3DS__
++    // [trect] census bracket (gated; see the block above GfxS7InvalidateDrawMemos).
++    const bool trectCensus = GdxTrectActive();
++    long long trectT0 = 0;
++    uint64_t trectImpT0 = 0;
++    uint32_t trectImpC0 = 0;
++    if (trectCensus) {
++        GdxTrectEnter(mRdp, mRsp, tile, uls, ult, lrs, lrt, saved_combine_mode);
++        trectT0 = gdx3ds_prof_now();
++        trectImpT0 = gdx3ds_prof_sec_ticks[kTrectProfImp];
++        trectImpC0 = gdx3ds_prof_sec_calls[kTrectProfImp];
++        sTrectInRect = true;
++    }
++#endif
+     GfxDrawRectangle(ulx, uly, lrx, lry);
++#ifdef __3DS__
++    if (trectCensus) {
++        sTrectInRect = false;
++        sTrect.rectTicks += (uint64_t)(gdx3ds_prof_now() - trectT0);
++        sTrect.impTicks += gdx3ds_prof_sec_ticks[kTrectProfImp] - trectImpT0;
++        sTrect.impCalls += gdx3ds_prof_sec_calls[kTrectProfImp] - trectImpC0;
++        GdxTrectExit();
++    }
++#endif
+     if (saved_tile != tile) {
+         mRdp->textures_changed[0] = true;
+         mRdp->textures_changed[1] = true;

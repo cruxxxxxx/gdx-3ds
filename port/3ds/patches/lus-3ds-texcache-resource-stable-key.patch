@@ -1,0 +1,46 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -2146,8 +2146,42 @@
+                                      cacheTileWidth, cacheTileHeight, span, contentHash);
+                     }
+                 }
++            }
++        }
++    }
++
++    // Resource-backed textures (OTR/O2R filepath SETTIMGs) are keyed by their ImageData
++    // address, which upstream LUS could treat as immortal because resources were never
++    // unloaded. The 3DS resource-cache byte budget (lus-resource-cache-cap.patch) breaks
++    // that assumption: an evicted Texture resource frees its ImageData, the next resource
++    // load can recycle the SAME heap address for a DIFFERENT texture, and when descriptor
++    // geometry also matches (the F-Zero X machine decals are dozens of same-fmt 16x16 I4
++    // blocks) the address-keyed lookup HITS the stale entry and binds the WRONG texture's
++    // GPU upload -- wrong-content decals with correct shapes. Fold a stable per-resource
++    // identity into the otherwise-unused tmem_content_hash so a recycled address can never
++    // satisfy another resource's key. Reloads of the SAME resource keep an identical hash
++    // (the path is content-stable), so this costs no extra uploads in the steady state.
++    // Menus draw their text/UI overwhelmingly through this resource path, so an unstable
++    // identity here is per-frame re-decode + re-swizzle + re-upload churn on every screen.
++    if (!importReplacement && metadata->resource != nullptr) {
++        const auto initData = metadata->resource->GetInitData();
++        // Device receipts on feat/3ds-tilebind ([ship-draw] khash=00000001 on EVERY
++        // resource) proved this loader's InitData Id is a constant 1, so keying on it
++        // collided every same-geometry resource in the texture cache (rival liveries
++        // painted onto the player body). The archive path is the only guaranteed-distinct,
++        // content-stable identity: ALWAYS FNV-1a the path; never trust Id.
++        uint64_t stableId = 0;
++        if (initData != nullptr) {
++            uint64_t pathHash = 1469598103934665603ull;
++            for (const char c : initData->Path) {
++                pathHash = (pathHash ^ static_cast<unsigned char>(c)) * 1099511628211ull;
+             }
++            stableId = pathHash;
+         }
++        key.tmem_content_hash = static_cast<uint32_t>(stableId ^ (stableId >> 32));
++        if (key.tmem_content_hash == 0) {
++            key.tmem_content_hash = 1; // never collide with the unhashed-key sentinel
++        }
+     }
+ 
+     // Zero-sized textures divide by zero or fault UploadTexture. Hoisted before

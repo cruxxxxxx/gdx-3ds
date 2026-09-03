@@ -1,0 +1,123 @@
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -138,8 +138,21 @@
+ static Interpreter* sGfxInstanceRaw = nullptr;
+ // [perf-s7] Compiled-in S7 interpreter optimizations, surfaced to the port's one-shot
+ // [perf-s7] log line (weak-referenced there so unpatched trees still link).
+-// bit0 = raw-instance dispatch.
+-extern "C" const unsigned int gdx_s7_lus_optmask = 0x1u;
++// bit0 = raw-instance dispatch, bit1 = gated geometry diagnostics.
++extern "C" const unsigned int gdx_s7_lus_optmask = 0x3u;
++
++// [perf-s7] Compute gate for the per-vertex / per-triangle geometry diagnostics (NDC min/max
++// divides, isfinite sweeps, big-tri extent scans, fog-factor ranges). Every consumer of those
++// fields ([geodiag]/[bigtri]/[phasegeom]/[gpustate]) prints only under gdx_diag_verbose(), so
++// skipping the arithmetic while that gate is off is observationally identical — it just stops
++// charging ~3 FP divides + 4 isfinite + 6 min/max per vertex to every release-run frame.
++// Seeded from the same env var here (desktop parity); the port bridge mirrors the live
++// Dev-Tools gate into it once per gfx task, so the F1 toggle still works mid-run.
++static int GdxS7GeoDiagInitFromEnv() {
++    const char* e = std::getenv("GDX_DIAG_VERBOSE");
++    return (e != nullptr && e[0] != '\0' && strcmp(e, "0") != 0) ? 1 : 0;
++}
++extern "C" int gdx_s7_geo_diag_enabled = GdxS7GeoDiagInitFromEnv();
+ // Set a cached pointer to the instance so we don't need to go through the window every time
+ void GfxSetInstance(std::shared_ptr<Interpreter> gfx) {
+     mInstance = gfx;
+@@ -2621,28 +2634,31 @@
+         }
+ 
+         mGeometryDiagnostics.verticesLoaded++;
+-        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || !std::isfinite(w)) {
+-            mGeometryDiagnostics.invalidVertices++;
+-        } else {
+-            if (w <= 0.0f) {
+-                mGeometryDiagnostics.verticesNonPositiveW++;
+-            }
+-            if (z < -w) {
+-                mGeometryDiagnostics.verticesOutsideNear++;
+-            }
+-            if (z > w) {
+-                mGeometryDiagnostics.verticesOutsideFar++;
+-            }
+-            if (fabsf(w) >= 0.000001f) {
+-                const float ndcX = x / w;
+-                const float ndcY = y / w;
+-                const float ndcZ = z / w;
+-                mGeometryDiagnostics.minNdcX = std::min(mGeometryDiagnostics.minNdcX, ndcX);
+-                mGeometryDiagnostics.maxNdcX = std::max(mGeometryDiagnostics.maxNdcX, ndcX);
+-                mGeometryDiagnostics.minNdcY = std::min(mGeometryDiagnostics.minNdcY, ndcY);
+-                mGeometryDiagnostics.maxNdcY = std::max(mGeometryDiagnostics.maxNdcY, ndcY);
+-                mGeometryDiagnostics.minNdcZ = std::min(mGeometryDiagnostics.minNdcZ, ndcZ);
+-                mGeometryDiagnostics.maxNdcZ = std::max(mGeometryDiagnostics.maxNdcZ, ndcZ);
++        // [perf-s7] diagnostics-only arithmetic (3 divides/vertex); see gdx_s7_geo_diag_enabled.
++        if (gdx_s7_geo_diag_enabled) {
++            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || !std::isfinite(w)) {
++                mGeometryDiagnostics.invalidVertices++;
++            } else {
++                if (w <= 0.0f) {
++                    mGeometryDiagnostics.verticesNonPositiveW++;
++                }
++                if (z < -w) {
++                    mGeometryDiagnostics.verticesOutsideNear++;
++                }
++                if (z > w) {
++                    mGeometryDiagnostics.verticesOutsideFar++;
++                }
++                if (fabsf(w) >= 0.000001f) {
++                    const float ndcX = x / w;
++                    const float ndcY = y / w;
++                    const float ndcZ = z / w;
++                    mGeometryDiagnostics.minNdcX = std::min(mGeometryDiagnostics.minNdcX, ndcX);
++                    mGeometryDiagnostics.maxNdcX = std::max(mGeometryDiagnostics.maxNdcX, ndcX);
++                    mGeometryDiagnostics.minNdcY = std::min(mGeometryDiagnostics.minNdcY, ndcY);
++                    mGeometryDiagnostics.maxNdcY = std::max(mGeometryDiagnostics.maxNdcY, ndcY);
++                    mGeometryDiagnostics.minNdcZ = std::min(mGeometryDiagnostics.minNdcZ, ndcZ);
++                    mGeometryDiagnostics.maxNdcZ = std::max(mGeometryDiagnostics.maxNdcZ, ndcZ);
++                }
+             }
+         }
+ 
+@@ -3193,7 +3209,7 @@
+     // Capture the first oversized triangle that survives Reject-variant screening each frame.
+     // Legit machine-select geometry stays under ~0.2 NDC extent, so anything near the reject-box
+     // limit is a defect candidate worth identifying by material.
+-    if (!is_rect &&
++    if (!is_rect && gdx_s7_geo_diag_enabled &&
+         (mF3dex2Variant == F3dex2Variant::Reject || mF3dex2Variant == F3dex2Variant::FZeroFlxReject)) {
+         float extent = 0.0f;
+         for (const LoadedVertex* vertex : v_arr) {
+@@ -3657,13 +3673,16 @@
+         mGeometryDiagnostics.lastShaderId1 = comb->shader_id1;
+         if (originalUseFog) {
+             mGeometryDiagnostics.fogTriangles++;
+-            for (const LoadedVertex* vertex : v_arr) {
+-                const float fogFactor =
+-                    use_blend_color ? mRdp->fog_color.a / 255.0f : vertex->color.a / 255.0f;
+-                mGeometryDiagnostics.minFogFactor =
+-                    std::min(mGeometryDiagnostics.minFogFactor, fogFactor);
+-                mGeometryDiagnostics.maxFogFactor =
+-                    std::max(mGeometryDiagnostics.maxFogFactor, fogFactor);
++            // [perf-s7] range scan is diagnostics-only; the counter above stays unconditional.
++            if (gdx_s7_geo_diag_enabled) {
++                for (const LoadedVertex* vertex : v_arr) {
++                    const float fogFactor =
++                        use_blend_color ? mRdp->fog_color.a / 255.0f : vertex->color.a / 255.0f;
++                    mGeometryDiagnostics.minFogFactor =
++                        std::min(mGeometryDiagnostics.minFogFactor, fogFactor);
++                    mGeometryDiagnostics.maxFogFactor =
++                        std::max(mGeometryDiagnostics.maxFogFactor, fogFactor);
++                }
+             }
+         }
+         if (bypassFog) {
+@@ -3852,7 +3871,8 @@
+             }
+             mBufVbo[mBufVboLen++] = normalizedU;
+             mBufVbo[mBufVboLen++] = normalizedV;
+-            if (!is_rect && t == 0 && std::isfinite(normalizedU) && std::isfinite(normalizedV)) {
++            if (!is_rect && t == 0 && gdx_s7_geo_diag_enabled && std::isfinite(normalizedU) &&
++                std::isfinite(normalizedV)) {
+                 mGeometryDiagnostics.minTextureU = std::min(mGeometryDiagnostics.minTextureU, normalizedU);
+                 mGeometryDiagnostics.maxTextureU = std::max(mGeometryDiagnostics.maxTextureU, normalizedU);
+                 mGeometryDiagnostics.minTextureV = std::min(mGeometryDiagnostics.minTextureV, normalizedV);

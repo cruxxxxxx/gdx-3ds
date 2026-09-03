@@ -1,0 +1,82 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -188,8 +188,16 @@
+     kGfxS7DirtyTri = 1u << 0,  // [perf-s7] tri draw-state memo (whitelist: pure geometry/flow)
+     kGfxS7DirtyRect = 1u << 1, // [texrect] rect-run memo (tri whitelist minus tri-emitting ops,
+                                // plus the texrect opcodes themselves)
++    // [texrect] GfxDrawRectangle's rect-bypass viewport, post-AdjustVIewportOrScissor. A pure
++    // function of frame/framebuffer state (mFbActive/mActiveFrameBuffer geometry, native/current
++    // dimensions, window viewport, backend clip parameters): every mutation site is either a
++    // non-whitelisted opcode (framebuffer set/reset handlers) or a task/frame boundary
++    // (SpReset/StartFrame full invalidation), so while this bit is clear the cached value equals
++    // what the per-rect derivation — including a virtual GetClipParameters round trip — returns.
++    kGfxS7DirtyRectViewport = 1u << 2,
+ };
+ static uint8_t sGfxS7DirtyMask = 0xFFu;
++static XYWidthHeight sGfxRectAdjustedViewport = {};
+ 
+ static inline void GfxS7InvalidateTriMemo() {
+     sGfxS7TriMemo.valid = false;
+@@ -5472,19 +5480,30 @@
+     ur->z = -1.0f;
+     ur->w = 1.0f;
+ 
+-    // The coordinates for texture rectangle shall bypass the viewport setting
++    // The coordinates for texture rectangle shall bypass the viewport setting.
++    // [texrect] The adjusted bypass viewport is derived once per rect RUN, not per rect: its
++    // inputs only move through non-whitelisted opcodes or task/frame boundaries, all of which
++    // arm kGfxS7DirtyRectViewport (see the enum). The recompute branch is byte-identical to
++    // the legacy always-on derivation, including the AdjustVIewportOrScissor virtual
++    // GetClipParameters round trip it performs.
+     struct XYWidthHeight default_viewport;
+-    if (!mFbActive) {
+-        default_viewport = { 0, (int16_t)mNativeDimensions.height, mNativeDimensions.width, mNativeDimensions.height };
++    if ((sGfxS7DirtyMask & kGfxS7DirtyRectViewport) != 0) {
++        if (!mFbActive) {
++            default_viewport = { 0, (int16_t)mNativeDimensions.height, mNativeDimensions.width,
++                                 mNativeDimensions.height };
++        } else {
++            default_viewport = { 0, (int16_t)mActiveFrameBuffer->second.orig_height,
++                                 mActiveFrameBuffer->second.orig_width, mActiveFrameBuffer->second.orig_height };
++        }
++        AdjustVIewportOrScissor(&default_viewport);
++        sGfxRectAdjustedViewport = default_viewport;
++        sGfxS7DirtyMask &= static_cast<uint8_t>(~kGfxS7DirtyRectViewport);
+     } else {
+-        default_viewport = { 0, (int16_t)mActiveFrameBuffer->second.orig_height, mActiveFrameBuffer->second.orig_width,
+-                             mActiveFrameBuffer->second.orig_height };
++        default_viewport = sGfxRectAdjustedViewport;
+     }
+ 
+     struct XYWidthHeight viewport_saved = mRdp->viewport;
+     uint32_t geometry_mode_saved = mRsp->geometry_mode;
+-
+-    AdjustVIewportOrScissor(&default_viewport);
+ 
+     mRdp->viewport = default_viewport;
+     mRdp->viewport_or_scissor_changed = true;
+@@ -7900,8 +7919,10 @@
+             entry.dirty |= kGfxS7DirtyTri;
+         }
+         // [texrect] rect-run memo whitelist (same f3dex2 gate — collisions can't slip through).
++        // The cached rect-bypass viewport rides the same whitelist: conservative (tri draws
++        // cannot move its inputs) but a recompute costs once per rect run, not per rect.
+         if (!(ucode_handler_index == ucode_f3dex2 && GfxS7OpcodePreservesRectState(opcode))) {
+-            entry.dirty |= kGfxS7DirtyRect;
++            entry.dirty |= kGfxS7DirtyRect | kGfxS7DirtyRectViewport;
+         }
+ 
+         sFlatDispatch[i] = entry;
+@@ -7910,8 +7931,9 @@
+     // Installed last so it overrides whatever the merge put in its slot, mirroring the legacy
+     // early check. Deliberately no PreservesDrawState flag and a full dirty mask: G_LOAD_UCODE
+     // dirtied the memo before, and a mid-run ucode switch must dirty the rect memo too.
+-    sFlatDispatch[(uint8_t)(int8_t)F3DEX2_G_LOAD_UCODE] = { gfx_load_ucode_flat_handler, 0,
+-                                                            (uint8_t)(kGfxS7DirtyTri | kGfxS7DirtyRect) };
++    sFlatDispatch[(uint8_t)(int8_t)F3DEX2_G_LOAD_UCODE] = {
++        gfx_load_ucode_flat_handler, 0, (uint8_t)(kGfxS7DirtyTri | kGfxS7DirtyRect | kGfxS7DirtyRectViewport)
++    };
+ }
+ 
+ // Build the initial table for the static ucode_f3dex2 default. The constexpr handler tables it

@@ -1,0 +1,39 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index 8a0d10e..295e77a 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -2703,6 +2703,15 @@ void Interpreter::GfxSpVertex(size_t n_vertices, size_t dest_index, const F3DVtx
+         gdx3ds_prof_vtx_loaded += (uint32_t)n_vertices; // vtxN column
+     }
+ #endif
++    // [perf-dispatch] Hoist MP_matrix out of the per-vertex loop: the stores through
++    // d/loaded_vertices may alias mRsp for all the compiler knows, so it re-loaded all 16
++    // floats through the member pointer chain on EVERY vertex. Nothing in the loop writes
++    // MP_matrix (matrix ops are separate commands); copy it to locals once per G_VTX batch.
++    // The diagnostics fingerprint below keeps reading mRsp->MP_matrix — same values, and it
++    // documents that the hash captures the live RSP state.
++    float mp[4][4];
++    memcpy(mp, mRsp->MP_matrix, sizeof(mp));
++
+     for (size_t i = 0; i < n_vertices; i++, dest_index++) {
+         const F3DVtx_t* v = &vertices[i].v;
+         const F3DVtx_tn* vn = &vertices[i].n;
+@@ -2712,14 +2721,10 @@ void Interpreter::GfxSpVertex(size_t n_vertices, size_t dest_index, const F3DVtx
+             return;
+         }
+ 
+-        float x = v->ob[0] * mRsp->MP_matrix[0][0] + v->ob[1] * mRsp->MP_matrix[1][0] +
+-                  v->ob[2] * mRsp->MP_matrix[2][0] + mRsp->MP_matrix[3][0];
+-        float y = v->ob[0] * mRsp->MP_matrix[0][1] + v->ob[1] * mRsp->MP_matrix[1][1] +
+-                  v->ob[2] * mRsp->MP_matrix[2][1] + mRsp->MP_matrix[3][1];
+-        float z = v->ob[0] * mRsp->MP_matrix[0][2] + v->ob[1] * mRsp->MP_matrix[1][2] +
+-                  v->ob[2] * mRsp->MP_matrix[2][2] + mRsp->MP_matrix[3][2];
+-        float w = v->ob[0] * mRsp->MP_matrix[0][3] + v->ob[1] * mRsp->MP_matrix[1][3] +
+-                  v->ob[2] * mRsp->MP_matrix[2][3] + mRsp->MP_matrix[3][3];
++        float x = v->ob[0] * mp[0][0] + v->ob[1] * mp[1][0] + v->ob[2] * mp[2][0] + mp[3][0];
++        float y = v->ob[0] * mp[0][1] + v->ob[1] * mp[1][1] + v->ob[2] * mp[2][1] + mp[3][1];
++        float z = v->ob[0] * mp[0][2] + v->ob[1] * mp[1][2] + v->ob[2] * mp[2][2] + mp[3][2];
++        float w = v->ob[0] * mp[0][3] + v->ob[1] * mp[1][3] + v->ob[2] * mp[2][3] + mp[3][3];
+ 
+         // Fingerprint the transform, not just its cardinality. Capture MP_matrix on the pass's
+         // first vertex so an already-divergent matrix is distinguishable from one that drifts

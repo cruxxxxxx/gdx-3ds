@@ -1,0 +1,36 @@
+diff --git a/src/sys/rom/disk_drive.c b/src/sys/rom/disk_drive.c
+index 6a68ee3..550969d 100644
+--- a/src/sys/rom/disk_drive.c
++++ b/src/sys/rom/disk_drive.c
+@@ -31,6 +31,11 @@ s32 func_800750B0(s32 startLba, void* vram, size_t diskSize, size_t bssSize) {
+ 
+ void func_8007515C(void) {
+     Dma_ClearRomCopy(SEGMENT_ROM_START(ovl_i11), SEGMENT_VRAM_START(ovl_i11), SEGMENT_ROM_SIZE(ovl_i11));
++#ifndef PORT
++    /* PORT: ovl_i11 is statically compiled in; its BSS markers are 1-byte host stubs the
++       linker scatters (ovl_i11_BSS_END lands below _BSS_START on 3DS), so this bzero size
++       goes negative/huge and corrupts unrelated memory. Same fix as sys_main.c's leo bzero. */
+     bzero(SEGMENT_BSS_START(ovl_i11), SEGMENT_BSS_SIZE(ovl_i11));
++#endif
+     func_i11_800FC730();
+ }
+diff --git a/src/sys/sys_main.c b/src/sys/sys_main.c
+index 8916f03..d3d7514 100644
+--- a/src/sys/sys_main.c
++++ b/src/sys/sys_main.c
+@@ -232,7 +232,15 @@ void Main_ThreadEntry(void* arg0) {
+ 
+     if (gRamDDCompatible) {
+         Dma_ClearRomCopy(SEGMENT_ROM_START(leo), SEGMENT_VRAM_START(leo), SEGMENT_ROM_SIZE(leo));
++#ifndef PORT
++        /* PORT: the leo overlay is statically compiled in and its BSS markers are 1-byte
++           host stubs (LinkStubs.c) the linker places arbitrarily — leo_BSS_END can land
++           BELOW leo_BSS_START, making this bzero size negative (≈4GB as size_t). It then
++           zeroes the tail of the host .bss and walks into unmapped memory (confirmed on
++           3DS/EK=OFF: unmapped Write32 spin at image end, both screens black). Host
++           loader zero-fills BSS already; mirrors course_gadgets.c func_800742FC. */
+         bzero(SEGMENT_BSS_START(leo), SEGMENT_BSS_SIZE(leo));
++#endif
+         if (gLeoDriveConnectionState != 0) {
+             LeoFault_LoadFonts();
+         }

@@ -1,0 +1,68 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index 54ff5b5..a8a669e 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -2018,7 +2018,6 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+     // run shows whether this tile's tmem base selected the load that populated
+     // it (same env gate as the SETTIMG race trace).
+     {
+-        const bool sTmemTrace = std::getenv("GDX_DIAG_SETTIMG") != nullptr; // live read, see store log
+         // Effect tiles 1-4 get their own gate (GDX_DIAG_EFFECTTILE) and budget so
+         // this probe cannot be starved by env ordering or the shared log caps.
+         static const bool sDiagEffectTile = std::getenv("GDX_DIAG_EFFECTTILE") != nullptr;
+@@ -2031,13 +2030,18 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+                              mRdp->loaded_texture[tmemIdex].size_bytes);
+             }
+         }
+-        if (sTmemTrace && gGdxRaceActive != 0) { // race-gated, matching the store log
+-            static int sTmemLookupLogs = 0;
+-            if (sTmemLookupLogs < 400) {
+-                ++sTmemLookupLogs;
+-                SPDLOG_ERROR("[tmem] lookup tile={} tmem={} fmt={} siz={} -> addr={} sizeB={}", tile,
+-                             tmemIdex, fmt, siz, fmt::ptr(origAddr),
+-                             mRdp->loaded_texture[tmemIdex].size_bytes);
++        if (gGdxRaceActive != 0) { // race-gated, matching the store log
++            // Race-first latch, matching StoreLoadedTexture: _putenv precedes race
++            // activation, and the old live getenv ran on every import (~100-200/frame).
++            static const bool sTmemTrace = std::getenv("GDX_DIAG_SETTIMG") != nullptr;
++            if (sTmemTrace) {
++                static int sTmemLookupLogs = 0;
++                if (sTmemLookupLogs < 400) {
++                    ++sTmemLookupLogs;
++                    SPDLOG_ERROR("[tmem] lookup tile={} tmem={} fmt={} siz={} -> addr={} sizeB={}", tile,
++                                 tmemIdex, fmt, siz, fmt::ptr(origAddr),
++                                 mRdp->loaded_texture[tmemIdex].size_bytes);
++                }
+             }
+         }
+     }
+@@ -4641,15 +4645,20 @@ void Interpreter::StoreLoadedTexture(uint16_t tmemStart, const LoadedTexture& te
+         return;
+     }
+ 
+-    // Live getenv, not static-once: the bridge exports GDX_DIAG_SETTIMG via _putenv at the first
+-    // real GFX task, and boot frames import textures before that.
+-    const bool sTmemTrace = std::getenv("GDX_DIAG_SETTIMG") != nullptr;
+-    if (sTmemTrace && gGdxRaceActive != 0) { // race-gated: boot stores ate the whole budget otherwise
+-        static int sTmemStoreLogs = 0;
+-        if (sTmemStoreLogs < 400) {
+-            ++sTmemStoreLogs;
+-            SPDLOG_ERROR("[tmem] store start={} sizeB={} origB={} addr={}", tmemStart,
+-                         texture.size_bytes, texture.orig_size_bytes, fmt::ptr(texture.addr));
++    // Race-gate FIRST (a plain int test), then latch the env probe on the first race-active
++    // call. The bridge exports GDX_DIAG_SETTIMG via _putenv at the first real GFX task, which
++    // always precedes race activation, so a race-time latch sees the final value — while the
++    // previous per-call live getenv was an environ scan on EVERY TMEM store (~82/frame in
++    // menus) even with the gate off.
++    if (gGdxRaceActive != 0) { // race-gated: boot stores ate the whole budget otherwise
++        static const bool sTmemTrace = std::getenv("GDX_DIAG_SETTIMG") != nullptr;
++        if (sTmemTrace) {
++            static int sTmemStoreLogs = 0;
++            if (sTmemStoreLogs < 400) {
++                ++sTmemStoreLogs;
++                SPDLOG_ERROR("[tmem] store start={} sizeB={} origB={} addr={}", tmemStart,
++                             texture.size_bytes, texture.orig_size_bytes, fmt::ptr(texture.addr));
++            }
+         }
+     }
+ 

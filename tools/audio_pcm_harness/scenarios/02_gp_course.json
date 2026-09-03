@@ -1,0 +1,23 @@
+{
+  "id": "gp_course",
+  "title": "Fixed standard GP course (tick-scripted input)",
+  "status": "needs-recording",
+  "autoinput": "02_gp_course.autoinput.txt",
+  "capture_frames": 320000,
+  "timeout_seconds": 300,
+  "env": {
+    "GDX_RAND_SEED1": "1",
+    "GDX_RAND_SEED2": "2",
+    "GDX_AUDIO_THREAD": "0"
+  },
+  "notes": [
+    "Scenario 2 of the C-R2.3 matrix. A fixed standard-cup GP course driven by a tick-scripted",
+    "gdx-autoinput.txt (tick timebase — deterministic, wall-clock-independent). The autoinput",
+    "file shipped alongside this scenario is a PLACEHOLDER and is marked NEEDS-RECORDING: it must",
+    "be captured by an owner playthrough that selects the course and drives a fixed line to the",
+    "finish, then transcribed to tick events. OPEN ITEM (contract C-R2.3): before blessing this",
+    "as a golden, verify there is NO Math_Rand reachability in the AI / audio path for this course",
+    "(a stray Math_Rand call would inject nondeterminism the two audioRandom/gRandSeed pins do not",
+    "cover). 320000 frames = ~10 s at 32 kHz."
+  ]
+}

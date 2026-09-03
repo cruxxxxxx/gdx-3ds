@@ -1,0 +1,182 @@
+--- a/include/ship/resource/ResourceManager.h
++++ b/include/ship/resource/ResourceManager.h
+@@ -407,6 +407,19 @@
+      */
+     void* GetResourceRawPointer(uint64_t crc);
+ 
++    /**
++     * @brief Sets the resource-cache byte budget. When an insert pushes the accounted payload
++     * bytes past the budget, the least-recently-used entries whose only remaining reference is
++     * the cache itself are evicted until the cache fits again. Externally referenced resources
++     * are never evicted, so the cache can temporarily exceed the budget while the game holds
++     * references. Pass 0 to disable the cap (unbounded desktop behaviour).
++     * @param bytes Budget in bytes.
++     */
++    void SetCacheByteBudget(size_t bytes);
++
++    /** @brief Returns the payload bytes currently accounted to the cache. */
++    size_t GetCacheByteSize();
++
+   protected:
+     std::shared_ptr<std::vector<std::shared_ptr<IResource>>> LoadResourcesProcess(const ResourceFilter& filter);
+     void UnloadResourcesProcess(const ResourceFilter& filter);
+@@ -418,9 +431,34 @@
+     std::shared_ptr<IResource> GetCachedResource(std::variant<ResourceLoadError, std::shared_ptr<IResource>> cacheLine);
+ 
+   private:
++    /** @brief Per-entry cache accounting: payload bytes and a monotonic last-access tick. */
++    struct CacheAccounting {
++        size_t Bytes = 0;
++        uint64_t Tick = 0;
++    };
++
++    /** @brief Records/updates accounting for an inserted resource. Caller must hold mMutex. */
++    void AccountCacheInsertLocked(const ResourceIdentifier& identifier, const std::shared_ptr<IResource>& resource);
++    /** @brief Drops accounting for an erased cache entry. Caller must hold mMutex. */
++    void DropCacheAccountingLocked(const ResourceIdentifier& identifier);
++    /**
++     * @brief Evicts least-recently-used cache-only entries until the accounted bytes fit the
++     * budget. Caller must hold mMutex; evicted shared_ptrs are appended to @p evicted so the
++     * caller can destroy them after releasing the mutex (resource destructors may re-enter
++     * the resource manager).
++     */
++    void EnforceCacheBudgetLocked(std::vector<std::shared_ptr<IResource>>& evicted);
++
+     std::unordered_map<ResourceIdentifier, std::variant<ResourceLoadError, std::shared_ptr<IResource>>,
+                        ResourceIdentifierHash>
+         mResourceCache;
++    std::unordered_map<ResourceIdentifier, CacheAccounting, ResourceIdentifierHash> mCacheAccounting;
++    // 24 MiB default per the 3DS memory budget (docs/research/3ds-memory-budget.md);
++    // this patch ships only in the 3DS build. SetCacheByteBudget(0) restores the
++    // unbounded desktop behaviour.
++    size_t mCacheByteBudget = 24u * 1024u * 1024u;
++    size_t mCacheBytes = 0;
++    uint64_t mCacheTick = 0;
+     std::shared_ptr<ResourceLoader> mResourceLoader;
+     std::shared_ptr<ArchiveManager> mArchiveManager;
+     std::shared_ptr<BS::thread_pool> mThreadPool;
+--- a/src/ship/resource/ResourceManager.cpp
++++ b/src/ship/resource/ResourceManager.cpp
+@@ -164,6 +164,9 @@
+     // the cache.
+     cachedResource = GetCachedResource(identifier, true);
+ 
++    // Declared before the lock guard: evicted resources must destruct after the mutex is
++    // released, because resource destructors can re-enter the resource manager.
++    std::vector<std::shared_ptr<IResource>> evicted;
+     {
+         const std::lock_guard<std::mutex> lock(mMutex);
+ 
+@@ -176,6 +179,8 @@
+         // Set the cache to the loaded resource
+         if (resource != nullptr) {
+             mResourceCache[identifier] = resource;
++            AccountCacheInsertLocked(identifier, resource);
++            EnforceCacheBudgetLocked(evicted);
+         } else {
+             mResourceCache[identifier] = ResourceLoadError::NotFound;
+         }
+@@ -268,6 +273,12 @@
+     auto cacheFind = mResourceCache.find(identifier);
+     if (cacheFind == mResourceCache.end()) {
+         return ResourceLoadError::NotCached;
++    }
++
++    // Cache hit: refresh the entry's LRU tick for the byte-budget eviction policy.
++    auto accounting = mCacheAccounting.find(identifier);
++    if (accounting != mCacheAccounting.end()) {
++        accounting->second.Tick = ++mCacheTick;
+     }
+ 
+     return cacheFind->second;
+@@ -416,11 +427,90 @@
+     if (mResourceCache.contains(identifier)) {
+         const std::lock_guard<std::mutex> lock(mMutex);
+         mResourceCache.erase(identifier);
++        DropCacheAccountingLocked(identifier);
+     }
+ 
+     return ret;
++}
++
++void ResourceManager::SetCacheByteBudget(size_t bytes) {
++    // Declared before the lock guard: evicted resources must destruct after the mutex
++    // is released (resource destructors may re-enter the resource manager).
++    std::vector<std::shared_ptr<IResource>> evicted;
++    {
++        const std::lock_guard<std::mutex> lock(mMutex);
++        mCacheByteBudget = bytes;
++        EnforceCacheBudgetLocked(evicted);
++    }
++}
++
++size_t ResourceManager::GetCacheByteSize() {
++    const std::lock_guard<std::mutex> lock(mMutex);
++    return mCacheBytes;
++}
++
++void ResourceManager::AccountCacheInsertLocked(const ResourceIdentifier& identifier,
++                                               const std::shared_ptr<IResource>& resource) {
++    auto& accounting = mCacheAccounting[identifier];
++    // Re-inserts (dirty reload, another thread winning the race) replace the old accounting.
++    mCacheBytes -= accounting.Bytes;
++    accounting.Bytes = resource != nullptr ? resource->GetPointerSize() : 0;
++    accounting.Tick = ++mCacheTick;
++    mCacheBytes += accounting.Bytes;
++}
++
++void ResourceManager::DropCacheAccountingLocked(const ResourceIdentifier& identifier) {
++    auto accounting = mCacheAccounting.find(identifier);
++    if (accounting == mCacheAccounting.end()) {
++        return;
++    }
++    mCacheBytes -= accounting->second.Bytes;
++    mCacheAccounting.erase(accounting);
+ }
+ 
++void ResourceManager::EnforceCacheBudgetLocked(std::vector<std::shared_ptr<IResource>>& evicted) {
++    if (mCacheByteBudget == 0 || mCacheBytes <= mCacheByteBudget) {
++        return;
++    }
++    const size_t bytesBefore = mCacheBytes;
++    // O(entries) scan per eviction: evictions only happen under budget pressure and the
++    // cache holds a few thousand entries at most, so the simple scan beats threading an
++    // intrusive LRU list through the variant-valued cache map.
++    while (mCacheBytes > mCacheByteBudget) {
++        const ResourceIdentifier* lruKey = nullptr;
++        uint64_t lruTick = UINT64_MAX;
++        for (const auto& [key, accounting] : mCacheAccounting) {
++            if (accounting.Tick >= lruTick) {
++                continue;
++            }
++            auto entry = mResourceCache.find(key);
++            if (entry == mResourceCache.end()) {
++                continue;
++            }
++            auto* held = std::get_if<std::shared_ptr<IResource>>(&entry->second);
++            if (held == nullptr || *held == nullptr || held->use_count() > 1) {
++                // Load-error entries cost nothing; externally referenced resources are
++                // pinned — evicting them could not free their memory anyway.
++                continue;
++            }
++            lruTick = accounting.Tick;
++            lruKey = &key;
++        }
++        if (lruKey == nullptr) {
++            break; // everything left is pinned; stay over budget until references drop
++        }
++        const ResourceIdentifier key = *lruKey;
++        auto entry = mResourceCache.find(key);
++        evicted.push_back(std::get<std::shared_ptr<IResource>>(entry->second));
++        mResourceCache.erase(entry);
++        DropCacheAccountingLocked(key);
++    }
++    if (!evicted.empty()) {
++        SPDLOG_DEBUG("Resource cache budget: evicted {} entries ({} -> {} bytes, budget {})", evicted.size(),
++                     bytesBefore, mCacheBytes, mCacheByteBudget);
++    }
++}
++
+ size_t ResourceManager::UnloadResource(const std::string& filePath) {
+     return UnloadResource({ filePath, mDefaultCacheOwner, mDefaultCacheArchive });
+ }

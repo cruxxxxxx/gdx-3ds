@@ -1,0 +1,7 @@
+# NEEDS-RECORDING placeholder — scenario 03 (Expansion Kit course).
+# TICK format; see 02_gp_course.autoinput.txt / port/input_bridge.c for the full syntax.
+# Replace with a recorded EK course run (disk course select + a fixed line to the finish).
+ticks
+120 START 20
+200 START 20
+280 A 20

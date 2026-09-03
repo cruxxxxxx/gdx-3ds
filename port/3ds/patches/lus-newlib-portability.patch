@@ -1,0 +1,128 @@
+diff --git a/include/ship/audio/NullAudioPlayer.h b/include/ship/audio/NullAudioPlayer.h
+index 6bac3c4..08af3a0 100644
+--- a/include/ship/audio/NullAudioPlayer.h
++++ b/include/ship/audio/NullAudioPlayer.h
+@@ -25,7 +25,7 @@ class NullAudioPlayer final : public AudioPlayer {
+     /**
+      * @brief Returns the desired buffered frame count so the game always produces audio.
+      */
+-    int Buffered() override;
++    int32_t Buffered() override;
+ 
+     /** @brief Identifies this backend as "Null". */
+     const char* GetBackendName() const override {
+diff --git a/include/ship/audio/SDLAudioPlayer.h b/include/ship/audio/SDLAudioPlayer.h
+index 1c1adf3..14760d4 100644
+--- a/include/ship/audio/SDLAudioPlayer.h
++++ b/include/ship/audio/SDLAudioPlayer.h
+@@ -27,7 +27,7 @@ class SDLAudioPlayer final : public AudioPlayer {
+      *
+      * Used by the audio subsystem to decide how many frames to produce per game tick.
+      */
+-    int Buffered() override;
++    int32_t Buffered() override;
+ 
+     /** @brief Identifies this backend as "SDL". */
+     const char* GetBackendName() const override {
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index e7501b7..132e2bc 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -829,14 +829,14 @@ static void ApplyTileMaskExtent(const RDP* rdp, int tile, uint32_t& width, uint3
+         if (maskAuthoritative && (cms & G_TX_CLAMP) == 0) {
+             width = 1u << masks;
+         } else {
+-            width = std::min(width, 1u << masks);
++            width = std::min<uint32_t>(width, 1u << masks);
+         }
+     }
+     if (maskt != G_TX_NOMASK && maskt < 31) {
+         if (maskAuthoritative && (cmt & G_TX_CLAMP) == 0) {
+             height = 1u << maskt;
+         } else {
+-            height = std::min(height, 1u << maskt);
++            height = std::min<uint32_t>(height, 1u << maskt);
+         }
+     }
+ }
+@@ -1971,8 +1971,8 @@ void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+         mRdp->texture_tile[tile].lrt >= mRdp->texture_tile[tile].ult
+             ? (mRdp->texture_tile[tile].lrt - mRdp->texture_tile[tile].ult + 4u) / 4u
+             : 0u;
+-    key.tile_width = static_cast<uint16_t>(std::min(cacheTileWidth, 0xFFFFu));
+-    key.tile_height = static_cast<uint16_t>(std::min(cacheTileHeight, 0xFFFFu));
++    key.tile_width = static_cast<uint16_t>(std::min<uint32_t>(cacheTileWidth, 0xFFFFu));
++    key.tile_height = static_cast<uint16_t>(std::min<uint32_t>(cacheTileHeight, 0xFFFFu));
+     key.cms = mRdp->texture_tile[tile].cms;
+     key.cmt = mRdp->texture_tile[tile].cmt;
+     key.masks = mRdp->texture_tile[tile].masks;
+@@ -4230,7 +4230,7 @@ void Interpreter::StoreLoadedTexture(uint16_t tmemStart, const LoadedTexture& te
+     }
+ 
+     const uint32_t logicalSize = texture.orig_size_bytes != 0 ? texture.orig_size_bytes : texture.size_bytes;
+-    const uint32_t requestedWords = std::max(1u, (logicalSize + kTmemWordBytes - 1u) / kTmemWordBytes);
++    const uint32_t requestedWords = std::max<uint32_t>(1u, (logicalSize + kTmemWordBytes - 1u) / kTmemWordBytes);
+     const uint32_t wordCount = std::min(requestedWords, kTmemWordCount - tmemStart);
+     const uint32_t newEnd = tmemStart + wordCount;
+ 
+diff --git a/src/fast/resource/factory/DisplayListFactory.cpp b/src/fast/resource/factory/DisplayListFactory.cpp
+index b3963fa..28eeb64 100644
+--- a/src/fast/resource/factory/DisplayListFactory.cpp
++++ b/src/fast/resource/factory/DisplayListFactory.cpp
+@@ -4,6 +4,7 @@
+ #include "libultraship/libultra/gbi.h"
+ #include "fast/lus_gbi.h"
+ #include <tinyxml2.h>
++#include <unordered_map>
+ 
+ namespace Fast {
+ std::unordered_map<std::string, uint32_t> renderModes = {
+diff --git a/src/ship/resource/ResourceManager.cpp b/src/ship/resource/ResourceManager.cpp
+index a33b3e5..cbb07ba 100644
+--- a/src/ship/resource/ResourceManager.cpp
++++ b/src/ship/resource/ResourceManager.cpp
+@@ -57,7 +57,7 @@ void ResourceManager::Init(const std::vector<std::string>& archivePaths,
+     GetArchiveManager()->Init(archivePaths, validHashes);
+ 
+     // the extra `- 1` is because we reserve an extra thread for spdlog
+-    size_t threadCount = std::max(1, (int32_t)(std::thread::hardware_concurrency() - reservedThreadCount - 1));
++    size_t threadCount = std::max<int32_t>(1, (int32_t)(std::thread::hardware_concurrency() - reservedThreadCount - 1));
+     mThreadPool = std::make_shared<BS::thread_pool>(threadCount);
+ 
+     if (!IsLoaded()) {
+diff --git a/src/ship/resource/archive/Archive.cpp b/src/ship/resource/archive/Archive.cpp
+index dcf6add..09c4116 100644
+--- a/src/ship/resource/archive/Archive.cpp
++++ b/src/ship/resource/archive/Archive.cpp
+@@ -5,6 +5,7 @@
+ #include "ship/Context.h"
+ #include "ship/resource/File.h"
+ #include "ship/resource/ResourceLoader.h"
++#include "ship/resource/ResourceManager.h"
+ #include "ship/resource/ResourceType.h"
+ #include "ship/utils/binarytools/MemoryStream.h"
+ #include "ship/utils/glob.h"
+diff --git a/src/ship/resource/archive/O2rArchive.cpp b/src/ship/resource/archive/O2rArchive.cpp
+index bbc604f..ad7004c 100644
+--- a/src/ship/resource/archive/O2rArchive.cpp
++++ b/src/ship/resource/archive/O2rArchive.cpp
+@@ -1,4 +1,6 @@
+ #include "ship/resource/archive/O2rArchive.h"
++#include "ship/resource/ResourceManager.h"
++#include <cstring>
+ 
+ #include "ship/Context.h"
+ #include "ship/window/Window.h"
+diff --git a/src/ship/utils/binarytools/BinaryWriter.cpp b/src/ship/utils/binarytools/BinaryWriter.cpp
+index 9bcb0e0..957fa35 100644
+--- a/src/ship/utils/binarytools/BinaryWriter.cpp
++++ b/src/ship/utils/binarytools/BinaryWriter.cpp
+@@ -133,7 +133,7 @@ void Ship::BinaryWriter::Write(double value) {
+ }
+ 
+ void Ship::BinaryWriter::Write(const std::string& str) {
+-    int strLen = str.size();
++    int32_t strLen = (int32_t)str.size();
+     Write(strLen);
+ 
+     for (char c : str) {

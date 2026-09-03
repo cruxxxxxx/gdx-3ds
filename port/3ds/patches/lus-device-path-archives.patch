@@ -1,0 +1,51 @@
+diff --git a/src/ship/resource/archive/ArchiveManager.cpp b/src/ship/resource/archive/ArchiveManager.cpp
+index 8915951..c695dbc 100644
+--- a/src/ship/resource/archive/ArchiveManager.cpp
++++ b/src/ship/resource/archive/ArchiveManager.cpp
+@@ -14,6 +14,23 @@
+ #include "ship/utils/StrHash64.h"
+ 
+ namespace Ship {
++
++// devkitPro/newlib device paths ("sdmc:/3ds/...") parse as RELATIVE under
++// std::filesystem's POSIX grammar (the "sdmc:" prefix is an ordinary first
++// component), so std::filesystem::absolute() prepends the cwd and produces
++// "/sdmc:/3ds/..." -- a path no devoptab matches (fopen fails with ENOSYS).
++// Treat a device-prefixed path as already absolute and pass it through
++// untouched. On Windows, drive paths use '\\' or are already absolute, so this
++// never triggers and absolute() keeps its normal behavior.
++static std::string ResolveArchivePath(const std::filesystem::path& path) {
++    const std::string raw = path.string();
++    const auto colon = raw.find(':');
++    if (colon != std::string::npos && colon > 0 && colon + 1 < raw.size() && raw[colon + 1] == '/') {
++        return raw;
++    }
++    return std::filesystem::absolute(path).string();
++}
++
+ ArchiveManager::ArchiveManager() {
+ }
+ 
+@@ -235,18 +252,18 @@ std::vector<std::string> ArchiveManager::GetArchiveListInPaths(const std::vector
+                         StringHelper::IEquals(p.path().extension().string(), ".zip") ||
+                         StringHelper::IEquals(p.path().extension().string(), ".mpq") ||
+                         StringHelper::IEquals(p.path().extension().string(), ".o2r")) {
+-                        fileList.push_back(std::filesystem::absolute(p).string());
++                        fileList.push_back(ResolveArchivePath(p.path()));
+                         hasAssetFiles = true;
+                     }
+                 }
+ 
+                 if (!hasAssetFiles) {
+-                    fileList.push_back(std::filesystem::absolute(archivePath).string());
++                    fileList.push_back(ResolveArchivePath(archivePath));
+                 }
+             } else if (std::filesystem::is_regular_file(archivePath)) {
+-                fileList.push_back(std::filesystem::absolute(archivePath).string());
++                fileList.push_back(ResolveArchivePath(archivePath));
+             } else {
+-                SPDLOG_WARN("The archive at path {} does not exist", std::filesystem::absolute(archivePath).string());
++                SPDLOG_WARN("The archive at path {} does not exist", ResolveArchivePath(archivePath));
+             }
+         } else {
+             SPDLOG_WARN("No archive path supplied");

@@ -1,0 +1,79 @@
+#ifndef STAFF_GHOST_RECORDS_H
+#define STAFF_GHOST_RECORDS_H
+
+#include "fzx_save.h"
+
+extern GhostRecord aMuteCity1StaffGhostRecord;
+extern GhostReplayInfo aMuteCity1StaffGhostReplayInfo;
+extern s8 aMuteCity1StaffGhostData[];
+extern GhostRecord aSilence1StaffGhostRecord;
+extern GhostReplayInfo aSilence1StaffGhostReplayInfo;
+extern s8 aSilence1StaffGhostData[];
+extern GhostRecord aSandOcean1StaffGhostRecord;
+extern GhostReplayInfo aSandOcean1StaffGhostReplayInfo;
+extern s8 aSandOcean1StaffGhostData[];
+extern GhostRecord aDevilsForest1StaffGhostRecord;
+extern GhostReplayInfo aDevilsForest1StaffGhostReplayInfo;
+extern s8 aDevilsForest1StaffGhostData[];
+extern GhostRecord aBigBlue1StaffGhostRecord;
+extern GhostReplayInfo aBigBlue1StaffGhostReplayInfo;
+extern s8 aBigBlue1StaffGhostData[];
+extern GhostRecord aPortTown1StaffGhostRecord;
+extern GhostReplayInfo aPortTown1StaffGhostReplayInfo;
+extern s8 aPortTown1StaffGhostData[];
+extern GhostRecord aSectorAlphaStaffGhostRecord;
+extern GhostReplayInfo aSectorAlphaStaffGhostReplayInfo;
+extern s8 aSectorAlphaStaffGhostData[];
+extern GhostRecord aRedCanyon1StaffGhostRecord;
+extern GhostReplayInfo aRedCanyon1StaffGhostReplayInfo;
+extern s8 aRedCanyon1StaffGhostData[];
+extern GhostRecord aDevilsForest2StaffGhostRecord;
+extern GhostReplayInfo aDevilsForest2StaffGhostReplayInfo;
+extern s8 aDevilsForest2StaffGhostData[];
+extern GhostRecord aMuteCity2StaffGhostRecord;
+extern GhostReplayInfo aMuteCity2StaffGhostReplayInfo;
+extern s8 aMuteCity2StaffGhostData[];
+extern GhostRecord aBigBlue2StaffGhostRecord;
+extern GhostReplayInfo aBigBlue2StaffGhostReplayInfo;
+extern s8 aBigBlue2StaffGhostData[];
+extern GhostRecord aWhiteLand1StaffGhostRecord;
+extern GhostReplayInfo aWhiteLand1StaffGhostReplayInfo;
+extern s8 aWhiteLand1StaffGhostData[];
+extern GhostRecord aFireFieldStaffGhostRecord;
+extern GhostReplayInfo aFireFieldStaffGhostReplayInfo;
+extern s8 aFireFieldStaffGhostData[];
+extern GhostRecord aSilence2StaffGhostRecord;
+extern GhostReplayInfo aSilence2StaffGhostReplayInfo;
+extern s8 aSilence2StaffGhostData[];
+extern GhostRecord aSectorBetaStaffGhostRecord;
+extern GhostReplayInfo aSectorBetaStaffGhostReplayInfo;
+extern s8 aSectorBetaStaffGhostData[];
+extern GhostRecord aRedCanyon2StaffGhostRecord;
+extern GhostReplayInfo aRedCanyon2StaffGhostReplayInfo;
+extern s8 aRedCanyon2StaffGhostData[];
+extern GhostRecord aWhiteLand2StaffGhostRecord;
+extern GhostReplayInfo aWhiteLand2StaffGhostReplayInfo;
+extern s8 aWhiteLand2StaffGhostData[];
+extern GhostRecord aMuteCity3StaffGhostRecord;
+extern GhostReplayInfo aMuteCity3StaffGhostReplayInfo;
+extern s8 aMuteCity3StaffGhostData[];
+extern GhostRecord aRainbowRoadStaffGhostRecord;
+extern GhostReplayInfo aRainbowRoadStaffGhostReplayInfo;
+extern s8 aRainbowRoadStaffGhostData[];
+extern GhostRecord aDevilsForest3StaffGhostRecord;
+extern GhostReplayInfo aDevilsForest3StaffGhostReplayInfo;
+extern s8 aDevilsForest3StaffGhostData[];
+extern GhostRecord aSpacePlantStaffGhostRecord;
+extern GhostReplayInfo aSpacePlantStaffGhostReplayInfo;
+extern s8 aSpacePlantStaffGhostData[];
+extern GhostRecord aSandOcean2StaffGhostRecord;
+extern GhostReplayInfo aSandOcean2StaffGhostReplayInfo;
+extern s8 aSandOcean2StaffGhostData[];
+extern GhostRecord aPortTown2StaffGhostRecord;
+extern GhostReplayInfo aPortTown2StaffGhostReplayInfo;
+extern s8 aPortTown2StaffGhostData[];
+extern GhostRecord aBigHandStaffGhostRecord;
+extern GhostReplayInfo aBigHandStaffGhostReplayInfo;
+extern s8 aBigHandStaffGhostData[];
+
+#endif
