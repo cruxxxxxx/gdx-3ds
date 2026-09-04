@@ -117,10 +117,11 @@ The full story of the port — every step from research to a native-60 stereosco
    [latest release](https://github.com/cruxxxxxx/gdx-3ds/releases/latest) (checksums in
    `SHA256SUMS`), or build it yourself: devkitPro + CMake, `tools/ci-3ds.sh` applies the
    patch stack and builds; step by step in `docs/3DS-HARDWARE.md`, "Building from source".
-2. **Convert your game assets on your PC**: `tools/prebake` takes *your* F-Zero X
-   (USA, rev 0) ROM dump and produces `fzerox.o2r` / `gdiffuser.o2r` archives (the audio
-   table is stored uncompressed so boot audio starts cleanly; see `tools/prebake/README`).
-   This step runs entirely on your computer, with your legally dumped ROM.
+2. **Convert your game assets on your PC**: download `gdx-extract-<your OS>.zip` from the
+   same release, then `python3 tools/prebake/prebake.py --rom <your dump>.z64 --extractor <gdx-extract>`
+   produces the `fzerox.o2r` / `gdiffuser.o2r` archives (Python 3 only, no compiler; Windows
+   walkthrough in `tools/prebake/README.md`). This step runs entirely on your computer, with
+   your legally dumped F-Zero X (USA, rev 0) ROM.
 3. **Copy to SD**: the archives go in `sdmc:/3ds/gdiffuser/`, the `.3dsx` in
    `sdmc:/3ds/` (or install the `.cia` with FBI).
 4. Launch from the Homebrew Launcher or HOME menu. Full details, SD layout, and

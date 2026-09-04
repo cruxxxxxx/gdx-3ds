@@ -224,7 +224,11 @@ Tested on macOS and Linux with devkitPro. Windows works through the devkitPro MS
    Artifacts: `build-3ds/port/3ds/G-Diffuser-3DS.3dsx` and `.cia`. The `.elf` next to them is
    what `addr2line` wants when reading a crash or heap-watch address out of `log.txt`.
 4. **Assets** are a separate, PC-side step from your own ROM dump: `tools/prebake/README.md`.
-   Nothing in this build embeds game data.
+   The extractor it needs is a release download for Windows, macOS and Linux, so this step
+   needs Python only. Nothing in this build embeds game data.
+
+The GitHub Actions workflow `.github/workflows/release-3ds.yml` does all of the above on every
+tag: the extractor on three OSes and the console artifacts in the devkitPro container.
 
 The build id shown on the STAT tab is `<branch>@<short sha>` of the checkout it came from.
 

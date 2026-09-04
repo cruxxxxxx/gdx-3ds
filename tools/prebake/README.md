@@ -16,17 +16,24 @@ SHA-256/entry-count out).
 
 1. **This repository**, with submodules:
    `git submodule update --init --recursive`
-2. **A desktop build that produced `gdx-extract`** (any platform the desktop
-   port builds on):
+2. **`gdx-extract`**, the extractor binary. Easiest: download
+   `gdx-extract-<your OS>.zip` from the
+   [latest release](https://github.com/cruxxxxxx/gdx-3ds/releases/latest)
+   (Windows x64, macOS arm64 / x86_64, Linux x64), unzip it anywhere, and pass
+   it with `--extractor`. No compiler needed.
+
+   To build it yourself instead, only the Torch submodule is required:
 
    ```
-   cmake -S . -B build
-   cmake --build build --target gdx-extract
+   git submodule update --init torch
+   cmake -S torch -B build-extract -DUSE_STANDALONE=ON -DBUILD_STORMLIB=OFF \
+         -DGDX_DETERMINISTIC=ON -DGDX_OUTPUT_NAME=gdx-extract -DCMAKE_BUILD_TYPE=Release
+   cmake --build build-extract --config Release
+   cmake --install build-extract --config Release --prefix build-extract/install
    ```
 
-   Only the `gdx-extract` target is required — you do not need to build the
-   full game to pre-bake. (If you already have a full desktop build, that
-   works too.)
+   The binary lands in `build-extract/install/bin/`. (A full desktop build's
+   `--build-dir build` also works, as before.)
 3. **Your F-Zero X US rev0 cartridge dump**, big-endian (`.z64`).
    - SHA-1 must be `5f658e88ffa9de23cba6986a8fd3d3a90d7b4340`.
    - JP, PAL, rev1, and byte-swapped (`.v64`/`.n64`) dumps are rejected with
@@ -37,8 +44,24 @@ SHA-256/entry-count out).
 ## Run it
 
 ```
-python3 tools/prebake/prebake.py --rom /path/to/fzerox-us-rev0.z64 --build-dir build
+python3 tools/prebake/prebake.py --rom /path/to/fzerox-us-rev0.z64 --extractor /path/to/gdx-extract
 ```
+
+### Windows, step by step
+
+1. Install Python 3 from python.org (tick "Add python.exe to PATH").
+2. Clone the repository (Git for Windows), or download it as a zip and unpack it.
+3. Download `gdx-extract-windows-x64.zip` from the latest release and unzip it,
+   for example to `C:\gdx\gdx-extract.exe`.
+4. In PowerShell, from the repository folder:
+
+   ```
+   python tools\prebake\prebake.py --rom C:\path\to\fzerox-us-rev0.z64 --extractor C:\gdx\gdx-extract.exe
+   ```
+
+5. Copy the contents of `dist\sdmc\` onto the SD card (it mirrors the card's
+   `3ds\gdiffuser\` layout). The console binary is a separate download from the
+   same release; nothing here needs Visual Studio, MSYS2 or devkitPro.
 
 Options:
 
