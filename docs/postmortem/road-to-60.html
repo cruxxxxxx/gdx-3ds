@@ -85,6 +85,11 @@ tr:hover td { background:var(--bg3); }
 .author p { font-size:17px; line-height:1.65; max-width:760px; }
 .author ol { max-width:760px; font-size:17px; line-height:1.65; }
 .author hr { border:0; border-top:1px solid var(--line); margin:34px 0; max-width:760px; }
+.media { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px,1fr)); gap:14px; margin:18px 0 6px; }
+.media.four { grid-template-columns:repeat(auto-fit, minmax(200px,1fr)); }
+.media figure { margin:0; padding:10px 10px 8px; }
+.media video, .media img { width:100%; height:auto; display:block; border-radius:5px; background:#000; }
+.media figcaption { margin-top:8px; }
 .note { background:var(--bg3); border-radius:6px; padding:10px 14px; font-size:14px; color:var(--ink2); max-width:78ch; margin:14px 0; }
 .cols2 { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px,1fr)); gap:14px 28px; }
 .assume { border:1px dashed var(--line); border-radius:6px; padding:10px 14px; font-size:13.5px; color:var(--ink2); max-width:78ch; }

@@ -7,6 +7,28 @@ built on the G-Diffuser PC port. Runs natively on console hardware with stereosc
 > **This is a fan-made, educational software-preservation project.**
 > See the [Legal](#legal) section before downloading or building anything.
 
+## On hardware
+
+<p align="center">
+  <img src="docs/media/gameplay-race.gif" width="420" alt="F-Zero X Grand Prix running on a New Nintendo 3DS; the bottom screen shows the debug menu reading 59.8 fps">
+  <img src="docs/media/gameplay-handheld.gif" width="420" alt="Handheld footage of a race on the New 3DS at 60 fps">
+</p>
+
+<table>
+  <tr>
+    <td><img src="docs/media/title.jpg" alt="F-Zero X title screen on the New 3DS, debug menu on the bottom screen"></td>
+    <td><img src="docs/media/menu.jpg" alt="Select Mode screen on the New 3DS"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/media/character1.jpg" alt="Select Machine screen on the New 3DS"></td>
+    <td><img src="docs/media/character2.jpg" alt="Blue Falcon machine stats on the New 3DS"></td>
+  </tr>
+</table>
+
+Full-quality clips: [Grand Prix](https://cruxxxxxx.github.io/gdx-3ds/media/gameplay-race.mp4) ·
+[handheld](https://cruxxxxxx.github.io/gdx-3ds/media/gameplay-handheld.mp4). The bottom screen in every shot is the
+port's own debug menu (STAT tab): frame rate, heap, build id.
+
 ## Author's notes
 
 Hello reader. This is the only section of this project written by a real human. Isn't that kind of neat? Well, I guess it depends on how you feel about all of these changes in our lives. In this section, I'll quickly detail my thoughts on this 100% AI generated port, its reflection on the direction of software development, and my own experience in using Claude Code to create it.

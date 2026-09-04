@@ -17,6 +17,9 @@ a { color:inherit; }
 .cover .toc li { margin:6px 0; }
 .cover .meta { color:var(--ink3); font-family:"IBM Plex Mono", monospace; font-size:12px; margin-top:30px; }
 @page { size:A4; margin:16mm 14mm 18mm 14mm; }
+.media { grid-template-columns:repeat(2,1fr); }
+.media.four { grid-template-columns:repeat(2,1fr); }
+.media figure { break-inside:avoid; }
 """
 parts = []
 for f, title, sub in PAGES:
@@ -25,6 +28,7 @@ for f, title, sub in PAGES:
     body = m.group(1)
     for pf, _, _ in PAGES:
         body = body.replace(f'href="{pf}"', f'href="https://cruxxxxxx.github.io/gdx-3ds/postmortem/{pf}"')
+    body = re.sub(r'<video[^>]*poster="([^"]+)"[^>]*></video>', r'<img src="\1" alt="">', body)
     parts.append(f'<section class="pg">{body}</section>')
 cover = ('<section class="cover"><p class="eyebrow">Post-mortem · 2026-08-11 → 2026-09-03</p>'
          '<h1>G-Diffuser on New 3DS</h1>'

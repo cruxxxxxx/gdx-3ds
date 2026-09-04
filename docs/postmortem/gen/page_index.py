@@ -19,6 +19,19 @@ def build(D):
         (esc(D["loc_port3ds"]), "lines under port/3ds plus " + D["patches"] + " pure-delta patches", False),
     ]))
 
+    b.append('<h2>On hardware</h2>')
+    b.append('<div class="media">'
+             '<figure class="vid"><video autoplay muted loop playsinline preload="metadata" poster="../media/gameplay-race-poster.jpg" src="../media/gameplay-race.mp4"></video>'
+             '<figcaption>Grand Prix on a New 3DS, final build. The bottom screen is the port\'s debug menu: 59.8 fps, heap, build id.</figcaption></figure>'
+             '<figure class="vid"><video autoplay muted loop playsinline preload="metadata" poster="../media/gameplay-handheld-poster.jpg" src="../media/gameplay-handheld.mp4"></video>'
+             '<figcaption>Handheld, mid-race. Native 60 Hz pacing; no interpolation.</figcaption></figure>'
+             '</div>')
+    b.append('<div class="media four">'
+             '<figure><img src="../media/title.jpg" alt="F-Zero X title screen on the New 3DS" loading="lazy"><figcaption>Title screen, .cia launched from HOME.</figcaption></figure>'
+             '<figure><img src="../media/menu.jpg" alt="Select Mode screen" loading="lazy"><figcaption>Select Mode.</figcaption></figure>'
+             '<figure><img src="../media/character1.jpg" alt="Select Machine screen" loading="lazy"><figcaption>Select Machine.</figcaption></figure>'
+             '<figure><img src="../media/character2.jpg" alt="Blue Falcon stats" loading="lazy"><figcaption>Blue Falcon.</figcaption></figure>'
+             '</div>')
     b.append('<h2>What was built</h2>')
     b.append('<p>A New 3DS build of G-Diffuser that boots from the HOME menu (.cia) or the homebrew launcher (.3dsx), '
              'reads prebaked asset archives from the SD card (no ROM ever touches the console), and plays the whole game: '
