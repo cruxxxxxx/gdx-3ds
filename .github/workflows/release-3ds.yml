@@ -27,8 +27,7 @@ jobs:
       matrix:
         include:
           - { os: windows-2022, name: windows-x64,   exe: gdx-extract.exe }
-          - { os: macos-14,     name: macos-arm64,   exe: gdx-extract }
-          - { os: macos-13,     name: macos-x86_64,  exe: gdx-extract }
+          - { os: macos-14,     name: macos-universal, exe: gdx-extract, extra: -DCMAKE_OSX_ARCHITECTURES=arm64;x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 }
           - { os: ubuntu-22.04, name: linux-x64,     exe: gdx-extract }
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +38,7 @@ jobs:
           cmake -S torch -B build-extract
           -DUSE_STANDALONE=ON -DBUILD_STORMLIB=OFF -DGDX_DETERMINISTIC=ON
           -DGDX_OUTPUT_NAME=gdx-extract -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
+          -DCMAKE_POLICY_DEFAULT_CMP0091=NEW ${{ matrix.extra }}
       - name: Build
         run: cmake --build build-extract --config Release --parallel 4
       - name: Install
@@ -50,6 +49,7 @@ jobs:
           set -e
           mkdir -p pkg
           cp "build-extract/install/bin/${{ matrix.exe }}" pkg/
+          if command -v lipo >/dev/null; then lipo -info "pkg/${{ matrix.exe }}"; fi
           cat > pkg/README.txt <<'TXT'
           gdx-extract: the PC-side asset extractor for the G-Diffuser 3DS port.
           Use it with tools/prebake/prebake.py from the repository:
@@ -84,10 +84,13 @@ jobs:
           mkdir -p tools/3ds-bin && cd tools/3ds-bin
           curl -sSL -o makerom.zip https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.19.0/makerom-v0.19.0-ubuntu_x86_64.zip
           unzip -o -q makerom.zip && rm makerom.zip
-          curl -sSL -o bannertool.tar.gz https://github.com/carstene1ns/3ds-bannertool/releases/download/1.2.3/bannertool-1.2.3-linux.tar.gz
-          tar xzf bannertool.tar.gz && rm bannertool.tar.gz
-          find . -mindepth 2 -type f \( -name makerom -o -name bannertool \) -exec mv -f {} . \;
-          chmod +x makerom bannertool && ls -la && ./makerom -help >/dev/null 2>&1 || true
+          # the prebuilt Linux bannertool needs a newer glibc than the container has; build it here
+          curl -sSL -o bannertool-src.tar.gz https://github.com/carstene1ns/3ds-bannertool/releases/download/1.2.3/bannertool-1.2.3.tar.gz
+          mkdir -p bt-src && tar xzf bannertool-src.tar.gz -C bt-src --strip-components=1 && rm bannertool-src.tar.gz
+          cmake -S bt-src -B bt-build -DCMAKE_BUILD_TYPE=Release >/dev/null && cmake --build bt-build --parallel 4 >/dev/null
+          cp "$(find bt-build -type f -name bannertool | head -1)" bannertool && rm -rf bt-src bt-build
+          find . -mindepth 2 -type f -name makerom -exec mv -f {} . \;
+          chmod +x makerom bannertool && ls -la && ./bannertool >/dev/null 2>&1 || true
       - name: Patches, host tests, 3DS build
         run: |
           export DEVKITPRO=/opt/devkitpro
