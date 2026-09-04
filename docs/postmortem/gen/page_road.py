@@ -18,7 +18,7 @@ def hist(fps, bins=(0, 30, 35, 40, 45, 50, 55, 58, 59.5, 61)):
 def build(D, P):
     S = P["sessions"]; profs = P["profs"]
     b = []
-    b.append('<p class="eyebrow">03 · Road to 60</p><h1>The road to sixty</h1>')
+    b.append('<p class="eyebrow">04 · Road to 60</p><h1>The road to sixty</h1>')
     b.append('<p class="lede">F-Zero X runs its logic at 60 Hz and the port never lowered that. Every frame the CPU walks the game\'s '
              'display list, translates it, and feeds the PICA. The road to 60 was the road from a 35–58 ms frame build to under 16.7 ms, '
              'measured first in the emulator and then, from 08-21, on the console. This page is that road, lever by lever.</p>')

@@ -3,7 +3,7 @@ from framework import *
 
 def build(D):
     b = []
-    b.append('<p class="eyebrow">06 · Agentic workflow</p><h1>How the fleet was run, and how the ship was steered</h1>')
+    b.append('<p class="eyebrow">07 · Agentic workflow</p><h1>How the fleet was run, and how the ship was steered</h1>')
     b.append('<p class="lede">One human, one orchestrating Claude session that lived for the whole project, and '
              + esc(D["subagents"]) + ' subagents working in ' + esc(D["worktrees"]) + ' git worktrees. The human never opened an editor. '
              'The human held the only console, the only SD card, and the only pair of eyes that could be trusted.</p>')

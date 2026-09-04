@@ -8,7 +8,6 @@ def build(D):
              'to the New Nintendo 3DS. One person directed; one long-lived Claude session orchestrated; '
              + esc(D["subagents"]) + ' subagents built. The console went from a black screen to a native-60 stereoscopic racer '
              'between 2026-08-11 and 2026-09-03.</p>')
-    b.append('<div class="note" id="author"><b>Author\'s retrospective.</b> Placeholder: this section is reserved for the author\'s own thoughts and retrospective, to be added later.</div>')
     b.append(tiles([
         (esc(D["final_median"]) + '<small>fps</small>', "median on hardware, full Grand Prix, final round (from 12–20 fps in the first emulator race)", True),
         (esc(D["final_p10"]) + '<small>fps</small>', "tenth-percentile floor in 30-machine crowds (from 25–35)", True),

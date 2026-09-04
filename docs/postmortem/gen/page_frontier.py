@@ -3,7 +3,7 @@ from framework import *
 
 def build(D):
     b = []
-    b.append('<p class="eyebrow">05 · Frontier</p><h1>Why this is bold, and where it is new</h1>')
+    b.append('<p class="eyebrow">06 · Frontier</p><h1>Why this is bold, and where it is new</h1>')
     b.append('<p class="lede">The user asked on 08-23 how to explain to an unimpressed friend why this port matters. '
              'The short version: nobody had run a libultraship game on a handheld this weak, nobody had pushed a '
              'software N64 display-list interpreter to a native 60 Hz on an ARM11, and nobody had done it with '

@@ -3,7 +3,7 @@ from framework import *
 
 def build(D, commits_per_day, prompts_per_day):
     b = []
-    b.append('<p class="eyebrow">02 · Every step</p><h1>Twenty-four days, step by step</h1>')
+    b.append('<p class="eyebrow">03 · Every step</p><h1>Twenty-four days, step by step</h1>')
     b.append('<p class="lede">The project ran in five bursts separated by three credit pauses. Dates are from git and the session '
              'transcripts (local time); quotes are the user\'s own words at that moment.</p>')
 

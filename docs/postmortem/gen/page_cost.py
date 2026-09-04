@@ -38,7 +38,7 @@ def build(D, C):
         return (a["input"] * i + a["output"] * o + a["cache_creation"] * i * 1.25 + a["cache_read"] * i * 0.1) / 1e6
 
     b = []
-    b.append('<p class="eyebrow">07 · Cost</p><h1>What it cost to build</h1>')
+    b.append('<p class="eyebrow">08 · Cost</p><h1>What it cost to build</h1>')
     b.append('<p class="lede">Every API call the project made is in the session transcripts on this machine. This page counts them. '
              'Token counts are exact. Dollar figures apply Anthropic\'s published API list prices to those counts; '
              'the two scenarios differ only in the prompt-cache write duration.</p>')

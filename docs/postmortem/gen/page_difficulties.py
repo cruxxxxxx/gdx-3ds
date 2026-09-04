@@ -3,7 +3,7 @@ from framework import *
 
 def build(D):
     b = []
-    b.append('<p class="eyebrow">04 · Difficulties</p><h1>What fought back</h1>')
+    b.append('<p class="eyebrow">05 · Difficulties</p><h1>What fought back</h1>')
     b.append('<p class="lede">A New 3DS is an 804 MHz ARM11 with 124 MB for the app, a GPU that speaks neither OpenGL nor '
              'anything a PC port has met, and a debugger that is a text file on an SD card. Every layer of the stack '
              'assumed a PC. This page is the war log: each fight, its root cause, and what it took to win.</p>')

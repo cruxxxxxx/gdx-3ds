@@ -1,7 +1,7 @@
 import json, os, sys, collections
 sys.path.insert(0, os.path.dirname(__file__))
 from framework import *
-import page_index, page_timeline, page_road, page_difficulties, page_frontier, page_agentic, page_cost
+import page_index, page_author, page_timeline, page_road, page_difficulties, page_frontier, page_agentic, page_cost
 
 SCRATCH = os.environ.get("PM_SCRATCH", os.path.join(os.path.dirname(__file__), "scratch"))
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(SCRATCH, "pm", "out")
@@ -66,6 +66,7 @@ D = {
 
 pages = {
     "index.html": page_index.build(D),
+    "author.html": page_author.build(D),
     "timeline.html": page_timeline.build(D, commits_per_day, prompts_per_day),
     "road-to-60.html": page_road.build(D, P),
     "difficulties.html": page_difficulties.build(D),

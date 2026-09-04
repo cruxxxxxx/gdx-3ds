@@ -3,6 +3,7 @@ import html
 
 PAGES = [
     ("index.html", "Overview", "What was built, in one screen"),
+    ("author.html", "Author's notes", "The one page written by a human"),
     ("timeline.html", "Every step", "The 24-day chronology"),
     ("road-to-60.html", "Road to 60", "The performance campaign, round by round"),
     ("difficulties.html", "Difficulties", "What fought back, and how it was beaten"),
@@ -99,6 +100,9 @@ tr:hover td { background:var(--bg3); }
 .ev p { margin:0 0 4px; color:var(--ink2); font-size:14.5px; }
 .q { border-left:3px solid var(--gold); padding:6px 14px; margin:14px 0; background:var(--gold-soft); border-radius:0 6px 6px 0; font-size:14.5px; max-width:72ch; }
 .q .who { font-family:"IBM Plex Mono", monospace; font-size:11.5px; color:var(--ink3); letter-spacing:.06em; text-transform:uppercase; display:block; margin-bottom:2px; }
+.author p { font-size:17px; line-height:1.65; max-width:760px; }
+.author ol { max-width:760px; font-size:17px; line-height:1.65; }
+.author hr { border:0; border-top:1px solid var(--line); margin:34px 0; max-width:760px; }
 .note { background:var(--bg3); border-radius:6px; padding:10px 14px; font-size:14px; color:var(--ink2); max-width:78ch; margin:14px 0; }
 .cols2 { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px,1fr)); gap:14px 28px; }
 .assume { border:1px dashed var(--line); border-radius:6px; padding:10px 14px; font-size:13.5px; color:var(--ink2); max-width:78ch; }
