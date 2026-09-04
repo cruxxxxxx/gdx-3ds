@@ -75,6 +75,8 @@ extern "C" int gGameMode;
 // GdxSegmentEpochStable() rejects the result on an odd or changed snapshot. The graphics thread
 // must NEVER block here: an unstable snapshot takes the same graceful hard-skip as a failed
 // resolution, dropping one texture for one reload frame. Only atomic loads, no locks, no spins.
+/* RENDER THREAD fence (defined below with the segment view). */
+static inline void GdxRtFence();
 static std::atomic<uint32_t> gGdxSegmentEpoch{0};
 
 // acq_rel keeps each increment from being reordered past the segment writes it fences:
@@ -82,6 +84,7 @@ static std::atomic<uint32_t> gGdxSegmentEpoch{0};
 // so a graphics-thread acquire-load seeing an even, unchanged epoch has observed fully-settled
 // segment state.
 extern "C" void gdx_segment_epoch_begin(void) {
+    GdxRtFence(); /* RENDER THREAD: the reload rewrites carves the in-flight walk may read */
     gGdxSegmentEpoch.fetch_add(1u, std::memory_order_acq_rel);
 }
 extern "C" void gdx_segment_epoch_end(void) {
@@ -635,6 +638,29 @@ std::vector<PersistentRawTextureCopy> gRawTextureCopies;
 std::unordered_map<uintptr_t, size_t> gRawTextureCopyIndex;
 std::vector<uintptr_t> gPendingTextureCacheDeletes;
 std::vector<std::unique_ptr<uint8_t[]>> gPersistentAllocations;
+/* BRIDGE-ON-MAIN (port/3ds/gdx3ds_renderthread.cpp `[debug] bridgemain`, docs/research/
+   balance-progress.md): the walk of task N+1 runs on the submitting thread while the render
+   thread still draws task N, so the persistent copies a walk mints (MakePersistent*Copy, raw
+   texture-copy resize retirees) are owned by THAT task's job and freed when the job is released
+   -- after its own render completed -- never by another task's post-Run. tGdxJobAllocs is the
+   walking thread's current job vector; null = the process-wide vector (legacy, never freed). */
+static __thread std::vector<std::unique_ptr<uint8_t[]>>* tGdxJobAllocs = nullptr;
+static inline std::vector<std::unique_ptr<uint8_t[]>>& GdxJobAllocs() {
+    return tGdxJobAllocs != nullptr ? *tGdxJobAllocs : gPersistentAllocations;
+}
+/* gPendingTextureCacheDeletes: pushed by the walk (bridge-on-main: the submitting thread) and
+   by fenced game-thread invalidations, drained on the render thread before Run. The walk of N+1
+   fences before any refresh that pushes, so the drain of N is already over -- the lock is the
+   cheap (uncontended, no svc) insurance that keeps the vector well-defined regardless. */
+#if defined(GDX_PLATFORM_3DS)
+static LightLock sGdxTexDeletesLock; /* zero-init == unlocked */
+struct GdxTexDeletesGuard {
+    GdxTexDeletesGuard() { LightLock_Lock(&sGdxTexDeletesLock); }
+    ~GdxTexDeletesGuard() { LightLock_Unlock(&sGdxTexDeletesLock); }
+};
+#else
+struct GdxTexDeletesGuard {};
+#endif
 std::vector<N64FramebufferInfo> gN64Framebuffers;
 uintptr_t gViCurrentFramebuffer = 0;
 uintptr_t gViNextFramebuffer = 0;
@@ -2308,7 +2334,20 @@ struct MapsRegion {
     bool      readable;
 };
 
-static std::vector<MapsRegion> s3dsMemoryRegions;
+/* BRIDGE-ON-MAIN: the walk (submitting thread) and the render thread's few probes (the
+   [race-seg] one-shot, capture paths) each get their own cache: the sorted-insert is not safe
+   to share, and the per-task Reset is a per-thread staleness bound anyway. */
+static std::vector<MapsRegion> s3dsMemoryRegionSlots[2];
+static __thread std::vector<MapsRegion>* t3dsMemoryRegions = nullptr;
+extern "C" int gdx3ds_rt_on_render_thread(void) __attribute__((weak));
+static inline std::vector<MapsRegion>& S3dsRegions() {
+    if (t3dsMemoryRegions == nullptr) {
+        const int rt = (&gdx3ds_rt_on_render_thread != nullptr) ? gdx3ds_rt_on_render_thread() : 0;
+        t3dsMemoryRegions = &s3dsMemoryRegionSlots[rt != 0 ? 1 : 0];
+    }
+    return *t3dsMemoryRegions;
+}
+#define s3dsMemoryRegions (S3dsRegions())
 
 static const MapsRegion* Find3dsMemoryRegion(uintptr_t address) {
     size_t low = 0;
@@ -2659,7 +2698,7 @@ uintptr_t MakePersistentVtxCopy(uintptr_t source, size_t count) {
     auto alloc = std::make_unique<uint8_t[]>(requiredBytes);
     uint8_t* out = alloc.get();
     std::memset(out, 0, requiredBytes);
-    gPersistentAllocations.push_back(std::move(alloc));
+    GdxJobAllocs().push_back(std::move(alloc));
 
     const uint8_t* in = reinterpret_cast<const uint8_t*>(source);
     for (size_t i = 0; i < safeCount; i++) {
@@ -2689,7 +2728,7 @@ uintptr_t MakePersistentMtxCopy(uintptr_t source) {
     auto alloc = std::make_unique<uint8_t[]>(64);
     uint8_t* out = alloc.get();
     std::memset(out, 0, 64);
-    gPersistentAllocations.push_back(std::move(alloc));
+    GdxJobAllocs().push_back(std::move(alloc));
 
     /* Same clamp idiom as MakePersistentVtxCopy, applied internally so ANY caller -- including
        the kOpVtx F3D-remapped-to-Mtx branch -- cannot turn an under-validated resolution into an
@@ -2861,17 +2900,27 @@ uintptr_t MakePersistentRawTextureCopy(uintptr_t source, size_t requiredBytes, b
         }
 
         if (changed) {
+            /* BRIDGE-ON-MAIN: the in-flight render may still import from this copy (or hold its
+               pointer in its converted stream); wait for it before rewriting / retiring the bytes.
+               No-op when idle, off, or on the render thread itself. Rare (content changed). */
+            GdxRtFence();
             if (outRefreshed != nullptr) {
                 *outRefreshed = true;
             }
             if (!needsResize) {
-                gPendingTextureCacheDeletes.push_back(reinterpret_cast<uintptr_t>(copy.bytes.get()));
+                {
+                    GdxTexDeletesGuard texDeletesGuard;
+                    gPendingTextureCacheDeletes.push_back(reinterpret_cast<uintptr_t>(copy.bytes.get()));
+                }
                 std::memset(copy.bytes.get(), 0, copy.size);
                 CopyRawTextureBytes(copy.bytes.get(), source, copyBytes);
             } else {
                 if (copy.bytes != nullptr) {
-                    gPendingTextureCacheDeletes.push_back(reinterpret_cast<uintptr_t>(copy.bytes.get()));
-                    gPersistentAllocations.push_back(std::move(copy.bytes));
+                    {
+                        GdxTexDeletesGuard texDeletesGuard;
+                        gPendingTextureCacheDeletes.push_back(reinterpret_cast<uintptr_t>(copy.bytes.get()));
+                    }
+                    GdxJobAllocs().push_back(std::move(copy.bytes));
                 }
                 auto refreshed = std::make_unique<uint8_t[]>(requiredBytes);
                 std::memset(refreshed.get(), 0, requiredBytes);
@@ -8950,6 +8999,8 @@ static void GdxBindWindowFramebuffer() {
  * tile's loaded_texture fields are set directly here instead of via
  * GfxDpLoadTile — the emulated TMEM only bounds LoadTile, not import.
  */
+static void GdxDrainTextureCacheRequests(Fast::Interpreter* interp); /* defined below */
+
 extern "C" void gdx_vi_present_fallback(void) {
     // Framebuffer 0 is the draw target the host's ImGui composite (main.cpp:1274)
     // requires, and every exit below must satisfy it -- including the ones that
@@ -8994,6 +9045,7 @@ extern "C" void gdx_vi_present_fallback(void) {
     if (!interp) {
         return;
     }
+    GdxDrainTextureCacheRequests(interp.get()); /* render thread: queued clear/deletes before any import */
     Fast::GfxRenderingAPI* rapi = interp->GetCurrentRenderingAPI();
     if (rapi == nullptr) {
         return;
@@ -9220,8 +9272,60 @@ extern "C" void gdx_defer_native_rgba16_texture_range_clear(void* ptr) {
  * note in libultraship interpreter.cpp). Mirrors the TextureCacheDelete usage in
  * SeedFramebufferQuad and is safe before the interpreter is up (early-out on null),
  * so callers can invoke it unconditionally. */
+/* RENDER THREAD: the interpreter's texture cache is render-thread-owned; main only enqueues.
+ * A full clear request (gdx_rdram_mode_reset: the bump arena rewinds at every mode
+ * transition, so address-keyed entries would serve the previous mode's bytes) is a flag the
+ * render thread honours at the next job / fallback present, BEFORE any lookup. With the render
+ * thread off (or when already on it) the clear happens inline, as before. */
+static std::atomic<int> gPendingTextureCacheClear{0};
+#if defined(GDX_PLATFORM_3DS)
+extern "C" int gdx3ds_rt_mode(void) __attribute__((weak));
+static bool GdxTexCacheDeferToRenderThread() {
+    return &gdx3ds_rt_mode != nullptr && gdx3ds_rt_mode() != 0 &&
+           (&gdx3ds_rt_on_render_thread == nullptr || !gdx3ds_rt_on_render_thread());
+}
+#else
+static bool GdxTexCacheDeferToRenderThread() { return false; }
+#endif
+
+/* Render thread (job run / fallback present): apply the queued clear + deletes. */
+static void GdxDrainTextureCacheRequests(Fast::Interpreter* interp) {
+    if (interp == nullptr) {
+        return;
+    }
+    if (gPendingTextureCacheClear.exchange(0, std::memory_order_acq_rel) != 0) {
+        interp->TextureCacheClear();
+    }
+    std::vector<uintptr_t> pendingDeletes;
+    {
+        GdxTexDeletesGuard texDeletesGuard;
+        pendingDeletes.swap(gPendingTextureCacheDeletes);
+    }
+    if (!pendingDeletes.empty()) {
+        std::sort(pendingDeletes.begin(), pendingDeletes.end());
+        pendingDeletes.erase(std::unique(pendingDeletes.begin(), pendingDeletes.end()),
+                             pendingDeletes.end());
+        for (uintptr_t ptr : pendingDeletes) {
+            interp->TextureCacheDelete(reinterpret_cast<const uint8_t*>(ptr));
+        }
+    }
+}
+
+extern "C" void gdx_texcache_request_clear(void) {
+    if (GdxTexCacheDeferToRenderThread()) {
+        gPendingTextureCacheClear.store(1, std::memory_order_release);
+        return;
+    }
+    extern void gfx_texture_cache_clear(void);
+    gfx_texture_cache_clear();
+}
+
 extern "C" void gdx_invalidate_texture_address(const void* addr) {
-    GdxRtFence(); /* RENDER THREAD: game-thread mutator (audit §4) */
+    if (addr != nullptr && GdxTexCacheDeferToRenderThread()) {
+        GdxTexDeletesGuard texDeletesGuard; /* main only enqueues; the render thread deletes */
+        gPendingTextureCacheDeletes.push_back(reinterpret_cast<uintptr_t>(addr));
+        return;
+    }
     if (addr == nullptr) {
         return;
     }
@@ -9427,7 +9531,8 @@ extern "C" void gdx_boot_warm_asset_segments(void) {
 }
 
 extern "C" int gdx_load_venue_texture_segment(int venue) {
-    GdxRtFence(); /* RENDER THREAD: game-thread mutator (audit §4) */
+    /* RENDER THREAD: called EVERY race frame from Segment_LoadAssets; the fence sits on the
+       actual 0x0A rewrite below, not here (a per-frame fence would serialize ahead mode). */
     if (venue < 0 || static_cast<size_t>(venue) >= std::size(kGdxVenueSegmentSymbols)) {
         gdx_port_logf("[segment] invalid venue texture segment %d\n", venue);
         return 0;
@@ -9474,6 +9579,7 @@ extern "C" int gdx_load_venue_texture_segment(int venue) {
     // decomp_port.c Segment_LoadAssets), which is a requirement for calling
     // gdx_segment_epoch_begin/end -- never call these from the graphics thread.
     if (gSegments[0x0A] != base) {
+        GdxRtFence(); /* RENDER THREAD: game-thread mutator (audit §4) -- rewrite path only */
         gdx_segment_epoch_begin();
         gSegments[0x0A] = base;
         ++gGdxResolveTablesVersion;
@@ -9991,6 +10097,8 @@ extern "C" int gdx_tmem2_fast_enabled __attribute__((weak));
 #ifdef __3DS__
 extern "C" int gdx_trect_census_on __attribute__((weak));
 extern "C" int gdx_trect_census_format(char* line1, char* line2, int cap, unsigned frames) __attribute__((weak));
+/* [dynlod] receipt (port/3ds/gdx3ds_dynlod.c, LOCKED-60 Task J); weak for the DL harness. */
+extern "C" int gdx3ds_dynlod_receipt(char* buf, int cap) __attribute__((weak));
 #endif
 
 static void GdxPerfS7MirrorDiagGate(void) {
@@ -10020,32 +10128,139 @@ long long gdx3ds_prof_now(void);
 #define GDX3DS_PROF_BR_INDEX 0 /* GDX3DS_PROF_BR in gdx3ds_gpu_prof.h */
 #endif
 
-extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
+#ifdef __3DS__
+static int sRaceCensusIni = -1;
+static bool GdxRaceCensusGateOn() {
+    if (gGdxRaceActive != 0 && sRaceCensusIni < 0) {
+        sRaceCensusIni = gdx3ds_config_get_bool("debug", "verbose", 0) ? 1 : 0;
+    }
+    return sRaceCensusIni == 1 || gdx3ds_prof_active != 0 || gdx_diag_verbose() != 0;
+}
+#else
+static bool GdxRaceCensusGateOn() {
+    return true;
+}
+#endif
+
+/* Walk-side census lines ([wide]/[bcache-census]/[brfast]/[brop]): emitted by the WALKING
+   thread on its own copy of the [race-dl] cadence. Bridge-on-main: the render thread must not
+   read or reset the walk's accumulators while the submitting thread walks the next task. */
+static void GdxEmitWalkReceipts() {
+            /* [traffic] wide-cache traffic on the same cadence: how many narrow lists hit the
+               cache outright, were revalidated after a benign global DMA-generation bump, or
+               really rebuilt (with the total commands those rebuilds re-walked). reval>>rb is
+               the fix working; rb ~= lists was the pre-fix per-frame rebuild storm. */
+            const gdx::GfxWideCache::Stats wideStats = gWideCache.DrainStats();
+            gdx_port_logf("[wide] hit=%u reval=%u rb=%u build=%u rbCmds=%u cached=%zu\n",
+                          wideStats.hits, wideStats.revalidated, wideStats.rebuilds,
+                          wideStats.builds, wideStats.rebuiltCmds, gWideCache.CachedCount());
+            /* [bcache-census] window totals (64 race frames) of walked commands/lists by
+               source class; static share = cmds_static / (cmds_static + cmds_hostbuilt). */
+            gdx_port_logf("[bcache-census] cmds_hostbuilt=%zu cmds_static=%zu "
+                          "lists_hostbuilt=%zu lists_static=%zu | tables host=%zu raw=%zu n64cmd=%zu "
+                          "wide=%zu ek=%zu assets=%zu texcopies=%zu native=%zu\n",
+                          gGdxBcCensus.cmdsHostBuilt, gGdxBcCensus.cmdsStatic,
+                          gGdxBcCensus.listsHostBuilt, gGdxBcCensus.listsStatic,
+                          gHostRanges.size(), gRawN64Ranges.size(), gHostN64CommandRanges.size(),
+                          gHostWideCommandRanges.size(), gN64AddressRanges.size(),
+                          gLoadedAssetSegments.size(), gRawTextureCopies.size(),
+                          gNativeRgba16Ranges.size());
+            gGdxBcCensus = GdxBcCensus{};
+            /* [brfast] memo receipt: tables version (bumps at every asset/range append and
+               segment write), resolve/stub memo hit/miss, range-class misses, snapshots. */
+            gdx_port_logf("[brfast] on=%d ver=%u resolve=%u/%u stub=%u/%u class_miss=%u gen=%u\n",
+                          GdxBrFastOn() ? 1 : 0, gGdxResolveTablesVersion, gGdxBrFastStat[0],
+                          gGdxBrFastStat[1], gGdxBrFastStat[2], gGdxBrFastStat[3],
+                          gGdxBrFastStat[4], gGdxBrFastStat[5]);
+            memset(gGdxBrFastStat, 0, sizeof(gGdxBrFastStat));
+#ifdef __3DS__
+            /* [brop] top bridge-walk opcodes by accumulated wall ticks since the last emit
+               (64 race frames): where [prof] br actually goes. ms figures are WINDOW TOTALS
+               (divide by 64 for per-frame). enq = EnqueueList total (per-list slice, overlaps
+               the G_DL bucket). Diagnostic, strip later. */
+            if (GdxBrOpGateOn()) {
+                const double kTicksPerMs = 268123.480;
+                int top[6] = { -1, -1, -1, -1, -1, -1 };
+                for (int o = 0; o < 256; o++) {
+                    if (gGdxBrOpCalls[o] == 0) continue;
+                    for (int s = 0; s < 6; s++) {
+                        if (top[s] < 0 || gGdxBrOpTicks[o] > gGdxBrOpTicks[top[s]]) {
+                            for (int m = 5; m > s; m--) top[m] = top[m - 1];
+                            top[s] = o;
+                            break;
+                        }
+                    }
+                }
+                char line[512];
+                int len = snprintf(line, sizeof(line), "[brop] enq=%.2f/%u top:",
+                                   (double)gGdxBrEnqTicks / kTicksPerMs, gGdxBrEnqCalls);
+                for (int s = 0; s < 6 && top[s] >= 0; s++) {
+                    len += snprintf(line + len, sizeof(line) - (size_t)len, " %02X=%.2f/%u",
+                                    top[s], (double)gGdxBrOpTicks[top[s]] / kTicksPerMs,
+                                    gGdxBrOpCalls[top[s]]);
+                }
+                len += snprintf(line + len, sizeof(line) - (size_t)len,
+                                " | fd xl=%.2f key=%.2f copy=%.2f | de src=%.2f val=%.2f"
+                                " | fdb o2r=%u pack=%u nat=%u host=%u raw=%u"
+                                " | facts cls=%.2f/%u kl=%.2f/%u scan=%.2f/%u",
+                                (double)gGdxFdTicks[0] / kTicksPerMs, (double)gGdxFdTicks[1] / kTicksPerMs,
+                                (double)gGdxFdTicks[2] / kTicksPerMs, (double)gGdxDeTicks[0] / kTicksPerMs,
+                                (double)gGdxDeTicks[1] / kTicksPerMs, gGdxFdBranch[0], gGdxFdBranch[1],
+                                gGdxFdBranch[2], gGdxFdBranch[3], gGdxFdBranch[4],
+                                (double)gGdxFactsTicks[0] / kTicksPerMs, gGdxFactsCalls[0],
+                                (double)gGdxFactsTicks[1] / kTicksPerMs, gGdxFactsCalls[1],
+                                (double)gGdxFactsTicks[2] / kTicksPerMs, gGdxFactsCalls[2]);
+                memset(gGdxFactsTicks, 0, sizeof(gGdxFactsTicks));
+                memset(gGdxFactsCalls, 0, sizeof(gGdxFactsCalls));
+                memset(gGdxFdBranch, 0, sizeof(gGdxFdBranch));
+                memset(gGdxFdTicks, 0, sizeof(gGdxFdTicks));
+                memset(gGdxDeTicks, 0, sizeof(gGdxDeTicks));
+                gdx_port_logf("%s\n", line);
+                memset(gGdxBrOpTicks, 0, sizeof(gGdxBrOpTicks));
+                memset(gGdxBrOpCalls, 0, sizeof(gGdxBrOpCalls));
+                gGdxBrEnqTicks = 0;
+                gGdxBrEnqCalls = 0;
+            }
+#endif
+}
+
+/* BRIDGE-ON-MAIN job (docs/research/balance-progress.md): everything the bridge stage produces
+   for the interpreter stage. Prepared on the SUBMITTING thread (osSpTaskStartGo, a game fiber)
+   when the 3DS render thread runs with `[debug] bridgemain=1`, run on the render thread,
+   released on the submitting thread once that render completed (the adapter's ConvertedList
+   recycle pool and the persistent copies are therefore only ever touched by one thread). The
+   inline path (render thread off, bridgemain=0, desktop) prepares/runs/releases in sequence on
+   one thread -- gdx_gfx_run below -- which is the byte-identical old order. */
+struct GdxGfxJob {
+    void* dl = nullptr;
+    size_t dlSize = 0;
+    GdxTaskUcode ucode = GDX_TASK_UCODE_F3DEX2;
+    bool isBigEndian = false;
+    bool split = false; /* prepared on a different thread than the one that runs it */
+    Fast::F3dex2Variant variant = Fast::F3dex2Variant::Standard;
+    uintptr_t segs[16] = {};       /* split: the per-task segment table (walk + run; merged at the join) */
+    uintptr_t interpSegs[16] = {}; /* interp->mSegmentPointers at task start (after the Ensure* claims) */
+    ConversionStats stats = {};
+    std::unique_ptr<N64DisplayListAdapter> adapter;
+    Fast::F3DGfx* converted = nullptr;
+    std::vector<std::unique_ptr<uint8_t[]>> allocations; /* MakePersistent* copies + resize retirees */
+    std::vector<uintptr_t> nativeClears;                  /* deferred native-RGBA16 range retirements */
+};
+
+static Fast::Fast3dWindow* sGdxCachedWindow = nullptr;
+
+/* Stage 1 -- the bridge: SETUP (wide-cache sweep, segment claims, region-cache reset) + XLATE
+   (adapter construction, ConvertRoot/ProcessList, the matrix fixups) + the walk-side receipts.
+   Returns false when there is nothing to run (no window). Reads segments through the calling
+   thread's view (gSegments macro); mutates only job-owned state plus the walk memos, which are
+   owned by whichever thread walks (one walker at a time by construction). */
+static bool GdxGfxJobPrepare(GdxGfxJob& job) {
+    void* dl = job.dl;
+    const size_t dl_size = job.dlSize;
+    const GdxTaskUcode taskUcode = job.ucode;
     GdxPerfS7LogOnce();
     GdxPerfS7MirrorDiagGate();
-    // Time the WHOLE bridge call, so the perf summary's "logic" figure stops absorbing work that
-    // is not game logic. logic is derived as gametick - (xlate + run + mirror), and only ConvertRoot
-    // was ever timed, so every other thing this function does was being reported as decomp time.
-    //
-    // Scope guard rather than a begin/end pair: this function has several early returns (no window,
-    // no interpreter, bad display list), and a leaked open timer would silently corrupt every
-    // subsequent sample rather than fail loudly.
-    // The POST half is opened after the sub-frame burst, but this function has several exits after
-    // that point, so the guard closes it on whichever one is taken rather than requiring every
-    // return site to remember.
-    bool gdxPostTimerOpen = false;
-    struct GdxGfxRunTimer {
-        bool* postOpen;
-        explicit GdxGfxRunTimer(bool* p) : postOpen(p) {
-            gdx_perf_sub_begin(GDX_PERF_SUB_GFXRUN);
-        }
-        ~GdxGfxRunTimer() {
-            if (*postOpen) {
-                gdx_perf_sub_end(GDX_PERF_SUB_POST);
-            }
-            gdx_perf_sub_end(GDX_PERF_SUB_GFXRUN);
-        }
-    } gdxGfxRunTimer(&gdxPostTimerOpen);
+    gdx_perf_sub_begin(GDX_PERF_SUB_GFXRUN);
     gdx_perf_sub_begin(GDX_PERF_SUB_SETUP);
 
     // The Fast3dWindow is created once at startup and lives for the whole
@@ -10055,15 +10270,13 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
     // was transiently unreadable during rapid mode transitions (e.g. machine
     // select -> settings). The cache is populated at startup when state is
     // clean, so later frames never re-read that member.
-    static Fast::Fast3dWindow* sCachedWindow = nullptr;
-    if (sCachedWindow == nullptr) {
+    if (sGdxCachedWindow == nullptr) {
         auto ctx = Ship::Context::GetInstance();
-        if (ctx == nullptr) { return; }
+        if (ctx == nullptr) { return false; }
         auto wnd = ctx->GetWindow();
-        sCachedWindow = static_cast<Fast::Fast3dWindow*>(wnd.get());
+        sGdxCachedWindow = static_cast<Fast::Fast3dWindow*>(wnd.get());
     }
-    Fast::Fast3dWindow* fw = sCachedWindow;
-    if (fw == nullptr) { return; }
+    if (sGdxCachedWindow == nullptr) { return false; }
 
     // Advance the wide-conversion cache's frame counter once
     // per real GFX task and let it sweep stale entries when it has grown past
@@ -10145,9 +10358,8 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
 
     // All three task variants share F3DEX2 command encoding. Their semantic
     // differences are carried separately so the base opcode table stays valid.
-    fw->SetRendererUCode(ucode_f3dex2);
-    auto interp = fw->GetInterpreterWeak().lock();
-    if (!interp) { return; }
+    // (The interpreter is armed -- renderer ucode, variant, segment table -- in GdxGfxJobRun,
+    // on the thread that runs it; the walk never consults the interpreter.)
     // The task ucode is this display list's ENTRY state, not a property of the whole frame, so it
     // is kept in a local and re-armed before every sub-frame replay (see the pass loop below).
     // A mid-list G_LOAD_UCODE variant-switch marker mutates mF3dex2Variant during the walk
@@ -10171,19 +10383,16 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
             gdxTaskVariant = Fast::F3dex2Variant::Standard;
             break;
     }
-    interp->SetF3dex2Variant(gdxTaskVariant);
-
-    for (int i = 0; i < 16; i++) {
-        interp->mSegmentPointers[i] = gSegments[i];
-    }
+    job.variant = gdxTaskVariant;
 
     EnsureSetupGfxSegment();
     EnsureAssetSegmentForSymbol(Low32(reinterpret_cast<uintptr_t>(aVpFullScreen)));
     for (int i = 0; i < 16; i++) {
-        interp->mSegmentPointers[i] = gSegments[i];
+        job.interpSegs[i] = gSegments[i]; /* the interpreter's table at task start (armed in GdxGfxJobRun) */
     }
 
-    bool isBigEndian = IsLikelyBigEndianDisplayList(static_cast<const N64Gfx*>(dl), dl_size / sizeof(N64Gfx));
+    const bool isBigEndian = IsLikelyBigEndianDisplayList(static_cast<const N64Gfx*>(dl), dl_size / sizeof(N64Gfx));
+    job.isBigEndian = isBigEndian;
 
     // Sub-phase: per-command DL translation (the adapter's ConvertRoot walk). See gdx_perf.h.
 #ifdef _WIN32
@@ -10198,20 +10407,27 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
     // [prof] BR section: brackets exactly the XLATE seam (straight-line region, no
     // early returns between here and the matching exit below). Two raw tick reads
     // per task when tracing; a single int load + branch when not.
+    // Bridge-on-main: the [prof] accumulators belong to the render thread's frame; the split
+    // bridge is timed by the submitter instead and reported as `[rt] brMain=` (so `[prof] br`
+    // reads ~0 while the work shows up on main -- the receipt stays honest).
     uint64_t gdxProfBrT0 = 0, gdxProfBrSnap = 0;
-    const bool gdxProfBrOn = gdx3ds_prof_active != 0;
+    const bool gdxProfBrOn = !job.split && gdx3ds_prof_active != 0;
     if (gdxProfBrOn) {
         gdxProfBrSnap = gdx3ds_prof_child_ticks;
         gdxProfBrT0 = (uint64_t)gdx3ds_prof_now();
     }
 #endif
     gdx_perf_sub_begin(GDX_PERF_SUB_XLATE);
-    ConversionStats stats = {};
-    N64DisplayListAdapter adapter(dl, dl_size, isBigEndian, &stats);
+    ConversionStats& stats = job.stats;
+    job.adapter = std::make_unique<N64DisplayListAdapter>(dl, dl_size, isBigEndian, &stats);
+    N64DisplayListAdapter& adapter = *job.adapter;
+    /* The walk's persistent copies belong to this job (freed at release, after its render). */
+    std::vector<std::unique_ptr<uint8_t[]>>* const gdxPrevJobAllocs = tGdxJobAllocs;
+    tGdxJobAllocs = &job.allocations;
     // Latch the current/previous GfxPool bases and reset the referenced-offset set BEFORE
     // ConvertRoot drains the G_MTX reroutes (which populate this tick's lerp list). No-op unless P1.
     adapter.GdxInterpBeginTick();
-    Fast::F3DGfx* converted = adapter.ConvertRoot();
+    job.converted = adapter.ConvertRoot();
     // The referenced-offset set is NOT promoted here. This function runs once per GFX TASK and the
     // game submits several per tick, so the promotion happens at the real tick boundary inside
     // GdxInterpBeginTick (see gGdxInterpNewTick) where a complete tick's set is available.
@@ -10300,7 +10516,84 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
                       8 - gGdxVenueWatchTicks, (gGdxInterpNowFn() - gdxXlateT0) * 1000.0,
                       stats.convertedLists, stats.commandsOut, (unsigned) gConvertEpoch);
     }
+    tGdxJobAllocs = gdxPrevJobAllocs;
+    /* Deferred native-RGBA16 retirements the game thread pushed before this task belong to this
+       task: retired at release, after its Run consumed the frame (GdxGfxJobRelease). Taking them
+       here keeps the pending vector single-threaded (pusher and taker are the game thread). */
+    if (!gPendingNativeRgba16RangeClears.empty()) {
+        job.nativeClears.insert(job.nativeClears.end(), gPendingNativeRgba16RangeClears.begin(),
+                                gPendingNativeRgba16RangeClears.end());
+        gPendingNativeRgba16RangeClears.clear();
+    }
+    {
+        static uint64_t sWalkReceiptTicks = 0;
+        if (GdxRaceCensusGateOn() && gGdxRaceActive != 0 && ((sWalkReceiptTicks++ % 64u) == 0u)) {
+            GdxEmitWalkReceipts();
+        }
+    }
+    return true;
+}
+
+/* Stage 2 -- the interpreter: arm the interpreter for this task, drain the texture-cache deletes,
+   Run (+ the interp/diag replays), the frame mirror. Reads the job (immutable after prepare) and
+   the render-side state only. */
+static void GdxGfxJobRun(GdxGfxJob& job) {
+    void* dl = job.dl;
+    const size_t dl_size = job.dlSize;
+    const GdxTaskUcode taskUcode = job.ucode;
+    const bool isBigEndian = job.isBigEndian;
+    const Fast::F3dex2Variant gdxTaskVariant = job.variant;
+    ConversionStats& stats = job.stats;
+    Fast::F3DGfx* converted = job.converted;
+    (void)dl_size;
+    (void)taskUcode;
+    (void)isBigEndian;
+    (void)gdxTaskVariant;
+    // Time the WHOLE bridge call, so the perf summary's "logic" figure stops absorbing work that
+    // is not game logic. logic is derived as gametick - (xlate + run + mirror), and only ConvertRoot
+    // was ever timed, so every other thing this function does was being reported as decomp time.
+    //
+    // Scope guard rather than a begin/end pair: this function has several early returns (no window,
+    // no interpreter, bad display list), and a leaked open timer would silently corrupt every
+    // subsequent sample rather than fail loudly.
+    // The POST half is opened after the sub-frame burst, but this function has several exits after
+    // that point, so the guard closes it on whichever one is taken rather than requiring every
+    // return site to remember.
+    bool gdxPostTimerOpen = false;
+    struct GdxGfxRunTimer {
+        bool* postOpen;
+        explicit GdxGfxRunTimer(bool* p) : postOpen(p) {
+            /* GFXRUN was opened by GdxGfxJobPrepare (same thread on the inline path). */
+        }
+        ~GdxGfxRunTimer() {
+            if (*postOpen) {
+                gdx_perf_sub_end(GDX_PERF_SUB_POST);
+            }
+            gdx_perf_sub_end(GDX_PERF_SUB_GFXRUN);
+        }
+    } gdxGfxRunTimer(&gdxPostTimerOpen);
     if (converted == nullptr) return;
+    if (job.adapter == nullptr) return;
+    N64DisplayListAdapter& adapter = *job.adapter;
+    Fast::Fast3dWindow* fw = sGdxCachedWindow;
+    if (fw == nullptr) { return; }
+    // All three task variants share F3DEX2 command encoding. Their semantic
+    // differences are carried separately so the base opcode table stays valid.
+    fw->SetRendererUCode(ucode_f3dex2);
+    auto interp = fw->GetInterpreterWeak().lock();
+    if (!interp) { return; }
+    interp->SetF3dex2Variant(gdxTaskVariant);
+    for (int i = 0; i < 16; i++) {
+        interp->mSegmentPointers[i] = job.interpSegs[i];
+    }
+    /* Anything minted during Run (none today) belongs to this job as well. */
+    struct GdxJobAllocsScope {
+        std::vector<std::unique_ptr<uint8_t[]>>* prev;
+        explicit GdxJobAllocsScope(std::vector<std::unique_ptr<uint8_t[]>>* cur) : prev(tGdxJobAllocs) {
+            tGdxJobAllocs = cur;
+        }
+        ~GdxJobAllocsScope() { tGdxJobAllocs = prev; }
+    } gdxJobAllocsScope(&job.allocations);
 
     static bool sBridgeInitDiag = false;
     if (!sBridgeInitDiag) {
@@ -10347,12 +10640,7 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
     {
         static uint64_t sRaceDlTicks = 0;
 #ifdef __3DS__
-        static int sRaceCensusIni = -1;
-        if (gGdxRaceActive != 0 && sRaceCensusIni < 0) {
-            sRaceCensusIni = gdx3ds_config_get_bool("debug", "verbose", 0) ? 1 : 0;
-        }
-        const bool raceCensusOn =
-            sRaceCensusIni == 1 || gdx3ds_prof_active != 0 || gdx_diag_verbose() != 0;
+        const bool raceCensusOn = GdxRaceCensusGateOn();
         /* [tri2] the interpreter's per-phase tri census: verbose (ini or Dev-Tools) AND
            `[debug] tri2census=1` (default 0 — the 7 svcGetSystemTick probes per triangle
            cost ~1.3 us each in Azahar and would swamp any A/B; enable only for a phase
@@ -10381,6 +10669,16 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
                 }
             }
 #endif
+#ifdef __3DS__
+            /* [dynlod] automatic rival-detail controller: tier + window raises/lowers and
+               the render task's per-frame wall (avg/max over the window). */
+            if (&gdx3ds_dynlod_receipt != nullptr) {
+                char dl[192];
+                if (gdx3ds_dynlod_receipt(dl, (int)sizeof(dl)) > 0) {
+                    gdx_port_logf("%s\n", dl);
+                }
+            }
+#endif
             gdx_port_logf("[race-dl] lists=%zu f3d=%zu cmds=%zu dl=%zu vtx=%zu mtx=%zu "
                           "tri=%zu trect=%zu end=%zu noop=%zu miss=%zu bad=%zu skip=%zu\n",
                           stats.convertedLists, stats.f3dLists, stats.commandsOut,
@@ -10391,33 +10689,6 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
                           stats.opCounts[kOpEndDl],
                           stats.noopDisplayLists, stats.missingDisplayLists,
                           stats.badDisplayLists, stats.skippedDataCommands);
-            /* [traffic] wide-cache traffic on the same cadence: how many narrow lists hit the
-               cache outright, were revalidated after a benign global DMA-generation bump, or
-               really rebuilt (with the total commands those rebuilds re-walked). reval>>rb is
-               the fix working; rb ~= lists was the pre-fix per-frame rebuild storm. */
-            const gdx::GfxWideCache::Stats wideStats = gWideCache.DrainStats();
-            gdx_port_logf("[wide] hit=%u reval=%u rb=%u build=%u rbCmds=%u cached=%zu\n",
-                          wideStats.hits, wideStats.revalidated, wideStats.rebuilds,
-                          wideStats.builds, wideStats.rebuiltCmds, gWideCache.CachedCount());
-            /* [bcache-census] window totals (64 race frames) of walked commands/lists by
-               source class; static share = cmds_static / (cmds_static + cmds_hostbuilt). */
-            gdx_port_logf("[bcache-census] cmds_hostbuilt=%zu cmds_static=%zu "
-                          "lists_hostbuilt=%zu lists_static=%zu | tables host=%zu raw=%zu n64cmd=%zu "
-                          "wide=%zu ek=%zu assets=%zu texcopies=%zu native=%zu\n",
-                          gGdxBcCensus.cmdsHostBuilt, gGdxBcCensus.cmdsStatic,
-                          gGdxBcCensus.listsHostBuilt, gGdxBcCensus.listsStatic,
-                          gHostRanges.size(), gRawN64Ranges.size(), gHostN64CommandRanges.size(),
-                          gHostWideCommandRanges.size(), gN64AddressRanges.size(),
-                          gLoadedAssetSegments.size(), gRawTextureCopies.size(),
-                          gNativeRgba16Ranges.size());
-            gGdxBcCensus = GdxBcCensus{};
-            /* [brfast] memo receipt: tables version (bumps at every asset/range append and
-               segment write), resolve/stub memo hit/miss, range-class misses, snapshots. */
-            gdx_port_logf("[brfast] on=%d ver=%u resolve=%u/%u stub=%u/%u class_miss=%u gen=%u\n",
-                          GdxBrFastOn() ? 1 : 0, gGdxResolveTablesVersion, gGdxBrFastStat[0],
-                          gGdxBrFastStat[1], gGdxBrFastStat[2], gGdxBrFastStat[3],
-                          gGdxBrFastStat[4], gGdxBrFastStat[5]);
-            memset(gGdxBrFastStat, 0, sizeof(gGdxBrFastStat));
 #ifdef __3DS__
             /* [tri2] per-phase census of GfxSpTri1 (LOCKED-60 Task C), ms are PER-FRAME over
                the 64-frame window, exclusive of DRW/IMP/nested-TRI children. Counters are
@@ -10496,53 +10767,6 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
                               (double)gdx_tmem2_ph_ticks[7] * usPerTick / 1000.0 / 64.0);
                 memset(gdx_tmem2_stat, 0, sizeof(uint32_t) * 16);
                 memset(gdx_tmem2_ph_ticks, 0, sizeof(uint64_t) * 8);
-            }
-            /* [brop] top bridge-walk opcodes by accumulated wall ticks since the last emit
-               (64 race frames): where [prof] br actually goes. ms figures are WINDOW TOTALS
-               (divide by 64 for per-frame). enq = EnqueueList total (per-list slice, overlaps
-               the G_DL bucket). Diagnostic, strip later. */
-            if (GdxBrOpGateOn()) {
-                const double kTicksPerMs = 268123.480;
-                int top[6] = { -1, -1, -1, -1, -1, -1 };
-                for (int o = 0; o < 256; o++) {
-                    if (gGdxBrOpCalls[o] == 0) continue;
-                    for (int s = 0; s < 6; s++) {
-                        if (top[s] < 0 || gGdxBrOpTicks[o] > gGdxBrOpTicks[top[s]]) {
-                            for (int m = 5; m > s; m--) top[m] = top[m - 1];
-                            top[s] = o;
-                            break;
-                        }
-                    }
-                }
-                char line[512];
-                int len = snprintf(line, sizeof(line), "[brop] enq=%.2f/%u top:",
-                                   (double)gGdxBrEnqTicks / kTicksPerMs, gGdxBrEnqCalls);
-                for (int s = 0; s < 6 && top[s] >= 0; s++) {
-                    len += snprintf(line + len, sizeof(line) - (size_t)len, " %02X=%.2f/%u",
-                                    top[s], (double)gGdxBrOpTicks[top[s]] / kTicksPerMs,
-                                    gGdxBrOpCalls[top[s]]);
-                }
-                len += snprintf(line + len, sizeof(line) - (size_t)len,
-                                " | fd xl=%.2f key=%.2f copy=%.2f | de src=%.2f val=%.2f"
-                                " | fdb o2r=%u pack=%u nat=%u host=%u raw=%u"
-                                " | facts cls=%.2f/%u kl=%.2f/%u scan=%.2f/%u",
-                                (double)gGdxFdTicks[0] / kTicksPerMs, (double)gGdxFdTicks[1] / kTicksPerMs,
-                                (double)gGdxFdTicks[2] / kTicksPerMs, (double)gGdxDeTicks[0] / kTicksPerMs,
-                                (double)gGdxDeTicks[1] / kTicksPerMs, gGdxFdBranch[0], gGdxFdBranch[1],
-                                gGdxFdBranch[2], gGdxFdBranch[3], gGdxFdBranch[4],
-                                (double)gGdxFactsTicks[0] / kTicksPerMs, gGdxFactsCalls[0],
-                                (double)gGdxFactsTicks[1] / kTicksPerMs, gGdxFactsCalls[1],
-                                (double)gGdxFactsTicks[2] / kTicksPerMs, gGdxFactsCalls[2]);
-                memset(gGdxFactsTicks, 0, sizeof(gGdxFactsTicks));
-                memset(gGdxFactsCalls, 0, sizeof(gGdxFactsCalls));
-                memset(gGdxFdBranch, 0, sizeof(gGdxFdBranch));
-                memset(gGdxFdTicks, 0, sizeof(gGdxFdTicks));
-                memset(gGdxDeTicks, 0, sizeof(gGdxDeTicks));
-                gdx_port_logf("%s\n", line);
-                memset(gGdxBrOpTicks, 0, sizeof(gGdxBrOpTicks));
-                memset(gGdxBrOpCalls, 0, sizeof(gGdxBrOpCalls));
-                gGdxBrEnqTicks = 0;
-                gGdxBrEnqCalls = 0;
             }
 #endif
         }
@@ -10717,16 +10941,7 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
     /* Cache eviction stays BEFORE Run so an in-place content refresh takes
        effect on the frame that produced it (LUS re-imports from the updated
        copy). The retired BUFFERS are freed after Run instead — see below. */
-    if (!gPendingTextureCacheDeletes.empty()) {
-        std::sort(gPendingTextureCacheDeletes.begin(), gPendingTextureCacheDeletes.end());
-        gPendingTextureCacheDeletes.erase(
-            std::unique(gPendingTextureCacheDeletes.begin(), gPendingTextureCacheDeletes.end()),
-            gPendingTextureCacheDeletes.end());
-        for (uintptr_t ptr : gPendingTextureCacheDeletes) {
-            interp->TextureCacheDelete(reinterpret_cast<const uint8_t*>(ptr));
-        }
-        gPendingTextureCacheDeletes.clear();
-    }
+    GdxDrainTextureCacheRequests(interp.get()); /* queued clear + deletes, render thread */
 
     interp->ResetGeometryDiagnostics();
 
@@ -11396,24 +11611,8 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
        that frame.  Otherwise clearing in Transition_Draw breaks the final
        strip/wipe; never clearing lets the reused arena address misclassify
        ordinary menu textures on subsequent frames. */
-    if (!gPendingNativeRgba16RangeClears.empty()) {
-        ++gNativeRgba16Generation; // range set mutates below: invalidate the compare skip
-        std::sort(gPendingNativeRgba16RangeClears.begin(), gPendingNativeRgba16RangeClears.end());
-        gPendingNativeRgba16RangeClears.erase(
-            std::unique(gPendingNativeRgba16RangeClears.begin(), gPendingNativeRgba16RangeClears.end()),
-            gPendingNativeRgba16RangeClears.end());
-        for (uintptr_t begin : gPendingNativeRgba16RangeClears) {
-            gNativeRgba16Ranges.erase(
-                std::remove_if(gNativeRgba16Ranges.begin(), gNativeRgba16Ranges.end(),
-                               [begin](const HostRange& range) { return range.begin == begin; }),
-                gNativeRgba16Ranges.end());
-            if (gDiagTransitionCaptureBegin == begin) {
-                gDiagTransitionCaptureBegin = 0;
-                gDiagTransitionCaptureSize = 0;
-            }
-        }
-        gPendingNativeRgba16RangeClears.clear();
-    }
+    /* Native-RGBA16 range retirement and the persistent-copy frees happen at the job's RELEASE
+       (GdxGfxJobRelease): after Run consumed the frame, on the thread that owns the walk. */
 
     /* Retired-buffer FREE happens AFTER Run: a texture copy that
        resizes during this frame's ProcessList moves its old buffer into
@@ -11423,8 +11622,6 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
        frame per resize (MSVC debug heap 0xDD fill). Freeing after the frame
        has drawn is always safe: the next frame re-translates and re-imports
        from the live copies. */
-    gPersistentAllocations.clear();
-
     // Transition snapshot mirror: with a DX11 flip-model swapchain the
     // backbuffer contents are undefined after present, so
     // gdx_read_current_framebuffer cannot read last frame's pixels out of
@@ -11708,6 +11905,100 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
     gdx_perf_sub_end(GDX_PERF_SUB_FBMIRROR);
     gdx_perf_sub_end(GDX_PERF_SUB_POST);
     gdxPostTimerOpen = false;
+}
+
+/* Stage 3 -- release, on the walking thread after the render completed: retire the deferred
+   native-RGBA16 ranges, free the persistent copies the converted stream referenced, recycle the
+   adapter's ConvertedLists into the (single-thread) pool. */
+static void GdxGfxJobRelease(GdxGfxJob& job) {
+    /* Transition_Draw releases its back-arena capture after emitting the last
+       textured frame, but conversion and sampling happen in the task built after it.
+       Retire native-RGBA16 ownership only after Run has consumed that frame.
+       Otherwise clearing in Transition_Draw breaks the final strip/wipe; never
+       clearing lets the reused arena address misclassify ordinary menu textures on
+       subsequent frames. */
+    if (!job.nativeClears.empty()) {
+        ++gNativeRgba16Generation; // range set mutates below: invalidate the compare skip
+        std::sort(job.nativeClears.begin(), job.nativeClears.end());
+        job.nativeClears.erase(
+            std::unique(job.nativeClears.begin(), job.nativeClears.end()),
+            job.nativeClears.end());
+        for (uintptr_t begin : job.nativeClears) {
+            gNativeRgba16Ranges.erase(
+                std::remove_if(gNativeRgba16Ranges.begin(), gNativeRgba16Ranges.end(),
+                               [begin](const HostRange& range) { return range.begin == begin; }),
+                gNativeRgba16Ranges.end());
+            if (gDiagTransitionCaptureBegin == begin) {
+                gDiagTransitionCaptureBegin = 0;
+                gDiagTransitionCaptureSize = 0;
+            }
+        }
+        job.nativeClears.clear();
+    }
+    /* Retired-buffer FREE happens AFTER Run: a texture copy that resizes during this
+       task's ProcessList moves its old buffer here, but the converted command stream
+       may still carry that old buffer's pointer as a texture source (MSVC debug heap
+       0xDD fill was the symptom of freeing before Run). */
+    job.allocations.clear();
+    job.adapter.reset();
+}
+
+extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
+    GdxGfxJob job;
+    job.dl = dl;
+    job.dlSize = dl_size;
+    job.ucode = taskUcode;
+    if (GdxGfxJobPrepare(job)) {
+        GdxGfxJobRun(job);
+    } else {
+        gdx_perf_sub_end(GDX_PERF_SUB_GFXRUN);
+    }
+    GdxGfxJobRelease(job);
+}
+
+/* BRIDGE-ON-MAIN entry points (port/3ds/gdx3ds_renderthread.cpp). prepare: submitting thread,
+   with the walk resolving against the job's private snapshot of the live segment table (the
+   same view the render thread installs for run and the join merges back). */
+extern "C" GdxGfxJob* gdx_gfx_job_prepare(void* dl, size_t dlSize, GdxTaskUcode taskUcode) {
+    GdxGfxJob* job = new GdxGfxJob;
+    job->dl = dl;
+    job->dlSize = dlSize;
+    job->ucode = taskUcode;
+    job->split = true;
+    memcpy(job->segs, gGdxGameSegments, sizeof(job->segs)); /* game fiber context: quiescent */
+    uintptr_t* const prevView = tGdxSegView;
+    tGdxSegView = job->segs;
+    const bool ok = GdxGfxJobPrepare(*job);
+    tGdxSegView = prevView;
+    if (!ok) {
+        gdx_perf_sub_end(GDX_PERF_SUB_GFXRUN);
+        job->converted = nullptr;
+    }
+    return job;
+}
+
+extern "C" void gdx_gfx_job_run(GdxGfxJob* job) {
+    if (job != nullptr) {
+        GdxGfxJobRun(*job);
+    }
+}
+
+extern "C" uintptr_t* gdx_gfx_job_segments(GdxGfxJob* job) {
+    return job != nullptr ? job->segs : nullptr;
+}
+
+/* 1 when releasing this job mutates walk-visible tables (deferred native-RGBA16 retirements):
+   the submitter must then wait for its render and release it BEFORE walking the next task, so
+   the next walk classifies textures exactly as the sequential path would. Transition frames only. */
+extern "C" int gdx_gfx_job_release_before_walk(const GdxGfxJob* job) {
+    return (job != nullptr && !job->nativeClears.empty()) ? 1 : 0;
+}
+
+extern "C" void gdx_gfx_job_release(GdxGfxJob* job) {
+    if (job != nullptr) {
+        GdxGfxJobRelease(*job);
+        delete job;
+    }
 }
 
 /* Instrumentation: log what the transition readback actually

@@ -19,6 +19,19 @@ void gdx_gfx_run(void* dl, size_t dlSize, GdxTaskUcode taskUcode);
    game array) and the host-side merge of walk-time zero-slot claims at the join. */
 void gdx_gfx_segment_view_set(uintptr_t* view);
 int gdx_gfx_segment_claims_merge(const uintptr_t* view);
+/* BRIDGE ON MAIN (3DS render thread, `[debug] bridgemain`): gdx_gfx_run split in three.
+   prepare (submitting thread): SETUP + the bridge walk against a private snapshot of the live
+   segment table; run (render thread, with gdx_gfx_segment_view_set(gdx_gfx_job_segments(job))
+   installed): interpreter + draws; release (submitting thread, after the render completed):
+   ConvertedList recycle, persistent-copy frees, native-RGBA16 retirements. release_before_walk
+   = 1 when the release mutates tables the next walk reads (retirements pending): the submitter
+   waits for that render and releases BEFORE preparing the next task. */
+typedef struct GdxGfxJob GdxGfxJob;
+GdxGfxJob* gdx_gfx_job_prepare(void* dl, size_t dlSize, GdxTaskUcode taskUcode);
+void gdx_gfx_job_run(GdxGfxJob* job);
+uintptr_t* gdx_gfx_job_segments(GdxGfxJob* job);
+int gdx_gfx_job_release_before_walk(const GdxGfxJob* job);
+void gdx_gfx_job_release(GdxGfxJob* job);
 void gdx_register_n64_framebuffer(void* cpuAddr, unsigned int width, unsigned int height);
 void gdx_vi_set_next_framebuffer(void* cpuAddr);
 void gdx_vi_set_current_framebuffer(void* cpuAddr);

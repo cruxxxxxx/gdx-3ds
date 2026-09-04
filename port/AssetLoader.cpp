@@ -40,7 +40,15 @@ extern "C" void* GDiffuser_LoadAsset(const char* key) {
     return rm->GetResourceRawPointer(key);
 }
 
+#if defined(GDX_PLATFORM_3DS)
+extern "C" void gdx3ds_rt_fence_dma(void) __attribute__((weak)); /* port/3ds/gdx3ds_renderthread.cpp */
+#endif
 extern "C" int GDiffuser_LoadAssetBytes(const char* key, void* out, size_t outSize, size_t* copiedSize) {
+#if defined(GDX_PLATFORM_3DS)
+    if (&gdx3ds_rt_fence_dma != nullptr) {
+        gdx3ds_rt_fence_dma(); /* RENDER THREAD (ahead): the copy targets game memory */
+    }
+#endif
     if ((key == nullptr) || (out == nullptr) || (outSize == 0)) {
         return 0;
     }

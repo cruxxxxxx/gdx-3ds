@@ -397,6 +397,10 @@ extern void func_80077D44(void);
    cache so the next upload re-decodes from CPU memory. Same extern approach as
    port/gdx_workshop.cpp's hot-reload caller. */
 extern void gfx_texture_cache_clear(void);
+/* RENDER THREAD: n64_gfx_bridge.cpp defers the clear to the render thread when it owns the
+   cache (a direct TextureCacheClear from the game thread raced core 2's LRU splice: the
+   round-4 hardware data abort in TextureCacheLookup). */
+extern void gdx_texcache_request_clear(void);
 #endif
 
 void gdx_rdram_mode_reset(void) {
@@ -425,7 +429,7 @@ void gdx_rdram_mode_reset(void) {
        because this branch runs only after the baseline call above — i.e. on a real mode
        transition, by which point the renderer is live. A C TU cannot null-check the C++
        interpreter instance, so that call-site timing IS the guard. */
-    gfx_texture_cache_clear();
+    gdx_texcache_request_clear();
 #endif
 }
 

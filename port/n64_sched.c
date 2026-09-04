@@ -1182,7 +1182,18 @@ void osSpTaskStartGo(OSTask* tp) {
         }
     }
 #endif
+#if defined(GDX_PLATFORM_3DS)
+    {
+        /* DYNLOD: inline path (render thread off) — same per-task wall signal. */
+        extern void gdx3ds_dynlod_task_begin(void);
+        extern void gdx3ds_dynlod_task_end(void);
+        gdx3ds_dynlod_task_begin();
+        gdx_gfx_run(tp->t.data_ptr, tp->t.data_size, taskUcode);
+        gdx3ds_dynlod_task_end();
+    }
+#else
     gdx_gfx_run(tp->t.data_ptr, tp->t.data_size, taskUcode);                           /* synchronous Fast3D Run() */
+#endif
     if (gdx_diag_verbose()) {
         gdx_port_logf("[sched] osSpTaskStartGo: gdx_gfx_run done\n");
     }

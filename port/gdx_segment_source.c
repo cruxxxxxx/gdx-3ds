@@ -292,6 +292,15 @@ static int seg_ensure_loaded(GdxSegFamilySlot* slot) {
 }
 
 int GdxSegmentSourceRead(uint32_t romBase, uint32_t size, void* dst) {
+#if defined(GDX_PLATFORM_3DS)
+    /* RENDER THREAD (ahead mode): the destination may be read by the in-flight walk. */
+    {
+        extern void gdx3ds_rt_fence_dma(void) __attribute__((weak));
+        if (&gdx3ds_rt_fence_dma != NULL) {
+            gdx3ds_rt_fence_dma();
+        }
+    }
+#endif
     const GdxSegmentBlobEntry* entry;
     const unsigned char* src = NULL;
 
