@@ -14,7 +14,7 @@ def build(D):
         (esc(D["final_cap"]), "of frames at the 60 cap (from 14% one week earlier)", True),
         (esc(D["active_days"]), "active days across 24 calendar days, three credit pauses", False),
         (esc(D["tokens_total_h"]), "tokens across all sessions and agents", False),
-        (esc(D["cost_a_h"]), "at published API list prices (Fable $10/$50 per MTok); see Cost", False),
+        (esc(D["cost_b_h"]), "at published API list prices (Fable $10/$50 per MTok, 1-hour cache writes); see Cost", False),
         (esc(D["commits_3ds"]), "commits touching the 3DS port", False),
         (esc(D["loc_port3ds"]), "lines under port/3ds plus " + D["patches"] + " pure-delta patches", False),
     ]))
