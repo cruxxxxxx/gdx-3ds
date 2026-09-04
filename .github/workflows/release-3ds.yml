@@ -66,38 +66,38 @@ jobs:
 
   console:
     name: 3DS build
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
+    container: devkitpro/devkitarm:latest
     steps:
-      - name: devkitPro (3ds-dev) and host packages
+      - name: Host packages
         run: |
-          set -e
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cmake build-essential python3 python3-yaml python3-pil curl unzip >/dev/null
-          curl -sSL -o install-devkitpro-pacman https://apt.devkitpro.org/install-devkitpro-pacman
-          chmod +x install-devkitpro-pacman && sudo ./install-devkitpro-pacman >/dev/null
-          sudo dkp-pacman -S --noconfirm --needed 3ds-dev >/dev/null
-          echo "DEVKITPRO=/opt/devkitpro" >> "$GITHUB_ENV"
-          echo "DEVKITARM=/opt/devkitpro/devkitARM" >> "$GITHUB_ENV"
-          echo "/opt/devkitpro/tools/bin" >> "$GITHUB_PATH"
-          cmake --version | head -1; ls /opt/devkitpro/cmake/3DS.cmake
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git cmake build-essential python3 python3-yaml python3-pil curl ca-certificates >/dev/null
+          git config --global --add safe.directory '*'
+          cmake --version | head -1
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: makerom + bannertool
+      - name: makerom + bannertool (built from source; the prebuilt Linux binaries need a newer glibc than this image)
         run: |
           set -e
-          mkdir -p tools/3ds-bin && cd tools/3ds-bin
-          curl -sSL -o makerom.zip https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.19.0/makerom-v0.19.0-ubuntu_x86_64.zip
-          unzip -o -q makerom.zip && rm makerom.zip
-          curl -sSL -o bannertool.tar.gz https://github.com/carstene1ns/3ds-bannertool/releases/download/1.2.3/bannertool-1.2.3-linux.tar.gz
-          tar xzf bannertool.tar.gz && rm bannertool.tar.gz
-          find . -mindepth 2 -type f \( -name makerom -o -name bannertool \) -exec mv -f {} . \;
-          chmod +x makerom bannertool && ls -la
-          ./makerom -help >/dev/null 2>&1 || true; ./bannertool >/dev/null 2>&1 || true
+          mkdir -p tools/3ds-bin
+          git clone -q --depth 1 --branch makerom-v0.19.0 https://github.com/3DSGuy/Project_CTR.git /tmp/ctr
+          make -s -C /tmp/ctr/makerom deps >/dev/null && make -s -C /tmp/ctr/makerom -j4 >/dev/null
+          cp /tmp/ctr/makerom/bin/makerom tools/3ds-bin/
+          curl -sSL -o /tmp/bt.tar.gz https://github.com/carstene1ns/3ds-bannertool/releases/download/1.2.3/bannertool-1.2.3.tar.gz
+          mkdir -p /tmp/bt && tar xzf /tmp/bt.tar.gz -C /tmp/bt --strip-components=1
+          cmake -S /tmp/bt -B /tmp/bt/build -DCMAKE_BUILD_TYPE=Release >/dev/null && cmake --build /tmp/bt/build --parallel 4 >/dev/null
+          cp "$(find /tmp/bt/build -type f -name bannertool | head -1)" tools/3ds-bin/
+          chmod +x tools/3ds-bin/makerom tools/3ds-bin/bannertool && ls -la tools/3ds-bin
+          tools/3ds-bin/makerom -help >/dev/null 2>&1 || true; tools/3ds-bin/bannertool >/dev/null 2>&1 || true
       - name: Patches, host tests, 3DS build
-        run: tools/ci-3ds.sh --jobs 4
+        run: |
+          export DEVKITPRO=/opt/devkitpro
+          tools/ci-3ds.sh --jobs 4
       - name: .cia
         run: |
+          export DEVKITPRO=/opt/devkitpro
           export PATH="$PWD/tools/3ds-bin:$PATH"
           cmake -S . -B build-3ds -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/3DS.cmake -DGDX_PLATFORM_3DS=ON -DCMAKE_BUILD_TYPE=Release >/dev/null
           cmake --build build-3ds --target G-Diffuser-3DS-cia --parallel 4
