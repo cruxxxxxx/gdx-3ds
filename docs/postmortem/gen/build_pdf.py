@@ -20,6 +20,7 @@ a { color:inherit; }
 .media { grid-template-columns:repeat(2,1fr); }
 .media.four { grid-template-columns:repeat(2,1fr); }
 .media figure { break-inside:avoid; }
+.media a.open { display:none; }
 """
 parts = []
 for f, title, sub in PAGES:

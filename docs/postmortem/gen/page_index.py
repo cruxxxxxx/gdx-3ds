@@ -21,16 +21,16 @@ def build(D):
 
     b.append('<h2>On hardware</h2>')
     b.append('<div class="media">'
-             '<figure class="vid"><video autoplay muted loop playsinline preload="metadata" poster="../media/gameplay-race-poster.jpg" src="../media/gameplay-race.mp4"></video>'
+             '<figure class="vid"><video autoplay muted loop playsinline preload="metadata" poster="../media/gameplay-race-poster.jpg" src="../media/gameplay-race.mp4"></video><a class="open" href="../media/gameplay-race.mp4" target="_blank" rel="noopener">open clip</a>'
              '<figcaption>Grand Prix on a New 3DS, final build. The bottom screen is the port\'s debug menu: 59.8 fps, heap, build id.</figcaption></figure>'
-             '<figure class="vid"><video autoplay muted loop playsinline preload="metadata" poster="../media/gameplay-handheld-poster.jpg" src="../media/gameplay-handheld.mp4"></video>'
+             '<figure class="vid"><video autoplay muted loop playsinline preload="metadata" poster="../media/gameplay-handheld-poster.jpg" src="../media/gameplay-handheld.mp4"></video><a class="open" href="../media/gameplay-handheld.mp4" target="_blank" rel="noopener">open clip</a>'
              '<figcaption>Handheld, mid-race. Native 60 Hz pacing; no interpolation.</figcaption></figure>'
              '</div>')
     b.append('<div class="media four">'
-             '<figure><img src="../media/title.jpg" alt="F-Zero X title screen on the New 3DS" loading="lazy"><figcaption>Title screen, .cia launched from HOME.</figcaption></figure>'
-             '<figure><img src="../media/menu.jpg" alt="Select Mode screen" loading="lazy"><figcaption>Select Mode.</figcaption></figure>'
-             '<figure><img src="../media/character1.jpg" alt="Select Machine screen" loading="lazy"><figcaption>Select Machine.</figcaption></figure>'
-             '<figure><img src="../media/character2.jpg" alt="Blue Falcon stats" loading="lazy"><figcaption>Blue Falcon.</figcaption></figure>'
+             '<figure><a href="../media/title.jpg" target="_blank" rel="noopener"><img src="../media/title.jpg" alt="F-Zero X title screen on the New 3DS" loading="lazy"></a><figcaption>Title screen, launched from the Homebrew Launcher (.3dsx).</figcaption></figure>'
+             '<figure><a href="../media/menu.jpg" target="_blank" rel="noopener"><img src="../media/menu.jpg" alt="Select Mode screen" loading="lazy"></a><figcaption>Select Mode.</figcaption></figure>'
+             '<figure><a href="../media/character1.jpg" target="_blank" rel="noopener"><img src="../media/character1.jpg" alt="Select Machine screen" loading="lazy"></a><figcaption>Select Machine.</figcaption></figure>'
+             '<figure><a href="../media/character2.jpg" target="_blank" rel="noopener"><img src="../media/character2.jpg" alt="Blue Falcon stats" loading="lazy"></a><figcaption>Blue Falcon.</figcaption></figure>'
              '</div>')
     b.append('<h2>What was built</h2>')
     b.append('<p>A New 3DS build of G-Diffuser that boots from the HOME menu (.cia) or the homebrew launcher (.3dsx), '

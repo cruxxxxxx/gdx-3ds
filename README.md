@@ -16,12 +16,12 @@ built on the G-Diffuser PC port. Runs natively on console hardware with stereosc
 
 <table>
   <tr>
-    <td><img src="docs/media/title.jpg" alt="F-Zero X title screen on the New 3DS, debug menu on the bottom screen"></td>
-    <td><img src="docs/media/menu.jpg" alt="Select Mode screen on the New 3DS"></td>
+    <td><a href="docs/media/title.jpg"><img src="docs/media/title.jpg" alt="F-Zero X title screen on the New 3DS, debug menu on the bottom screen"></a></td>
+    <td><a href="docs/media/menu.jpg"><img src="docs/media/menu.jpg" alt="Select Mode screen on the New 3DS"></a></td>
   </tr>
   <tr>
-    <td><img src="docs/media/character1.jpg" alt="Select Machine screen on the New 3DS"></td>
-    <td><img src="docs/media/character2.jpg" alt="Blue Falcon machine stats on the New 3DS"></td>
+    <td><a href="docs/media/character1.jpg"><img src="docs/media/character1.jpg" alt="Select Machine screen on the New 3DS"></a></td>
+    <td><a href="docs/media/character2.jpg"><img src="docs/media/character2.jpg" alt="Blue Falcon machine stats on the New 3DS"></a></td>
   </tr>
 </table>
 
