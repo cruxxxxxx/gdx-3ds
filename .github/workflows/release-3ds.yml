@@ -82,16 +82,12 @@ jobs:
         run: |
           set -e
           mkdir -p tools/3ds-bin && cd tools/3ds-bin
-          pick() {
-            curl -sSL "https://api.github.com/repos/$1/releases?per_page=10" \
-              | python3 -c "import sys,json,re; rx=re.compile(sys.argv[1]); print(next(a['browser_download_url'] for r in json.load(sys.stdin) for a in r['assets'] if rx.search(a['name'])))" "$2"
-          }
-          curl -sSL -o makerom.zip "$(pick 3DSGuy/Project_CTR 'makerom.*(ubuntu|linux).*x86_64.*\.zip$')"
+          curl -sSL -o makerom.zip https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.19.0/makerom-v0.19.0-ubuntu_x86_64.zip
           unzip -o -q makerom.zip && rm makerom.zip
-          curl -sSL -o bannertool.zip "$(pick carstene1ns/3ds-bannertool '(linux|ubuntu).*\.zip$|bannertool.*\.zip$')"
-          unzip -o -q bannertool.zip && rm bannertool.zip
-          find . -type f \( -name makerom -o -name bannertool \) -exec mv {} . \; 2>/dev/null || true
-          chmod +x makerom bannertool && ls -la
+          curl -sSL -o bannertool.tar.gz https://github.com/carstene1ns/3ds-bannertool/releases/download/1.2.3/bannertool-1.2.3-linux.tar.gz
+          tar xzf bannertool.tar.gz && rm bannertool.tar.gz
+          find . -mindepth 2 -type f \( -name makerom -o -name bannertool \) -exec mv -f {} . \;
+          chmod +x makerom bannertool && ls -la && ./makerom -help >/dev/null 2>&1 || true
       - name: Patches, host tests, 3DS build
         run: |
           export DEVKITPRO=/opt/devkitpro
