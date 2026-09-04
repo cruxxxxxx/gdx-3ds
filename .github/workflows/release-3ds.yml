@@ -1,0 +1,139 @@
+name: Release (3DS)
+
+# Builds everything a player needs without a compiler:
+#   * gdx-extract, the PC-side asset extractor tools/prebake drives, for Windows, macOS and Linux;
+#   * the console artifacts (.3dsx, .cia, .elf) from a clean checkout via tools/ci-3ds.sh.
+# On a tag push (v*) or a manual run with a tag, the files are attached to that GitHub Release.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to attach the artifacts to (blank = artifacts only)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  extractor:
+    name: gdx-extract (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2022, name: windows-x64,   exe: gdx-extract.exe }
+          - { os: macos-14,     name: macos-arm64,   exe: gdx-extract }
+          - { os: macos-13,     name: macos-x86_64,  exe: gdx-extract }
+          - { os: ubuntu-22.04, name: linux-x64,     exe: gdx-extract }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the Torch submodule only
+        run: git submodule update --init --depth 1 torch
+      - name: Configure
+        run: >
+          cmake -S torch -B build-extract
+          -DUSE_STANDALONE=ON -DBUILD_STORMLIB=OFF -DGDX_DETERMINISTIC=ON
+          -DGDX_OUTPUT_NAME=gdx-extract -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
+      - name: Build
+        run: cmake --build build-extract --config Release --parallel 4
+      - name: Install
+        run: cmake --install build-extract --config Release --prefix build-extract/install
+      - name: Package
+        shell: bash
+        run: |
+          set -e
+          mkdir -p pkg
+          cp "build-extract/install/bin/${{ matrix.exe }}" pkg/
+          cat > pkg/README.txt <<'TXT'
+          gdx-extract: the PC-side asset extractor for the G-Diffuser 3DS port.
+          Use it with tools/prebake/prebake.py from the repository:
+            python3 tools/prebake/prebake.py --rom <your F-Zero X US rev0 .z64> --extractor <path to this binary>
+          It reads your own cartridge dump and writes fzerox.o2r / gdiffuser.o2r under dist/sdmc/.
+          No game data is included here.
+          TXT
+          cd pkg && (command -v zip >/dev/null && zip -q -r "../gdx-extract-${{ matrix.name }}.zip" . || 7z a -bd "../gdx-extract-${{ matrix.name }}.zip" .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gdx-extract-${{ matrix.name }}
+          path: gdx-extract-${{ matrix.name }}.zip
+          if-no-files-found: error
+
+  console:
+    name: 3DS build
+    runs-on: ubuntu-22.04
+    container: devkitpro/devkitarm:latest
+    steps:
+      - name: Host packages
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git cmake build-essential python3 python3-yaml python3-pil curl unzip ca-certificates >/dev/null
+          git config --global --add safe.directory '*'
+          cmake --version | head -1
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: makerom + bannertool
+        run: |
+          set -e
+          mkdir -p tools/3ds-bin && cd tools/3ds-bin
+          pick() {
+            curl -sSL "https://api.github.com/repos/$1/releases?per_page=10" \
+              | python3 -c "import sys,json,re; rx=re.compile(sys.argv[1]); print(next(a['browser_download_url'] for r in json.load(sys.stdin) for a in r['assets'] if rx.search(a['name'])))" "$2"
+          }
+          curl -sSL -o makerom.zip "$(pick 3DSGuy/Project_CTR 'makerom.*(ubuntu|linux).*x86_64.*\.zip$')"
+          unzip -o -q makerom.zip && rm makerom.zip
+          curl -sSL -o bannertool.zip "$(pick carstene1ns/3ds-bannertool '(linux|ubuntu).*\.zip$|bannertool.*\.zip$')"
+          unzip -o -q bannertool.zip && rm bannertool.zip
+          find . -type f \( -name makerom -o -name bannertool \) -exec mv {} . \; 2>/dev/null || true
+          chmod +x makerom bannertool && ls -la
+      - name: Patches, host tests, 3DS build
+        run: |
+          export DEVKITPRO=/opt/devkitpro
+          tools/ci-3ds.sh --jobs 4
+      - name: .cia
+        run: |
+          export DEVKITPRO=/opt/devkitpro
+          export PATH="$PWD/tools/3ds-bin:$PATH"
+          cmake -S . -B build-3ds -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/3DS.cmake -DGDX_PLATFORM_3DS=ON -DCMAKE_BUILD_TYPE=Release >/dev/null
+          cmake --build build-3ds --target G-Diffuser-3DS-cia --parallel 4
+      - name: Collect
+        run: |
+          mkdir -p out
+          cp build-3ds/port/3ds/G-Diffuser-3DS.3dsx build-3ds/port/3ds/G-Diffuser-3DS.cia build-3ds/port/3ds/G-Diffuser-3DS.elf out/
+          cd out && sha256sum G-Diffuser-3DS.3dsx G-Diffuser-3DS.cia G-Diffuser-3DS.elf > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: G-Diffuser-3DS
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    name: Attach to release
+    needs: [extractor, console]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != ''
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.inputs.tag }}"; [ -n "$TAG" ] || TAG="${GITHUB_REF_NAME}"
+          ls -R artifacts
+          gh release upload "$TAG" artifacts/gdx-extract-*/gdx-extract-*.zip --clobber -R "${GITHUB_REPOSITORY}"
+          for f in artifacts/G-Diffuser-3DS/*; do
+            name=$(basename "$f")
+            if gh release view "$TAG" -R "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name' | grep -qx "$name"; then
+              echo "keep existing $name"
+            else
+              gh release upload "$TAG" "$f" -R "${GITHUB_REPOSITORY}"
+            fi
+          done
