@@ -7,6 +7,8 @@ built on the G-Diffuser PC port. Runs natively on console hardware with stereosc
 > **This is a fan-made, educational software-preservation project.**
 > See the [Legal](#legal) section before downloading or building anything.
 
+**Download:** [latest release](https://github.com/cruxxxxxx/gdx-3ds/releases/latest) (`.3dsx` for the Homebrew Launcher, `.cia` for the HOME menu). You still need your own cartridge dump, converted on your PC; see [Building & installing](#building--installing).
+
 ## On hardware
 
 <p align="center">
@@ -111,9 +113,10 @@ The full story of the port — every step from research to a native-60 stereosco
 
 ## Building & installing
 
-1. **Build the port** (or use a release artifact if one is published): devkitPro +
-   CMake, `tools/ci-3ds.sh` applies the patch stack and builds; step by step in
-   `docs/3DS-HARDWARE.md`, "Building from source".
+1. **Get the port**: download `G-Diffuser-3DS.3dsx` or `G-Diffuser-3DS.cia` from the
+   [latest release](https://github.com/cruxxxxxx/gdx-3ds/releases/latest) (checksums in
+   `SHA256SUMS`), or build it yourself: devkitPro + CMake, `tools/ci-3ds.sh` applies the
+   patch stack and builds; step by step in `docs/3DS-HARDWARE.md`, "Building from source".
 2. **Convert your game assets on your PC**: `tools/prebake` takes *your* F-Zero X
    (USA, rev 0) ROM dump and produces `fzerox.o2r` / `gdiffuser.o2r` archives (the audio
    table is stored uncompressed so boot audio starts cleanly; see `tools/prebake/README`).
