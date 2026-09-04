@@ -19,6 +19,8 @@
  *     x/y, and viewport/scissor rectangles are swapped to match.
  */
 #include "gfx_citro3d.h"
+#include <cstddef>
+extern "C" void gdx3ds_filelog_write(const char* msg, size_t len) __attribute__((weak));
 
 #include "gdx3ds_gpu_prof.h" // G-GPUPROF [gpu]/[fill] telemetry (gated: debug.gputrace)
 #include "gdx3ds_stereo.h" // stream S: stereo foundation (dual targets + per-eye loop)
@@ -67,6 +69,14 @@ static void GfxC3dLogImpl(const char* fmt, ...) {
     }
     if (len > 0) {
         svcOutputDebugString(buf, len);
+        /* RENDER THREAD: backend diagnostics ([readback]/[fbparam]/"never landed") must reach
+         * the SD filelog too -- svc is invisible on hardware and the console echo is muted on
+         * the render thread. Weak: absent in the DL harness link. */
+        /* gdx3ds_filelog_write: file-scope extern "C" weak declaration above (a block-scope C++ one
+           mangled to a distinct, always-null weak symbol). */
+        if (&gdx3ds_filelog_write != nullptr) {
+            gdx3ds_filelog_write(buf, len);
+        }
     }
 }
 
@@ -87,6 +97,7 @@ extern "C" int gGdxRaceActive __attribute__((weak));
 // distinct, unresolved weak symbol (nullptr) and silently disables the INI fallback.
 // Used by the GDX_DIAG_SKY diagnostic to read [debug] diag_sky on the 3DS, where ctru
 // getenv cannot see azahar's host environment.
+extern "C" float gdx_get_widescreen_geometry_xscale(void) __attribute__((weak));
 extern "C" int gdx3ds_config_get_int(const char* section, const char* key, int fallback)
     __attribute__((weak));
 
@@ -566,6 +577,10 @@ static unsigned long sPackedDrawCalls = 0;
 static unsigned long sAtlasEvictions = 0;     /* pages reclaimed */
 static unsigned long sAtlasEvictedViews = 0;  /* views copied out to standalone */
 static unsigned long sAtlasEvictCopyFail = 0; /* copy-outs that failed C3D_TexInit (view dropped) */
+/* [anchor] stereo-anchored draw telemetry for the [c3d] line (anchor=n/dmin/dmax per window). */
+static unsigned long sAnchorDraws = 0;
+static float sAnchorDMin = 2.0f;
+static float sAnchorDMax = -1.0f;
 static unsigned long sAtlasEvictNone = 0;     /* no safe candidate this frame (standalone fallback) */
 constexpr uint32_t kClearDepthFar = 0; // raw D24S8: far plane under the reversed map
 
@@ -1233,6 +1248,15 @@ void GfxRenderingAPIC3D::EndFrame() {
             // Stereo-only suffix: the off-state [c3d] line stays byte-identical.
             n += std::snprintf(msg + n, sizeof(msg) - n, " eyeR=%lu stereo=%d",
                                (unsigned long)mFrameDrawsRightEye, Gdx3dsStereo::Active() ? 1 : 0);
+            if (sAnchorDraws > 0 && n > 0 && n < (int)sizeof(msg)) {
+                // [anchor] prim-depth ortho draws anchored to scene depth this window: count and
+                // the NDC depth range they were pinned to (race position markers -> their ships).
+                n += std::snprintf(msg + n, sizeof(msg) - n, " anchor=%lu/%.2f/%.2f", sAnchorDraws,
+                                   (double)sAnchorDMin, (double)sAnchorDMax);
+                sAnchorDraws = 0;
+                sAnchorDMin = 2.0f;
+                sAnchorDMax = -1.0f;
+            }
         }
         if (n > 0) {
             svcOutputDebugString(msg, n);
@@ -2137,8 +2161,75 @@ uint32_t GfxRenderingAPIC3D::CurrentTargetFbHeight() const {
  * wrong horizontal side (scene 4 yellow at top-right instead of top-left). */
 
 
+static int VpFixEnabled() {
+    static int sOn = -1;
+    if (sOn < 0) {
+        sOn = gdx3ds_config_get_int("debug", "vpfix", 1); /* 0 off, 1 on, 2 = on with zero offsets (diagnostic) */
+        if (sOn < 0) { sOn = 0; }
+    }
+    return sOn;
+}
+
 void GfxRenderingAPIC3D::SetViewport(int x, int y, int width, int height) {
     const int fbH = (int)CurrentTargetFbHeight();
+    const bool texBacked = mCurrentFramebuffer >= 0 && mCurrentFramebuffer < (int)mFramebuffers.size() &&
+                           mFramebuffers[mCurrentFramebuffer].texBacked;
+    const bool inside = (x >= 0 && y >= 0 && x + width <= 400 && y + height <= 240);
+    /* [vp] telemetry (verbose gate): non-full-window viewports logged with a frame stamp,
+       only after 45 s of uptime (skips the intro), 400 lines max. */
+    {
+        static int sVpLogs = 0;
+        static u64 sVpT0 = 0;
+        if (sVpT0 == 0) { sVpT0 = osGetTime(); }
+        const bool full = (x == 0 && y == 0 && width == 400 && height == 240);
+        if (!full && sVpLogs < 400 && (osGetTime() - sVpT0) > 45000 && gdx3ds_config_get_int("debug", "verbose", 0) != 0) {
+            ++sVpLogs;
+            char line[160];
+            const int n = snprintf(line, sizeof(line), "[vp] f=%lu viewport x=%d y=%d w=%d h=%d inside=%d\n",
+                                   (unsigned long)mFrameIndex, x, y, width, height, (int)inside);
+            if (n > 0 && &gdx3ds_filelog_write != nullptr) {
+                gdx3ds_filelog_write(line, (size_t)n);
+            }
+        }
+    }
+    const bool fullWindow = (x == 0 && y == 0 && width == 400 && height == 240);
+    /* Fold EVERY non-full-window viewport (inside ones too): a sub-viewport is menu 3D anchored
+       to 2D artwork and must take the UI border treatment, which only the folded path gives. */
+    if (!fullWindow && !texBacked && VpFixEnabled() != 0 && width > 0 && height > 0) {
+        /* Fold the out-of-range rect into the projection: ndc' = ndc * s + t maps the
+         * requested viewport's NDC onto the full window's NDC, per axis. */
+        mVpAffineActive = true;
+        mVpSx = (float)width / 400.0f;
+        mVpTx = (2.0f * (float)x + (float)width - 400.0f) / 400.0f;
+        /* The interpreter compresses clip x by the hor+ factor (4:3 content in the 5:3 window)
+         * about the screen centre; the viewport's translation lives in the same compressed
+         * space, so the offset takes the same factor (1.0 when widescreen is off / fixed). */
+        if (&gdx_get_widescreen_geometry_xscale != nullptr) {
+            mVpTx *= gdx_get_widescreen_geometry_xscale();
+        }
+        mVpSy = (float)height / 240.0f;
+        mVpTy = (2.0f * (float)y + (float)height - 240.0f) / 240.0f;
+        if (VpFixEnabled() == 2) { mVpTx = 0.0f; mVpTy = 0.0f; } /* diagnostic: offsets off */
+        if (VpFixEnabled() == 3) { mVpTx = -0.5f; mVpTy = 0.0f; } /* diagnostic: probe x = 25% */
+        int vx0 = x < 0 ? 0 : x, vy0 = y < 0 ? 0 : y;
+        int vx1 = x + width > 400 ? 400 : x + width, vy1 = y + height > 240 ? 240 : y + height;
+        if (vx1 <= vx0) { vx0 = 0; vx1 = 1; }
+        if (vy1 <= vy0) { vy0 = 0; vy1 = 1; }
+        mVpVisX = vx0; mVpVisY = vy0; mVpVisW = vx1 - vx0; mVpVisH = vy1 - vy0;
+        C3D_SetViewport(0u, 0u, 240u, 400u);
+        sDispProjLast = nullptr; /* the next draw must re-upload with the affine folded in */
+        if (mScValid) {
+            ApplyScissorRect(mScX, mScY, mScW, mScH); /* re-intersect with the visible rect */
+        }
+        return;
+    }
+    if (mVpAffineActive) {
+        mVpAffineActive = false;
+        sDispProjLast = nullptr;
+        if (mScValid) {
+            ApplyScissorRect(mScX, mScY, mScW, mScH);
+        }
+    }
     int fbY = fbH - (x + width);
     if (fbY < 0) {
         fbY = 0;
@@ -2147,6 +2238,21 @@ void GfxRenderingAPIC3D::SetViewport(int x, int y, int width, int height) {
 }
 
 void GfxRenderingAPIC3D::SetScissor(int x, int y, int width, int height) {
+    mScX = x; mScY = y; mScW = width; mScH = height; mScValid = true;
+    ApplyScissorRect(x, y, width, height);
+}
+
+void GfxRenderingAPIC3D::ApplyScissorRect(int x, int y, int width, int height) {
+    if (mVpAffineActive) {
+        /* [vpfix] N64 clipping happens against the viewport rect: intersect the scissor with
+         * the rect's visible part so a full-screen GPU viewport cannot show more than the RSP. */
+        int x0 = x > mVpVisX ? x : mVpVisX, y0 = y > mVpVisY ? y : mVpVisY;
+        int x1 = (x + width) < (mVpVisX + mVpVisW) ? (x + width) : (mVpVisX + mVpVisW);
+        int y1 = (y + height) < (mVpVisY + mVpVisH) ? (y + height) : (mVpVisY + mVpVisH);
+        if (x1 <= x0) { x0 = 0; x1 = 1; }
+        if (y1 <= y0) { y0 = 0; y1 = 1; }
+        x = x0; y = y0; width = x1 - x0; height = y1 - y0;
+    }
     const int fbH = (int)CurrentTargetFbHeight();
     const bool scTexBacked = mCurrentFramebuffer >= 0 &&
                              mCurrentFramebuffer < (int)mFramebuffers.size() &&
@@ -2636,10 +2742,35 @@ void GfxRenderingAPIC3D::DrawTriangles(float bufVbo[], size_t bufVboLen, size_t 
     BufInfo_Add(bufInfo, dst, kOutStrideFloats * sizeof(float), 4, 0x3210);
     /* MENU DISP: pick this draw's projection variant (scene vs UI, see the border-mode
      * block above). Texture-backed passes and mode 0 keep the plain fixup. */
+    /* [anchor] killswitch [debug] stereo_anchor (default 1). */
+    static int sAnchorOn = -1;
+    if (sAnchorOn < 0) {
+        sAnchorOn = gdx3ds_config_get_int("debug", "stereo_anchor", 1) != 0 ? 1 : 0;
+    }
+    const bool anchoredDraw = sAnchorOn != 0 && !texBacked && prg.cc.opt_prim_depth && bufVbo[3] == 1.0f;
     const C3D_Mtx* dispBase = &mFixupMatrix;
     if (!texBacked && DispModeLatched() > 0) {
         const int dispCls = Gdx3dsStereo::ClassifyDraw(bufVbo[3] == 1.0f);
-        dispBase = (dispCls == GDX3DS_STEREO_UI_ZERO_PARALLAX) ? &sDispProjUi : &sDispProjScene;
+        dispBase = (dispCls == GDX3DS_STEREO_UI_ZERO_PARALLAX || anchoredDraw) ? &sDispProjUi : &sDispProjScene;
+    }
+    C3D_Mtx vpMtx;
+    if (mVpAffineActive && !texBacked) {
+        /* [vpfix] apply the viewport affine on the game's clip x/y BEFORE the fixup/border
+         * scale: M'[i].x = M[i].x*sx, M'[i].y = M[i].y*sy, M'[i].w += M[i].x*tx + M[i].y*ty.
+         * A folded viewport is menu 3D anchored to 2D artwork (machine grid, ship detail), so it
+         * takes the border mode's UI treatment, never the scene magnification. */
+        if (!texBacked && DispModeLatched() > 0) {
+            dispBase = &sDispProjUi;
+        }
+        vpMtx = *dispBase;
+        for (int i = 0; i < 4; i++) {
+            const float mx = dispBase->r[i].x, my = dispBase->r[i].y;
+            vpMtx.r[i].x = mx * mVpSx;
+            vpMtx.r[i].y = my * mVpSy;
+            vpMtx.r[i].w = dispBase->r[i].w + mx * mVpTx + my * mVpTy;
+        }
+        dispBase = &vpMtx;
+        sDispProjLast = nullptr; /* never dedupe against a stack temporary */
     }
     if (mStereoEnabled && Gdx3dsStereo::Active()) {
         /* Per-eye draw loop (stereo foundation): re-issue the SAME repacked VBO
@@ -2654,7 +2785,21 @@ void GfxRenderingAPIC3D::DrawTriangles(float bufVbo[], size_t bufVboLen, size_t 
         } else {
             // Stereo class: bridge override, else ortho heuristic (clip w == 1
             // on vertex 0 -> HUD/menu content at zero parallax).
-            const int cls = Gdx3dsStereo::ClassifyDraw(bufVbo[3] == 1.0f);
+            int cls = Gdx3dsStereo::ClassifyDraw(bufVbo[3] == 1.0f);
+            if (anchoredDraw) {
+                /* [anchor] a prim-depth ortho draw (race position markers: the game sets the
+                 * machine's projected depth as prim depth before each marker rect) sits at that
+                 * machine's depth instead of the screen plane. */
+                cls = GDX3DS_STEREO_ANCHORED;
+                Gdx3dsStereo::SetAnchorDepth(mCurrentPrimDepth);
+                sAnchorDraws++;
+                if (mCurrentPrimDepth < sAnchorDMin) {
+                    sAnchorDMin = mCurrentPrimDepth;
+                }
+                if (mCurrentPrimDepth > sAnchorDMax) {
+                    sAnchorDMax = mCurrentPrimDepth;
+                }
+            }
             if (cls == GDX3DS_STEREO_UI_ZERO_PARALLAX) {
                 // HUD/2D at screen depth: one center matrix for both eyes —
                 // vertex uniforms survive the raw target switch, so upload once.
@@ -2682,7 +2827,7 @@ void GfxRenderingAPIC3D::DrawTriangles(float bufVbo[], size_t bufVboLen, size_t 
     } else {
         if (dispBase != sDispProjLast) {
             C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, mProjectionUniformLoc, dispBase);
-            sDispProjLast = dispBase;
+            sDispProjLast = (dispBase == &vpMtx) ? nullptr : dispBase;
         }
         C3D_DrawArrays(GPU_TRIANGLES, 0, (int)numVerts);
     }

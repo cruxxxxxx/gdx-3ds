@@ -52,6 +52,7 @@ float sSlider = 0.0f;                     // osGet3DSliderState(), polled per fr
 float sIodPx = kDefaultIodPixels;         // far-plane parallax in px (menu-visible)
 float sSepNdc = kDefaultIodPixels / (kEyeWidth * 0.5f); // far-plane parallax, NDC-x units
 float sConvergence = kDefaultConvergence; // zero-parallax plane, NDC depth
+float sAnchorDepth = 0.5f;                // [anchor] NDC depth for GDX3DS_STEREO_ANCHORED draws
 C3D_RenderTarget* sRightTarget = nullptr; // 240x400 RGBA8+D24S8, GFX_RIGHT
 int sDrawClassOverride = -1;              // bridge tag channel; -1 = heuristic
 bool sForceEnable = false;                // harness hook (no config lib linked)
@@ -102,7 +103,7 @@ float ConfigGetFloat(const char* section, const char* key, float fallback) {
 } // namespace
 
 extern "C" void gdx3ds_stereo_set_draw_class(int stereoClass) {
-    sDrawClassOverride = (stereoClass >= GDX3DS_STEREO_SCENE && stereoClass <= GDX3DS_STEREO_SKY_DEEP)
+    sDrawClassOverride = (stereoClass >= GDX3DS_STEREO_SCENE && stereoClass <= GDX3DS_STEREO_ANCHORED)
                              ? stereoClass
                              : -1;
 }
@@ -282,11 +283,25 @@ void ComputeEyeMatrix(const C3D_Mtx* base, int eye, C3D_Mtx* out, int stereoClas
         return;
     }
     const float k = sep / (1.0f - sConvergence);
+    if (stereoClass == GDX3DS_STEREO_ANCHORED) {
+        /* [anchor] Ortho draw pinned to a world depth d (its prim depth = the machine it
+         * labels): the SAME shift a scene vertex at NDC depth d receives, as a constant per
+         * draw since ortho z carries no depth: x' = x + k·(d − dc)·w. */
+        const float shift = k * (sAnchorDepth - sConvergence);
+        for (int i = 0; i < 4; i++) {
+            out->r[i].w += shift * base->r[i].x;
+        }
+        return;
+    }
     for (int i = 0; i < 4; i++) {
         const float bx = base->r[i].x;
         out->r[i].z += k * bx;
         out->r[i].w -= k * sConvergence * bx;
     }
+}
+
+void SetAnchorDepth(float d) {
+    sAnchorDepth = d < 0.0f ? 0.0f : (d > 1.0f ? 1.0f : d);
 }
 
 int ClassifyDraw(bool orthoDraw) {

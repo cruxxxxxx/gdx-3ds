@@ -44,6 +44,7 @@ git -C libultraship apply ../port/3ds/patches/lus-trifast-tri-memo-pack.patch
 git -C libultraship apply ../port/3ds/patches/lus-tmem2-tmemfast.patch
 git -C libultraship apply ../port/3ds/patches/lus-trect-census.patch
 git -C libultraship apply ../port/3ds/patches/lus-trectbatch-atlas.patch
+git -C libultraship apply ../port/3ds/patches/lus-renderthread-texcache-owner.patch
 git -C decomp       apply ../port/3ds/patches/decomp-ilp32.patch
 git -C decomp       apply ../port/3ds/patches/decomp-port-segment-bzero.patch
 git -C decomp       apply ../port/3ds/patches/decomp-3ds-dma-low-address.patch
@@ -1105,3 +1106,9 @@ adds the view offset AFTER the clamp (legacy expression kept verbatim when the b
 view). Receipts on the [trect2] line: tb=on/merged/switched/bypassed/armed vt=<non-rect
 draws that resolved to a view, diagnostic> atlas=placed/full/pages/resets. Killswitch
 [debug] trectbatch=0 (env GDX_TRECTBATCH_OFF): byte-identical legacy order, no arming.
+
+## lus-renderthread-texcache-owner.patch (round 4, feat/3ds-balance)
+Weak hook `gdx3ds_texcache_note_thread(kind)` at the top of Interpreter::TextureCacheClear /
+Lookup / Delete / DeletePalette (3DS only). port/3ds/gdx3ds_renderthread.cpp counts calls that
+reach the cache from any thread but the render thread while it owns the cache and reports
+`[rt] ... texcacheMainMut=` (must stay 0). Pure delta on the full stack; no behavior change.

@@ -16,6 +16,7 @@
  * second scan per frame would eat the game's key-down edges).
  */
 #include "gdx3ds_menu.h"
+#include "gdx3ds_dynlod.h"
 #include "gdx3ds_fps_hud.h"
 #include "gdx3ds_filelog.h"
 
@@ -38,6 +39,7 @@ extern int gdx3ds_audio_get_master_volume(void);
 extern void gdx3ds_audio_set_diag(int on);
 extern int gdx3ds_audio_get_diag(void);
 extern int gdx3ds_stereo_runtime_enabled(void);
+extern void gdx3ds_heapwatch_stats(unsigned long* usedKb, unsigned long* hwmKb, long* perMinKb, int* triggers);
 extern int gdx3ds_stereo_get_iod_px(void);
 extern void gdx3ds_stereo_set_iod_px(int px);
 extern int gdx3ds_stereo_get_conv_x100(void);
@@ -89,6 +91,8 @@ static int sWakeSwallow = 0;    /* swallow the touch that woke the screen */
 static u64 sLastPeriodicTick = 0;
 static u32 sPrevHeld = 0;
 static int sCaptureAction = -1; /* INPUT tab: action awaiting a key, -1 = none */
+static u32 sReadoutPainted = 0;  /* INPUT tab: raw pad values last painted (live readout) */
+static u64 sReadoutTick = 0;
 static int sLogSkip = 0;        /* LOG tab scroll offset (lines back from live) */
 static int sDispMode = 0;       /* mirrors gdx3ds_disp mode for the radio UI */
 static int sDbgVerbose = 0;     /* live [debug] verbose latch (main loop reads) */
@@ -97,9 +101,14 @@ static int sRivalDetail = 0;    /* [perf] rival_detail latch (Racer_Draw reads) 
 /* RIVAL-DETAIL port hook: read once per Racer_Draw by the decomp patch
  * (decomp-port-rival-detail.patch). 0=NATIVE 1=REDUCED 2=MINIMAL. Latched from
  * [perf] rival_detail in gdx3ds_menu_init (even with the menu UI disabled) and
- * live-updated by the DISP tab row. */
-int gdx_rival_detail_level(void) {
+ * live-updated by the DISP tab row. DYNLOD (gdx3ds_dynlod.c): the manual setting is
+ * the FLOOR; the controller may raise the effective level up to MINIMAL. */
+int gdx_rival_detail_floor(void) {
     return sRivalDetail;
+}
+
+int gdx_rival_detail_level(void) {
+    return gdx3ds_dynlod_effective_level(sRivalDetail);
 }
 
 #define MENU_LOG_LINES 25   /* rows 3..27 */
@@ -195,7 +204,12 @@ static void PaintStatus(void) {
     struct mallinfo mi = mallinfo();
     PaintRow(4, "heap used %6lu KB  free %6lu KB", (unsigned long)mi.uordblks / 1024u,
              (unsigned long)mi.fordblks / 1024u);
-    PaintRow(5, "linear free %6lu KB", (unsigned long)linearSpaceFree() / 1024u);
+    {
+        unsigned long hwmKb = 0; long perMin = 0; int trig = 0;
+        gdx3ds_heapwatch_stats(NULL, &hwmKb, &perMin, &trig);
+        PaintRow(5, "linear %5lu KB hwm %6lu KB %+ld/min%s", (unsigned long)linearSpaceFree() / 1024u,
+                 hwmKb, perMin, trig > 0 ? "!" : "");
+    }
     unsigned buildMsX10 = 0, topOpMsX10 = 0;
     int topOp = -1;
     if (gdx3ds_gpuprof_hud_sample(&buildMsX10, &topOp, &topOpMsX10)) {
@@ -216,6 +230,8 @@ static void PaintStatus(void) {
     PaintRow(14, "the bottom screen (touch wakes).");
 }
 
+static void PaintDispAutoRow(void);
+
 static void PaintDisp(void) {
     static const char* kModes[4] = {
         "AUTHENTIC   stock borders",
@@ -235,6 +251,27 @@ static void PaintDisp(void) {
              kRivalNames[(sRivalDetail >= 0 && sRivalDetail <= 2) ? sRivalDetail : 0]);
     PaintRow(21, "reduced/minimal simplify DISTANT");
     PaintRow(22, "rival machines for extra fps.");
+    PaintDispAutoRow();
+    PaintRow(26, "auto raises the cut in crowds;");
+    PaintRow(27, "your setting above is the floor.");
+}
+
+/* DYNLOD row (live: the controller's current tier, ~1 Hz refresh). */
+static void PaintDispAutoRow(void) {
+    static const char* kTierNames[3] = { "NATIVE", "REDUCED", "MINIMAL" };
+    const int on = gdx3ds_dynlod_auto_enabled();
+    int tier = gdx3ds_dynlod_tier();
+    if (tier < sRivalDetail) {
+        tier = sRivalDetail;
+    }
+    if (tier < 0 || tier > 2) {
+        tier = 0;
+    }
+    if (on) {
+        PaintRow(24, "AUTO LOD: ON   now %s", kTierNames[tier]);
+    } else {
+        PaintRow(24, "AUTO LOD: OFF  (tap toggles)");
+    }
 }
 
 static void Paint3D(void) {
@@ -285,9 +322,20 @@ static void PaintInput(void) {
                                             (int)sizeof(keys)));
         }
     }
-    PaintRow(19, "RESET DEFAULTS");
-    PaintRow(21, "capture keys: ABXY LR ZL/ZR");
-    PaintRow(22, "START SEL DPAD C-STICK");
+    {
+        static const char* kCurve[] = { "LINEAR", "SOFT", "SOFTER" };
+        static const char* kDpad[] = { "OFF", "FULL", "RAMP" };
+        int rx, ry, sx, sy;
+        gdx3ds_input_stick_readout(&rx, &ry, &sx, &sy);
+        PaintRow(18, "DEADZONE [-]  %3d   [+]  raw 0-80", gdx3ds_input_get_deadzone());
+        PaintRow(19, "RANGE    [-]  %3d   [+]  full at raw", gdx3ds_input_get_range());
+        PaintRow(20, "CURVE    [-] %-6s [+]  centre feel", kCurve[gdx3ds_input_get_curve()]);
+        PaintRow(21, "DPAD     [-] %-6s [+]  d-pad steers", kDpad[gdx3ds_input_get_dpad_steer()]);
+        PaintRow(22, "pad %4d %4d  -> stick %4d %4d", rx, ry, sx, sy);
+        sReadoutPainted = (u32) ((rx & 0xffff) | ((ry & 0xffff) << 16));
+    }
+    PaintRow(24, "RESET DEFAULTS");
+    PaintRow(26, "capture: ABXY LR ZL ZR START SEL DPAD CS");
 }
 
 static void PaintLog(void) {
@@ -326,10 +374,16 @@ static void PaintDbg(void) {
     }
     /* LOCKED-60 Task H: core-2 render thread; the thread is created at boot, so a flip
      * needs a relaunch (port/3ds/gdx3ds_renderthread.cpp reads the key once). */
-    PaintRow(16, "(%c) RENDER THR core-2 pipeline (reboot)",
-             gdx3ds_config_get_int("debug", "renderthread", 1) ? 'x' : ' ');
-    PaintRow(18, "toggles apply live and persist");
-    PaintRow(19, "to gdiffuser.ini [debug].");
+    {
+        int rt = gdx3ds_config_get_int("debug", "renderthread", 1);
+        PaintRow(16, "(%c) RENDER THR %s (reboot)", rt ? 'x' : ' ',
+                 rt >= 2 ? "core-2 ahead (2)" : (rt == 1 ? "core-2 pipe (1)" : "off"));
+    }
+    /* LOCKED-60 Task I: the bridge stage on the submitting core (needs the render thread). */
+    PaintRow(18, "(%c) BRIDGE MAIN core-0 pre-pass (reboot)",
+             gdx3ds_config_get_int("debug", "bridgemain", 1) ? 'x' : ' ');
+    PaintRow(20, "toggles apply live and persist");
+    PaintRow(21, "to gdiffuser.ini [debug].");
 }
 
 static void PaintAbout(void) {
@@ -466,6 +520,13 @@ static void TouchDisp(int row, int col) {
         MenuSaveCfg();
         sDirty = 1;
         MenuLog("[menu] perf rival_detail=%d", sRivalDetail);
+    } else if (row == 24 || row == 25) { /* AUTO LOD row (+1 touch slop): live, no relaunch */
+        const int on = gdx3ds_dynlod_auto_enabled() ? 0 : 1;
+        gdx3ds_dynlod_set_auto(on);
+        gdx3ds_config_set_int("perf", "rival_detail_auto", on);
+        MenuSaveCfg();
+        sDirty = 1;
+        MenuLog("[menu] perf rival_detail_auto=%d", on);
     }
 }
 
@@ -549,11 +610,43 @@ static void TouchInput(int row, int col) {
             return;
         }
     }
-    if (row == 19 || row == 20) {
+    if (row >= 18 && row <= 21) { /* INPUT TUNE steppers */
+        int d = StepperDelta(col);
+        if (d == 0) {
+            return;
+        }
+        if (row == 18) {
+            gdx3ds_input_set_deadzone(gdx3ds_input_get_deadzone() + d * 2);
+            gdx3ds_config_set_int("input", "deadzone", gdx3ds_input_get_deadzone());
+        } else if (row == 19) {
+            gdx3ds_input_set_range(gdx3ds_input_get_range() + d * 5);
+            gdx3ds_config_set_int("input", "range", gdx3ds_input_get_range());
+        } else if (row == 20) {
+            gdx3ds_input_set_curve((gdx3ds_input_get_curve() + d + 3) % 3);
+            gdx3ds_config_set_int("input", "curve", gdx3ds_input_get_curve());
+        } else {
+            gdx3ds_input_set_dpad_steer((gdx3ds_input_get_dpad_steer() + d + 3) % 3);
+            gdx3ds_config_set_int("input", "dpad_steer", gdx3ds_input_get_dpad_steer());
+        }
+        MenuSaveCfg();
+        sDirty = 1;
+        MenuLog("[menu] input tune dz=%d range=%d curve=%d dpad=%d", gdx3ds_input_get_deadzone(),
+                gdx3ds_input_get_range(), gdx3ds_input_get_curve(), gdx3ds_input_get_dpad_steer());
+        return;
+    }
+    if (row == 24 || row == 25) {
         gdx3ds_input_reset_defaults();
         for (int i = 0; i < count; i++) {
             MenuPersistBind(i);
         }
+        gdx3ds_input_set_deadzone(16);
+        gdx3ds_input_set_range(145);
+        gdx3ds_input_set_curve(0);
+        gdx3ds_input_set_dpad_steer(0);
+        gdx3ds_config_set_int("input", "deadzone", 16);
+        gdx3ds_config_set_int("input", "range", 145);
+        gdx3ds_config_set_int("input", "curve", 0);
+        gdx3ds_config_set_int("input", "dpad_steer", 0);
         MenuSaveCfg();
         sCaptureAction = -1;
         sDirty = 1;
@@ -615,9 +708,15 @@ static void TouchDbg(int row, int col) {
         gdx3ds_config_set_int("debug", "tmemfast", on);
         MenuLog("[menu] dbg levers=%d (reboot for atlas)", on);
     } else if (row == 16 || row == 17) {
-        int on = !gdx3ds_config_get_int("debug", "renderthread", 1);
-        gdx3ds_config_set_int("debug", "renderthread", on);
-        MenuLog("[menu] dbg renderthread=%d (relaunch to apply)", on);
+        /* cycles 1 (pipe) -> 2 (ahead) -> 0 (off) -> 1 */
+        int cur = gdx3ds_config_get_int("debug", "renderthread", 1);
+        int next = cur == 1 ? 2 : (cur >= 2 ? 0 : 1);
+        gdx3ds_config_set_int("debug", "renderthread", next);
+        MenuLog("[menu] dbg renderthread=%d (relaunch to apply)", next);
+    } else if (row == 18 || row == 19) {
+        int on = !gdx3ds_config_get_int("debug", "bridgemain", 1);
+        gdx3ds_config_set_int("debug", "bridgemain", on);
+        MenuLog("[menu] dbg bridgemain=%d (relaunch to apply)", on);
     } else {
         return;
     }
@@ -710,6 +809,7 @@ void gdx3ds_menu_init(void) {
     if (sRivalDetail < 0 || sRivalDetail > 2) {
         sRivalDetail = 0;
     }
+    gdx3ds_dynlod_init(); /* DYNLOD latches [perf] rival_detail_auto after the floor above */
     sEnabled = gdx3ds_config_get_bool("menu", "enabled", 1);
     if (!sEnabled) {
         return;
@@ -793,18 +893,32 @@ static void gdx3ds_menu_tick_body(void) {
     }
     sPrevHeld = held;
 
+    const u64 now = svcGetSystemTick();
+    /* INPUT tab live pad readout: repaint at <= 10 Hz while the pad moves, so tuning the
+     * deadzone/range can be done by eye without paying a per-frame console repaint. */
+    if (sTab == TAB_INPUT && !sDirty &&
+        (now - sReadoutTick) >= (u64)(100.0 * CPU_TICKS_PER_MSEC)) {
+        int rx, ry;
+        gdx3ds_input_stick_readout(&rx, &ry, NULL, NULL);
+        if ((u32) ((rx & 0xffff) | ((ry & 0xffff) << 16)) != sReadoutPainted) {
+            sDirty = 1;
+        }
+        sReadoutTick = now;
+    }
     /* Repaint policy (MENU-PERF): full repaint on change; ~1 Hz refresh for the live
      * pages (STATUS numbers, LOG tail in live mode) and the row-1 fps line. */
-    const u64 now = svcGetSystemTick();
     const int periodic = (now - sLastPeriodicTick) >= (u64)(1000.0 * CPU_TICKS_PER_MSEC);
     if (sDirty) {
         PaintAll();
     } else if (periodic &&
-               (sTab == TAB_STATUS || (sTab == TAB_LOG && sLogSkip == 0) || sFpsDirty)) {
+               (sTab == TAB_STATUS || sTab == TAB_DISP || (sTab == TAB_LOG && sLogSkip == 0) ||
+                sFpsDirty)) {
         PaintBegin();
         PaintRow(MENU_ROW_FPS, "%s", gdx3ds_fps_hud_get_enabled() ? sFpsLine : "");
         if (sTab == TAB_STATUS) {
             PaintStatus();
+        } else if (sTab == TAB_DISP) {
+            PaintDispAutoRow(); /* DYNLOD live tier only; the rest of the page is static */
         } else if (sTab == TAB_LOG) {
             PaintLog();
         }

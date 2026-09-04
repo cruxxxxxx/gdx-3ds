@@ -81,6 +81,10 @@ if(NINTENDO_3DS)
     # Integration-level like the HUD/filelog TUs; shares the HUD's console + build id.
     target_sources(G-Diffuser-3DS PRIVATE gdx3ds_menu.c)
 
+    # DYNLOD (LOCKED-60 Task J): automatic rival-detail tier from the render task's wall
+    # time ([perf] rival_detail_auto, DEFAULT ON; manual [perf] rival_detail is the floor).
+    target_sources(G-Diffuser-3DS PRIVATE gdx3ds_dynlod.c)
+
     # H-HARDWARE: proper SMDH (48x48 icon + titles/publisher) instead of the devkitPro
     # placeholder. Assets + provenance/licensing: packaging/README.md.
     set(GDX3DS_SMDH "${CMAKE_CURRENT_BINARY_DIR}/G-Diffuser-3DS.smdh")

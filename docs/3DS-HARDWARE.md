@@ -97,6 +97,9 @@ comments; keys and section names are case-insensitive.
 deadzone = 16      ; circle-pad units ignored around center (raw range ~±156)
 range = 145        ; circle-pad units mapping to full N64 stick deflection (±80)
 y_maps_to_b = 1    ; 3DS Y acts as N64 B (accelerate comfortably with A+Y)
+curve = 0          ; 0 linear, 1 soft, 2 softer (response curve after the deadzone)
+dpad_steer = 0     ; 0 off, 1 full (D-pad = full stick), 2 ramp (grows while held)
+                   ; all four are live steppers in the INPUT tab with a pad readout
 
 [audio]
 lle = 0            ; 1 = route audio tasks through the cxd4 RSP LLE interpreter.
@@ -112,6 +115,11 @@ audio_testtone = 0 ; 1 = 440 Hz sine replaces ALL game audio at the output stage
 filelog = 0        ; 1 = mirror boot/watchdog/fatal tracer lines to
                    ;     sdmc:/3ds/gdiffuser/log.txt (truncated each boot)
 filelog_max_kb = 256 ; log size cap (1-8192); logging stops at the cap with a marker
+heap_watch = 8     ; MB above the 60 s heap baseline that triggers a [heap-watch]
+                   ;     line + memory census in the log; 0 disables
+heap_watch_step = 4 ; MB between further triggers
+heap_watch_arm = 0 ; 1 = first trigger also arms the live allocation histogram
+                   ;     (for long stress sessions; costs a little per frame once armed)
 ```
 
 ## 6. Controls
@@ -133,7 +141,7 @@ in-race at all), **boost** is a fresh N64 **B** press (after lap 1), and
 | ZL          | B         | boost (New3DS) |
 | ZR          | B         | boost (New3DS) |
 | C-stick     | C buttons | camera; C-stick down doubles as brake (New3DS) |
-| D-pad       | D-pad     | menus |
+| D-pad       | D-pad     | menus; steers too when INPUT tab DPAD is FULL or RAMP |
 | START       | START     | pause / confirm |
 | SELECT      | —         | reserved |
 
@@ -185,3 +193,38 @@ as far as it goes), quit (or power off after a hang/crash), then copy
 | `.cia` won't install in FBI | stock console / no sigpatches | Luma3DS required (section 1) |
 | Hang/crash with blank screens | — | enable `debug.filelog=1`, reproduce, pull `log.txt`; the watchdog + fatal tracers name the stuck stage |
 | Luma exception screen | crash in guest/port code | photo the screen (PC + LR), grab `log.txt`, report both |
+
+## 9. Building from source
+
+Tested on macOS and Linux with devkitPro. Windows works through the devkitPro MSYS2 shell.
+
+1. **Toolchain.** Install devkitPro with the `3ds-dev` group (devkitARM, libctru, citro3d,
+   3dstools), plus `cmake` 3.24+ and Python 3 with `pyyaml` and `pillow`. `dkp-pacman -S 3ds-dev`
+   gets the console side. For the `.cia` you also need `makerom` and `bannertool`, on PATH or dropped into `tools/3ds-bin/` (`port/3ds/packaging/README.md` says where to get them); without them only the `.3dsx` target is generated.
+2. **Clone with submodules.** The decompilation, libultraship, Torch and the Expansion Kit
+   reference are submodules pinned to exact commits:
+   ```sh
+   git clone --recurse-submodules https://github.com/cruxxxxxx/gdx-3ds.git
+   cd gdx-3ds
+   ```
+3. **Apply the patch stack.** The submodules are never modified in place; the 3DS deltas live
+   in `port/3ds/patches/` and are applied to the working trees in the order listed in
+   `port/3ds/patches/README.md`. `tools/ci-3ds.sh` does that idempotently and then builds:
+   ```sh
+   export DEVKITPRO=/opt/devkitpro
+   tools/ci-3ds.sh            # patches + host tests + 3DS build; --emu adds an Azahar boot smoke
+   ```
+   Manual equivalent: the `git -C <submodule> apply ...` lines from the patches README, then
+   ```sh
+   cmake -S . -B build-3ds -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake \
+         -DGDX_PLATFORM_3DS=ON -DCMAKE_BUILD_TYPE=Release
+   cmake --build build-3ds --target G-Diffuser-3DS_3dsx -j8     # Homebrew Launcher build
+   cmake --build build-3ds --target G-Diffuser-3DS-cia -j8      # HOME menu build (needs makerom)
+   ```
+   Artifacts: `build-3ds/port/3ds/G-Diffuser-3DS.3dsx` and `.cia`. The `.elf` next to them is
+   what `addr2line` wants when reading a crash or heap-watch address out of `log.txt`.
+4. **Assets** are a separate, PC-side step from your own ROM dump: `tools/prebake/README.md`.
+   Nothing in this build embeds game data.
+
+The build id shown on the STAT tab is `<branch>@<short sha>` of the checkout it came from.
+

@@ -8,9 +8,11 @@
  * render thread; the main thread paces on vblank and never opens a C3D frame itself.
  *
  * Killswitch `[debug] renderthread` (gdiffuser.ini): 0 = off (no thread, no hooks: the
- * sequential path is byte-identical), 1 = on. Mode reported by gdx3ds_rt_mode():
+ * sequential path is byte-identical), 1 = pipe, 2 = ahead. Mode reported by gdx3ds_rt_mode():
  *   0 off, 1 sync (M2: every command is waited for immediately -- proves core-2 GPU
- *   submission with zero concurrency), 2 pipe (M3: TASK/END asynchronous, DP-done at the join).
+ *   submission with zero concurrency), 2 pipe (M3: TASK/END asynchronous, DP-done posted when
+ *   render(N) completes), 3 ahead (M6: DP-done acknowledged as soon as the game parks on it;
+ *   the next submit waits for the previous render; RDRAM writers fence).
  * `[debug] renderthread_sync = 1` forces mode 1 for A/B.
  *
  * Threading contract: the render thread is prio 0x24 on core 2 (below the 0x18 audio threads,
@@ -56,6 +58,10 @@ void gdx3ds_rt_post_dp_done(void); /* defined in n64_sched.c: osSendMesg(&D_800D
  * TASK. Bridge entry points that mutate walk-visible tables from the game thread call this
  * first (audit section 4). */
 void gdx3ds_rt_fence(void);
+/* RDRAM writer fence (DMA / MIO0 / asset copies into game memory): a no-op except in ahead
+ * mode (renderthread=2), where the early DP-done acknowledgement removes the N64 guarantee that
+ * the previous frame's render finished before the game overwrites memory it references. */
+void gdx3ds_rt_fence_dma(void);
 int gdx3ds_rt_on_render_thread(void);
 
 /* Telemetry on the verbose cadence: `[rt] mode= n= tasks= waitMain= waitRender= fence= ...`. */

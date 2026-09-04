@@ -30,6 +30,20 @@ unsigned gdx3ds_input_bindable_mask(void);
 /* "B+ZL+ZR"-style label for a mask; returns buf. */
 const char* gdx3ds_input_key_label(unsigned hidMask, char* buf, int cap);
 
+/* INPUT TUNE: circle-pad deadzone (raw units, 0-80), range where +-80 is reached (60-156),
+ * response curve (0 linear, 1 soft, 2 softer), d-pad steering (0 off, 1 full, 2 ramp).
+ * Persisted by the menu as [input] deadzone / range / curve / dpad_steer. */
+int gdx3ds_input_get_deadzone(void);
+void gdx3ds_input_set_deadzone(int v);
+int gdx3ds_input_get_range(void);
+void gdx3ds_input_set_range(int v);
+int gdx3ds_input_get_curve(void);
+void gdx3ds_input_set_curve(int v);
+int gdx3ds_input_get_dpad_steer(void);
+void gdx3ds_input_set_dpad_steer(int v);
+/* Last polled raw circle-pad position and the stick value handed to the game. */
+void gdx3ds_input_stick_readout(int* rawX, int* rawY, int* stickX, int* stickY);
+
 #ifdef __cplusplus
 }
 #endif

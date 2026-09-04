@@ -44,6 +44,7 @@ enum Gdx3dsStereoClass {
     GDX3DS_STEREO_SCENE = 0,
     GDX3DS_STEREO_UI_ZERO_PARALLAX = 1,
     GDX3DS_STEREO_SKY_DEEP = 2,
+    GDX3DS_STEREO_ANCHORED = 3, /* ortho draw pinned to a world depth (prim-depth rects: race markers) */
 };
 
 #ifdef __cplusplus
@@ -122,6 +123,9 @@ void ComputeEyeMatrix(const C3D_Mtx* base, int eye, C3D_Mtx* out,
  * (`orthoDraw` — the backend passes clip-w == 1, i.e. an orthographic
  * projection, the research's HUD signature). */
 int ClassifyDraw(bool orthoDraw);
+/* [anchor] NDC depth (0 near .. 1 far, the interpreter z/w convention) for the next
+   GDX3DS_STEREO_ANCHORED draw: the N64 prim depth of a marker rect, i.e. the machine it labels. */
+void SetAnchorDepth(float d);
 
 } // namespace Gdx3dsStereo
 

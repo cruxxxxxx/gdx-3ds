@@ -1,0 +1,63 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index 94a01fc..8e1a11c 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -1076,7 +1076,17 @@ ColorCombiner* Interpreter::LookupOrCreateColorCombiner(const ColorCombinerKey&
+     return &mPrevCombiner->second;
+ }
+ 
++extern "C" void gdx3ds_texcache_note_thread(int kind) __attribute__((weak));
++static inline void GdxTexCacheNoteThread(int kind) {
++    if (&gdx3ds_texcache_note_thread != nullptr) {
++        gdx3ds_texcache_note_thread(kind);
++    }
++}
++
+ void Interpreter::TextureCacheClear() {
++#ifdef __3DS__
++    GdxTexCacheNoteThread(3);
++#endif
+     GfxS7InvalidateDrawMemos(); // [perf-s7] mRenderingState.mTextures nulled below
+     for (const auto& entry : mTextureCache.map) {
+         mTextureCache.free_texture_ids.push_back(entry.second.texture_id);
+@@ -1096,6 +1106,10 @@ void Interpreter::TextureCacheClear() {
+ // no-op stub on the 3DS build, so the evidence has to flow through the backend.
+ #ifdef __3DS__
+ extern "C" void gdx3ds_texcache_note_import(void);
++/* RENDER THREAD ownership receipt (port/3ds/gdx3ds_renderthread.cpp): the texture cache
++   (map + LRU list + free ids + draw memos) is render-thread-owned; every entry point reports
++   its caller so a main-thread mutation shows up as [rt] texcacheMainMut= instead of a data
++   abort inside the LRU splice. kind: 0 lookup, 1 delete, 2 delete-palette, 3 clear. */
+ extern "C" void gdx3ds_texcache_note_miss(const void* addr, unsigned fmt, unsigned siz, unsigned tmemWord,
+                                           unsigned lineBytes, unsigned sizeBytes, unsigned tileW, unsigned tileH,
+                                           unsigned contentHash);
+@@ -1482,6 +1496,9 @@ static inline void GdxNoteTexBind(int slot, const TextureCacheKey& key) {
+    identically, or a cold-cache pass diverges from a warm one by construction. */
+ 
+ bool Interpreter::TextureCacheLookup(int i, const TextureCacheKey& key) {
++#ifdef __3DS__
++    GdxTexCacheNoteThread(0);
++#endif
+     TextureCacheMap::iterator it = mTextureCache.map.find(key);
+     TextureCacheNode** n = &mRenderingState.mTextures[i];
+ 
+@@ -1575,6 +1592,9 @@ std::string_view Interpreter::GetBaseTexturePath(std::string_view path) {
+ }
+ 
+ void Interpreter::TextureCacheDelete(const uint8_t* origAddr) {
++#ifdef __3DS__
++    GdxTexCacheNoteThread(1);
++#endif
+     GfxS7InvalidateDrawMemos(); // [perf-s7] may null mRenderingState.mTextures / re-arm imports
+ #ifdef __3DS__
+     unsigned gdxDeleted = 0;
+@@ -1628,6 +1648,9 @@ void Interpreter::TextureCacheDeletePalette(const uint8_t* paletteAddr) {
+     if (paletteAddr == nullptr || mSeenPaletteAddrs.find(paletteAddr) == mSeenPaletteAddrs.end()) {
+         return;
+     }
++#ifdef __3DS__
++    GdxTexCacheNoteThread(2);
++#endif
+     GfxS7InvalidateDrawMemos(); // [perf-s7] same rationale as TextureCacheDelete
+ 
+     static const bool sDiagPaletteEvict = std::getenv("GDX_DIAG_PALETTE_EVICT") != nullptr;

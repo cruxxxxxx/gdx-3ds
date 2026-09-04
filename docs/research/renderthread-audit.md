@@ -142,3 +142,53 @@ receipts), on its own event (no shared-event spin, per home-crash-audit.md).
   snapshot + merge; DMA-range lock; fences on the game-thread mutators; console suppression.
 - Receipt on the [gpu]/[race-dl] cadence: `[rt] mode=pipe n=64 tasks= waitMain=ms waitRender=ms
   fence= segMerge= latency=1`.
+
+## 8. M6 — why mode 1 did not overlap on hardware, and the ahead mode (renderthread=2)
+
+Hardware (New 3DS, /tmp/hw-art-1788396432, mode=pipe): every crowd window `waitMain=14-15
+waitRender=0.02`, `[gpu] wall=22 build=14-15`, i.e. main blocked for the whole render.
+
+Where the serialization comes from (line evidence):
+- The game step does not run in `gdx_dispatch`: `gdx_vi_tick` (n64_vi.c:77) posts the VI
+  message with `osSendMesg` from HOST context, and the PORT send path (sendmesg.c:52-58) calls
+  `osStartThread(waiter)` which, with `__osRunningThread == NULL`, calls `__osDispatchThread()`
+  (startthread.c:27-33): the whole game iteration — VI forward, fb-spin exit, `Gfx_SetTask` ->
+  `osSpTaskStartGo` (the TASK submit), then `logic(N+2)` up to the DP wait — executes INSIDE
+  `gdx_vi_tick`, before the loop reached `gdx3ds_rt_frame_begin`. Consequences: (a) the TASK
+  was queued before BEGIN (the frame was opened by Run's re-entrant StartFrame, and
+  Interpreter::StartFrame's per-frame latches ran one frame late); (b) the render thread's
+  FrameBegin inside the TASK (`C3D_FrameBegin(0)` -> gxCmdQueueWait) absorbed the previous
+  frame's GPU tail before the render started. M6 issues BEGIN before `gdx_vi_tick`.
+- The game-side wait that gates the next logic tick is the DP-done wait in sys_gfx.c:212
+  (`osRecvMesg(&D_800DCAC8)`), reached at the END of logic(N+2); the VI wait (sys_gfx.c:204)
+  is already satisfied when the game returns from `Gfx_SetTask`. In pipe mode the host posts
+  that DP-done only when render(N+1) completes, so the game cannot swap/SetTask until then —
+  the main-side tail of the iteration (swap, fb-spin yield, END, HUD/menu, vblank pace, next
+  vi_tick) is serialized behind the render instead of overlapping its tail. With logic ~3-6 ms
+  and render ~9-11 ms + the GPU wait, that tail is the difference between the measured
+  waitMain and max(0, render - logic).
+- ahead mode: `gdx3ds_rt_wait_task` posts DP-done(N+1) immediately when the game parks on it
+  (no wait); the game swaps, yields, the loop ends the frame (END queues behind the running
+  TASK on the render thread, so N+1 is presented when its render is done and never blocks
+  logic), paces on vblank, and at `SetTask(N+2)` the submit waits for render(N+1) — the pool
+  half N+1 is rewritten only by logic(N+3), after that submit. Two tasks are never in flight.
+  The ordering guarantee the early ack removes (N64: "the RDP finished before the game writes
+  memory the DL referenced") is restored by fences on every RDRAM writer that can run between
+  the early ack and the next submit: `Segment_LoadAssets` -> `gdx_segment_epoch_begin`,
+  `Dma_RomCopy` -> `GdxSegmentSourceRead`, MIO0 decode (mio0_wrap.c), asset copies
+  (`GDiffuser_LoadAssetBytes`), venue loads, and the transition capture
+  (`gdx_read_current_framebuffer`). Fences are main-thread-only (audio/preload threads never
+  wait) and counted in the receipt (`fence=<walk>/<dma>`).
+- One-frame skew audit: GfxPool halves (sys_gfx.c:118-126) and EK segment 6 (:131) are
+  double-buffered by frame parity, so logic(N+3) writes half(N+1) only after submit(N+2)
+  waited for render(N+1). Matrices/vertices live in the pool. `gSegments[1]` flips at
+  Gfx_InitBuffer: covered by the per-task view. The N64 framebuffers are only read by the
+  capture (fenced). The frame mirror/scanout reads run on the render thread.
+- Loop-top join: pipe keeps it (APT structural park); ahead joins at the top only when
+  `aptShouldJumpToHome() || aptShouldClose()`; the APT hook joins regardless (bounded by one
+  frame), teardown joins.
+- Pacing: the render thread never syncs to vblank (FrameBegin(0)); main paces once per
+  iteration with the adaptive skip. Receipt fields (per-frame ms): `ovl` main work between
+  submit and its first wait for that task (= overlapped logic), `jdp` DP-join/submit wait,
+  `jtop` loop-top join, `bg/tk/en` BEGIN/TASK/END execution on the render thread, `ql` submit
+  -> task start latency, `tb` tasks submitted before BEGIN (must be 0 after M6).

@@ -70,3 +70,54 @@ dirty-range vector, and ~12 rare game-thread bridge mutators (fenced). See audit
   /tmp/rt-art/G-Diffuser-3DS.{3dsx,cia} (build da6621e).
 
 ## M4 — APT park/join: landed with M2 (structural park at the loop-top join; receipts above).
+
+## M6 — ahead mode (renderthread=2), 7c8363a + docs (audit §8)
+- Hardware mode=pipe log (/tmp/hw-art-1788396432): waitMain 14-15 ms = the whole render; cause
+  = the game step runs inside gdx_vi_tick (host-context osSendMesg dispatches the fibers) and
+  pipe posts DP-done only at render completion, so the iteration tail (swap/yield/END/HUD/
+  pace/next vi_tick) serializes behind the render; TASK was queued before BEGIN (tb).
+- M6: BEGIN before gdx_vi_tick; ahead mode = early DP ack + backpressure at the next submit +
+  RDRAM-writer fences (segment reload, GdxSegmentSourceRead, MIO0, asset copies, capture).
+  Receipt now carries ovl/jdp/jtop (main) and bg/tk/en/ql (render) ms per frame, tb count.
+- aheadA (Azahar, renderthread=2, A-mash GP, 330 s, frames to 11909): ZERO error lines, race
+  reached, tb=0, heap 44.66 MB; crowd windows e.g.
+  `[rt] mode=ahead frame=6661 tasks=64 waitMain=21.01 ... ovl=1.69 jdp=20.69 jtop=0.32 |
+  bg=0.01 tk=21.69 en=0.39 ql=0.20 tb=0` -> waitMain == tk - ovl (main waits exactly the
+  render time it could not cover; the emulator's main-side work is ~1.5 ms/frame so the
+  ratio, not the magnitude, is the evidence). Menus: waitMain=0.00 pace=64/0.
+  Screencaptures /tmp/rt-art/aheadA/shot-t{240,300}.png.
+- Fix d2622c5: the M6 fences compared raw thread ids, but game fibers are real libctru threads
+  -> every fence from game code was a no-op (aheadA/pipeB windows showed fence=0/0). Now uses
+  n64_sched.c's logical-id test. Fix b432036: gdx_load_venue_texture_segment runs every race
+  frame; its fence moved onto the actual 0x0A rewrite (it had made ahead mode fence per frame).
+- aheadB/aheadC (renderthread=2, final code): zero error lines, race reached, walk fences 17 /
+  dma fences 7 per run (mode changes only), jdp engaged, tb=0. Crowd window:
+  `[rt] mode=ahead frame=6661 tasks=64 waitMain=20.71 ... ovl=1.91 jdp=20.38 jtop=0.33 |
+  bg=0.01 tk=21.64 en=0.40 ql=0.23 tb=0`; pipe on the same window (pipeB):
+  `waitMain=22.30 ... ovl=1.10 jdp=21.34 jtop=0.95 | tk=21.39` -> in both, waitMain == tk - ovl
+  (+jtop for pipe); ahead moves the loop-top join (jtop) and the iteration tail into the
+  overlapped work (ovl up). The emulator's main-side work is only ~1-2 ms/frame, so the
+  magnitudes are render-bound there; the RATIO is what transfers.
+- stormAhead2 (ahead, storm2.txt): race -> pause -> Change Course -> course select -> race 2
+  -> Change Machine; 96 transition-task lines, 19 dma fences, ZERO errors; SHOTs r1/c2a/c2b
+  valid images (c2a = pillarboxed pause screen, c2b = SELECT COURSE). stormPipe2 (pipe, final
+  build): zero errors, r1 byte-identical to ahead.
+- SHOT parity caveat (Azahar only): every mirror SHOT logs `ReadFramebufferToCPU: display
+  transfer never landed` in ALL modes including renderthread=0 (the sentinel poll's 400 ms
+  bound expires; the SHOT frames cost ~900-1000 ms in every run), so a SHOT taken on a black
+  fade (settings.bmp) reads whatever the freshly linearAlloc'd buffer held: black in ctrlA,
+  noise in two ahead runs, black in aheadB. Shots with real content (menu/machsel/drive1/r1)
+  are byte-identical between modes. Backend diagnostics now also go to the SD filelog.
+- Screencaptures: /tmp/rt-art/{aheadA,pipeB}/shot-t{240,300}.png (both show the race).
+
+## M7 — texture cache is render-thread-owned (hardware crash fix, 2026-09-05)
+Round-4 hardware dump: core 2 data abort in TextureCacheLookup's LRU splice while the game
+thread ran `gfx_texture_cache_clear()` from `gdx_rdram_mode_reset` (post-GP podium/venue
+transition). Fix: the clear becomes a request (`gdx_texcache_request_clear`) that the render
+thread drains before any lookup (job run / fallback present); address invalidations queue
+through `gPendingTextureCacheDeletes` (LightLock) and drain there too; with the render thread
+off (or when already on it) both happen inline as before. `lus-renderthread-texcache-owner.patch`
+hooks every interpreter cache entry point with `gdx3ds_texcache_note_thread`, counted in the
+`[rt]` window line as `texcacheMainMut=` (cumulative; must read 0 on hardware — the first eight
+violations are logged with their kind). Remaining direct deletes: SeedFramebufferQuad (render
+thread, fallback present) and the inline non-deferred path only. Clean-stack roundtrip OK.

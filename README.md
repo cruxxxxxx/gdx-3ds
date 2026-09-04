@@ -81,8 +81,9 @@ The full story of the port — every step from research to a native-60 stereosco
 
 ## Features
 
-- **Native play on New 3DS / New 2DS** — ~50–60 fps typical, with an in-game
-  RIVAL DETAIL performance option for heavy 30-machine packs
+- **Native play on New 3DS / New 2DS** — native 60 Hz pacing, 59.6 fps median over a
+  full Grand Prix on hardware, with an automatic RIVAL DETAIL tier that steps down in
+  heavy 30-machine packs (manual override in the touch menu)
 - **Stereoscopic 3D** — real depth via the 3D slider, with adjustable strength and
   convergence from the touch menu
 - **Full audio** — music and sound effects through the 3DS DSP
@@ -90,8 +91,13 @@ The full story of the port — every step from research to a native-60 stereosco
   mode), 3D tuning, volume, controller remapping, a log viewer, debug toggles, and
   a screen-off battery saver
 - **Proper system integration** — HOME menu, sleep mode, and clean power-off
-- **Multi-core rendering** — the display-list renderer runs on the New 3DS's spare core
-  (DBG tab "RENDER THR"; relaunch to change)
+- **Multi-core rendering** — the display-list renderer runs one frame ahead on the New
+  3DS's spare core (DBG tab "RENDER THR"; relaunch to change)
+- **Circle Pad tuning** — deadzone, range and response curve steppers with a live pad
+  readout in the INPUT tab, so the analog feel can be matched to an N64 stick; optional
+  D-pad steering (full or ramped)
+- **Heap watch** — an optional threshold trigger that writes a memory census to the SD
+  log during long sessions (DBG tab; see `docs/3DS-HARDWARE.md`)
 - **Two install formats** — Homebrew Launcher `.3dsx` or an installable `.cia`
 
 ## Requirements
@@ -106,7 +112,8 @@ The full story of the port — every step from research to a native-60 stereosco
 ## Building & installing
 
 1. **Build the port** (or use a release artifact if one is published): devkitPro +
-   CMake; see `docs/3DS-HARDWARE.md` for the full toolchain walkthrough.
+   CMake, `tools/ci-3ds.sh` applies the patch stack and builds; step by step in
+   `docs/3DS-HARDWARE.md`, "Building from source".
 2. **Convert your game assets on your PC**: `tools/prebake` takes *your* F-Zero X
    (USA, rev 0) ROM dump and produces `fzerox.o2r` / `gdiffuser.o2r` archives (the audio
    table is stored uncompressed so boot audio starts cleanly; see `tools/prebake/README`).
@@ -120,7 +127,8 @@ The full story of the port — every step from research to a native-60 stereosco
 
 | 3DS | Action |
 |---|---|
-| Circle Pad | Steer |
+| Circle Pad | Steer (deadzone / range / curve tunable in the INPUT tab) |
+| D-pad | Steer, when DPAD is set to FULL or RAMP in the INPUT tab (off by default) |
 | A | Accelerate |
 | B / Y / ZL / ZR | Boost |
 | L / R | Slide-drift left / right |

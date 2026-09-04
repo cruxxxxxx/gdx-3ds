@@ -86,6 +86,24 @@ static int sCpadDeadzone = GDX_CPAD_DEADZONE_DEFAULT;
 static int sCpadRange = GDX_CPAD_RANGE_DEFAULT;
 static int sYMapsToB = 1;
 
+/* INPUT TUNE (menu INP tab; [input] curve / dpad_steer): a response curve on the normalised
+ * circle-pad magnitude (0 linear, 1 soft, 2 softer -- a gentler centre for fine steering,
+ * full deflection unchanged) and a d-pad-as-stick mode (0 off, 1 full: +-80 immediately,
+ * 2 ramp: a tap gives ~30, a hold reaches 80 after GDX_DPAD_RAMP_FRAMES). The game never
+ * reads the N64 d-pad bits (menus take direction from the stick via STICK_TO_BUTTON and
+ * OR the d-pad bits in), so the bits stay asserted alongside the emulated stick and
+ * nothing double-fires. Per axis the larger of pad and d-pad wins. */
+#define GDX_CPAD_CURVE_DEFAULT 0
+#define GDX_DPAD_STEER_DEFAULT 0
+#define GDX_DPAD_RAMP_FRAMES 8
+#define GDX_DPAD_RAMP_START 24
+static int sCpadCurve = GDX_CPAD_CURVE_DEFAULT;
+static int sDpadSteer = GDX_DPAD_STEER_DEFAULT;
+static int sDpadHeldX = 0; /* consecutive polls the d-pad x axis has been held (ramp) */
+static int sDpadHeldY = 0;
+static int sReadRawX = 0, sReadRawY = 0;     /* menu readout: last raw pad + scaled stick */
+static int sReadStickX = 0, sReadStickY = 0;
+
 /* MENU rework of the compiled kButtonMap: the same mapping, expressed as game ACTIONS
  * with runtime-mutable 3DS key masks (menu INPUT tab rebinds; [input] bind_<action>
  * hex keys persist). `hid` starts 0 and is filled at window init: compiled default,
@@ -239,7 +257,50 @@ static int8_t gdx3ds_scale_axis(s16 raw) {
     if (scaled > 80) {
         scaled = 80;
     }
+    if (sCpadCurve > 0) {
+        /* t in [0,1]; soft = t*(0.5+0.5t) (~t^1.5), softer = t^2. Endpoints unchanged. */
+        float t = (float) scaled / 80.0f;
+        t = (sCpadCurve == 1) ? t * (0.5f + 0.5f * t) : t * t;
+        scaled = (int) (t * 80.0f + 0.5f);
+    }
     return (int8_t) ((raw < 0) ? -scaled : scaled);
+}
+
+/* d-pad axis -> stick value; `analog` is the circle-pad value for the same axis. */
+static int8_t gdx3ds_dpad_axis(int dir, int heldPolls, int8_t analog) {
+    int mag;
+    int amag = analog < 0 ? -analog : analog;
+    if (dir == 0) {
+        return analog;
+    }
+    if (sDpadSteer == 2) {
+        mag = GDX_DPAD_RAMP_START + heldPolls * ((80 - GDX_DPAD_RAMP_START) / GDX_DPAD_RAMP_FRAMES);
+        if (mag > 80) {
+            mag = 80;
+        }
+    } else {
+        mag = 80;
+    }
+    if (amag > mag) {
+        return analog;
+    }
+    return (int8_t) (dir < 0 ? -mag : mag);
+}
+
+/* INPUT TUNE accessors (menu INP tab). Setters clamp; values are live on the next poll. */
+int gdx3ds_input_get_deadzone(void) { return sCpadDeadzone; }
+void gdx3ds_input_set_deadzone(int v) { sCpadDeadzone = v < 0 ? 0 : (v > 80 ? 80 : v); }
+int gdx3ds_input_get_range(void) { return sCpadRange; }
+void gdx3ds_input_set_range(int v) { sCpadRange = v < 60 ? 60 : (v > 156 ? 156 : v); }
+int gdx3ds_input_get_curve(void) { return sCpadCurve; }
+void gdx3ds_input_set_curve(int v) { sCpadCurve = v < 0 ? 0 : (v > 2 ? 2 : v); }
+int gdx3ds_input_get_dpad_steer(void) { return sDpadSteer; }
+void gdx3ds_input_set_dpad_steer(int v) { sDpadSteer = v < 0 ? 0 : (v > 2 ? 2 : v); }
+void gdx3ds_input_stick_readout(int* rawX, int* rawY, int* stickX, int* stickY) {
+    if (rawX) { *rawX = sReadRawX; }
+    if (rawY) { *rawY = sReadRawY; }
+    if (stickX) { *stickX = sReadStickX; }
+    if (stickY) { *stickY = sReadStickY; }
 }
 
 int gdx3ds_os_window_init(int* outWidth, int* outHeight) {
@@ -250,6 +311,10 @@ int gdx3ds_os_window_init(int* outWidth, int* outHeight) {
     gdx3ds_config_load(GDX3DS_CONFIG_DEFAULT_PATH);
     sCpadDeadzone = gdx3ds_config_get_int("input", "deadzone", GDX_CPAD_DEADZONE_DEFAULT);
     sCpadRange = gdx3ds_config_get_int("input", "range", GDX_CPAD_RANGE_DEFAULT);
+    gdx3ds_input_set_deadzone(sCpadDeadzone);
+    gdx3ds_input_set_range(sCpadRange);
+    gdx3ds_input_set_curve(gdx3ds_config_get_int("input", "curve", GDX_CPAD_CURVE_DEFAULT));
+    gdx3ds_input_set_dpad_steer(gdx3ds_config_get_int("input", "dpad_steer", GDX_DPAD_STEER_DEFAULT));
     sYMapsToB = gdx3ds_config_get_bool("input", "y_maps_to_b", 1);
     gdx3ds_input_load_binds(); /* MENU: compiled defaults + persisted bind_* overrides */
 
@@ -341,8 +406,26 @@ void gdx3ds_os_poll_input(Gdx3dsPadState* outPads, int maxPads) {
     hidCircleRead(&cpad);
 
     outPads[0].buttons = buttons;
-    outPads[0].stickX = gdx3ds_scale_axis(cpad.dx);
-    outPads[0].stickY = gdx3ds_scale_axis(cpad.dy);
+    {
+        int8_t sx = gdx3ds_scale_axis(cpad.dx);
+        int8_t sy = gdx3ds_scale_axis(cpad.dy);
+        if (sDpadSteer != 0) {
+            int dx = ((held & KEY_DRIGHT) ? 1 : 0) - ((held & KEY_DLEFT) ? 1 : 0);
+            int dy = ((held & KEY_DUP) ? 1 : 0) - ((held & KEY_DDOWN) ? 1 : 0);
+            sDpadHeldX = dx != 0 ? sDpadHeldX + 1 : 0;
+            sDpadHeldY = dy != 0 ? sDpadHeldY + 1 : 0;
+            sx = gdx3ds_dpad_axis(dx, sDpadHeldX, sx);
+            sy = gdx3ds_dpad_axis(dy, sDpadHeldY, sy);
+        } else {
+            sDpadHeldX = sDpadHeldY = 0;
+        }
+        outPads[0].stickX = sx;
+        outPads[0].stickY = sy;
+        sReadRawX = cpad.dx;
+        sReadRawY = cpad.dy;
+        sReadStickX = sx;
+        sReadStickY = sy;
+    }
     outPads[0].connected = 1;
 
     /* Only pad 0 exists on 3DS; report the rest explicitly disconnected so the

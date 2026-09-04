@@ -145,6 +145,41 @@ static volatile int sWatchStage = 0;
 // cannot write through stdio/SD state that is being torn down under it.
 static volatile int sWatchdogQuiet = 0;
 
+// HEAP-WATCH: leak triage without a debugger. The watchdog beat already carries heapUsed;
+// this keeps a baseline (taken at beat 12, ~60 s, after the boot loads settle) and a
+// high-water mark, and when heapUsed crosses baseline + [debug] heap_watch MB (default 8,
+// 0 = off) -- and every further heap_watch_step MB (default 4) -- asks the main thread for
+// one [mem-census] owner attribution + [live-hist] dump, so the log says WHICH container
+// grew, not just that the heap did. [debug] heap_watch_arm=1 additionally arms the live
+// allocation histogram / RA sampler at the FIRST crossing, so normal play pays nothing but
+// a suspicious session starts sampling itself. Everything lands in sdmc log.txt.
+static volatile unsigned long sHeapBaseline = 0;   // bytes, 0 = not yet taken
+static volatile unsigned long sHeapHwm = 0;
+static volatile unsigned long sHeapNextTrigger = 0; // bytes
+static volatile int sHeapTriggerPending = 0;        // set by watchdog, consumed on main
+static volatile int sHeapTriggers = 0;
+static volatile uint64_t sHeapBaselineTick = 0;
+static int sHeapWatchMb = 8;
+static int sHeapWatchStepMb = 4;
+static int sHeapWatchArm = 0;
+extern "C" void gdx3ds_heapwatch_stats(unsigned long* usedKb, unsigned long* hwmKb, long* perMinKb,
+                                       int* triggers) {
+    struct mallinfo mi = mallinfo();
+    unsigned long used = (unsigned long)mi.uordblks;
+    if (usedKb) { *usedKb = used / 1024u; }
+    if (hwmKb) { *hwmKb = (sHeapHwm > used ? sHeapHwm : used) / 1024u; }
+    if (perMinKb) {
+        *perMinKb = 0;
+        if (sHeapBaseline != 0 && sHeapBaselineTick != 0) {
+            uint64_t ms = (svcGetSystemTick() - sHeapBaselineTick) / (uint64_t)CPU_TICKS_PER_MSEC;
+            if (ms > 30000) {
+                *perMinKb = (long)(((long long)used - (long long)sHeapBaseline) * 60000 / (long long)ms / 1024);
+            }
+        }
+    }
+    if (triggers) { *triggers = sHeapTriggers; }
+}
+
 static void watchdogThreadMain(void*) {
     uint32_t lastFrame = 0;
     uint32_t beat = 0;
@@ -155,11 +190,24 @@ static void watchdogThreadMain(void*) {
         }
         const uint32_t frame = sWatchFrame;
         struct mallinfo mi = mallinfo();
-        char msg[224];
+        const unsigned long used = (unsigned long)mi.uordblks;
+        if (used > sHeapHwm) {
+            sHeapHwm = used;
+        }
+        if (sHeapBaseline == 0 && beat + 1 >= 12) {
+            sHeapBaseline = used;
+            sHeapBaselineTick = svcGetSystemTick();
+            sHeapNextTrigger = sHeapWatchMb > 0 ? used + (unsigned long)sHeapWatchMb * 1024u * 1024u : 0;
+        }
+        if (sHeapNextTrigger != 0 && used >= sHeapNextTrigger) {
+            sHeapNextTrigger = used + (unsigned long)(sHeapWatchStepMb > 0 ? sHeapWatchStepMb : 1) * 1024u * 1024u;
+            sHeapTriggerPending = 1;
+        }
+        char msg[256];
         int n = std::snprintf(msg, sizeof(msg),
                               "[watchdog] beat=%lu frame=%lu(+%lu) stage=%d fiber=%d "
                               "aud=%lu/%lu astage=%d spec=%lu hle=%lu op=%02lX idx=%lu "
-                              "heapUsed=%lu heapFree=%lu",
+                              "heapUsed=%lu heapFree=%lu hwm=%lu base=%lu",
                               (unsigned long)++beat, (unsigned long)frame,
                               (unsigned long)(frame - lastFrame), sWatchStage,
                               gdx_watch_running_thread_id(),
@@ -171,7 +219,8 @@ static void watchdogThreadMain(void*) {
                               (unsigned long)gdx_watch_hle_op,
                               (unsigned long)gdx_watch_hle_idx,
                               (unsigned long)mi.uordblks,
-                              (unsigned long)mi.fordblks);
+                              (unsigned long)mi.fordblks,
+                              (unsigned long)sHeapHwm, (unsigned long)sHeapBaseline);
         if (n > 0) {
             svcOutputDebugString(msg, n);
             gdx3ds_filelog_write(msg, (size_t)n); // sink is thread-safe (recursive lock)
@@ -472,6 +521,7 @@ static void dumpMallocHistogram(unsigned long frameNum) {
                               frameNum, upper, count, gMallocHistBytes[b]);
         if (n > 0) {
             svcOutputDebugString(msg, n);
+            gdx3ds_filelog_write(msg, (size_t)n);
         }
     }
 }
@@ -510,6 +560,7 @@ static inline void tallyLiveAlloc(void* p, void* ra) {
                                       (unsigned long)usable, ra);
                 if (n > 0) {
                     svcOutputDebugString(msg, n);
+            gdx3ds_filelog_write(msg, (size_t)n);
                 }
             }
         }
@@ -528,6 +579,9 @@ static inline void tallyLiveFree(void* p) {
 
 // [live-hist] dump on the same cadence as [malloc-hist]; live=/bytes= are CURRENT levels,
 // so two dumps subtract to exactly the retained growth per class.
+// Printed SIGNED: when the histogram is armed mid-run (heap_watch_arm), frees of pre-arm
+// allocations drive a class negative -- net frees since arming -- and the dump-to-dump
+// difference is still the retained growth.
 static void dumpLiveHistogram(unsigned long frameNum) {
     if (!sMallocHistogramEnabled) {
         return;
@@ -540,10 +594,11 @@ static void dumpLiveHistogram(unsigned long frameNum) {
         unsigned long upper = (b == 0) ? 1ul : (1ul << b);
         char msg[96];
         int n = std::snprintf(msg, sizeof(msg),
-                              "[live-hist] frame=%lu class<=%luB live=%lu bytes=%lu",
-                              frameNum, upper, count, gLiveHistBytes[b]);
+                              "[live-hist] frame=%lu class<=%luB live=%ld bytes=%ld",
+                              frameNum, upper, (long)count, (long)gLiveHistBytes[b]);
         if (n > 0) {
             svcOutputDebugString(msg, n);
+            gdx3ds_filelog_write(msg, (size_t)n);
         }
     }
 }
@@ -629,6 +684,34 @@ static void portLogSvcTap(const char* message) {
     }
 }
 
+// [mem-census]: heap attributed to its owners (see the comment at the periodic call site).
+// Main thread only. Reaches svc AND the sdmc filelog so hardware runs keep it.
+static void emitMemCensus(Ship::Context* ctx, unsigned long frameNum, const char* why) {
+    unsigned long census[8] = {};
+    gdx3ds_rt_join_idle(); // the census scans the bridge's containers: render thread idle first
+    gdx_gfx_mem_census(census);
+    unsigned long lusBytes = 0;
+    if (ctx != nullptr && ctx->GetResourceManager() != nullptr) {
+        lusBytes = (unsigned long)ctx->GetResourceManager()->GetCacheByteSize();
+    }
+    struct mallinfo mi = mallinfo();
+    char msg[240];
+    int n = std::snprintf(
+        msg, sizeof(msg),
+        "[mem-census] frame=%lu heapUsed=%lu heapFree=%lu arena=%lu lin=%lu "
+        "seg=%lu/%lu tex=%lu/%lu wide=%lu/%lu setup=%lu ranges=%lu lus=%lu "
+        "big=%lu/%lu",
+        (unsigned long)frameNum, (unsigned long)mi.uordblks, (unsigned long)mi.fordblks,
+        (unsigned long)mi.arena, (unsigned long)linearSpaceFree(), census[0], census[1],
+        census[2], census[3], census[4], census[5], census[6], census[7], lusBytes,
+        gBigAllocBytes, gBigAllocCount);
+    if (n > 0) {
+        svcOutputDebugString(msg, n);
+        gdx3ds_filelog_write(msg, (size_t)n);
+    }
+    (void)why;
+}
+
 int main(int argc, char** argv) {
     svcOutputDebugString("main entered", 12);
     gdx_port_log_tap = &portLogSvcTap;
@@ -657,6 +740,9 @@ int main(int argc, char** argv) {
             logStep("malloc histogram ENABLED (dumps to [malloc-hist] on the mem-census cadence)");
         }
     }
+    sHeapWatchMb = gdx3ds_config_get_int("debug", "heap_watch", 8);
+    sHeapWatchStepMb = gdx3ds_config_get_int("debug", "heap_watch_step", 4);
+    sHeapWatchArm = gdx3ds_config_get_bool("debug", "heap_watch_arm", 0);
 
     // File-log sink right after config (sdmc: is mounted by libctru's __appInit, so the
     // INI read above already proved the device works). Earlier logStep lines only reach
@@ -922,7 +1008,7 @@ int main(int argc, char** argv) {
     rtCb.startFrame = [] { sRtWindow->StartFrame(); };
     rtCb.presentFallback = [] { gdx_vi_present_fallback(); };
     rtCb.endFrame = [] { sRtWindow->EndFrame(); };
-    const int rtMode = gdx3ds_rt_init(&rtCb);
+    const int rtMode = gdx3ds_rt_init(&rtCb); // 0 off, 1 sync, 2 pipe, 3 ahead
     // QUIET MODE (MENU-PERF): the recurring svc telemetry below (the every-64th "frame N"
     // heartbeat, the [present] scanout oracle, the [mem-census] line) is gated behind
     // `[debug] verbose = 1` (or `gputrace = 1`, so measurement runs need no extra key).
@@ -946,9 +1032,11 @@ int main(int argc, char** argv) {
         // close order (power-off menu, HOME-menu X, cart eject) and must break the loop
         // so main() unwinds through the ordinary teardown below — that path logs
         // "exiting" and fires the atexit tracer, which is the proof of a clean exit.
-        if (rtMode != 0) {
+        if (rtMode != 0 && (rtMode != 3 || aptShouldJumpToHome() || aptShouldClose())) {
             // Frame boundary: the previous iteration's END (present) must have completed so
             // the APT pump runs with no C3D frame open and nothing queued (audit section 6).
+            // ahead mode (3) lets the previous frame's render/present overlap this iteration
+            // and joins only when an APT transition is about to run (the hook joins too).
             sWatchStage = 9;
             gdx3ds_rt_join_idle();
         }
@@ -978,15 +1066,21 @@ int main(int argc, char** argv) {
         gdx_controller_poll();
         gdx_fixed_aspect_tick();
 
+        if (rtMode != 0) {
+            // BEGIN first: gdx_vi_tick's osSendMesg dispatches the game fibers from host
+            // context (osStartThread with __osRunningThread == NULL), i.e. SetTask + the next
+            // logic tick run INSIDE gdx_vi_tick -- the TASK must find the frame already opened
+            // by Interpreter::StartFrame (dimension/fixed-aspect latches precede Run).
+            GDX_HB("hb:start_frame", 4);
+            gdx3ds_rt_frame_begin(); // BEGIN: StartFrame on the render thread
+        }
         GDX_HB("hb:vi_tick", 2);
         gdx_vi_tick();   // runs the Main game fiber inline (posts VI retrace)
         GDX_HB("hb:audio_notify", 3);
         gdx_audio_thread_notify_frame();
 
-        GDX_HB("hb:start_frame", 4);
-        if (rtMode != 0) {
-            gdx3ds_rt_frame_begin(); // BEGIN: StartFrame on the render thread
-        } else {
+        if (rtMode == 0) {
+            GDX_HB("hb:start_frame", 4);
             w->StartFrame();
         }
         gdx_sched_drain_deferred_wakes();
@@ -994,8 +1088,9 @@ int main(int argc, char** argv) {
         gdx_dispatch();
         // RENDER THREAD join: the game fibers are all blocked; if a GFX task is still in
         // flight, the game is (by its own frame protocol, sys_gfx.c:212) parked on DP-done for
-        // it. Wait for the render thread (LightEvent, no spin), post DP-done, and dispatch
-        // again so the game finishes swap + SetTask inside this same iteration.
+        // it. pipe: wait for the render thread (LightEvent, no spin), post DP-done, dispatch
+        // again so the game finishes swap + SetTask inside this same iteration. ahead: post
+        // the DP-done at once (the next submit is the backpressure) and dispatch again.
         while (rtMode != 0 && gdx3ds_rt_task_pending()) {
             GDX_HB("hb:rt_join", 9);
             gdx3ds_rt_wait_task(); // waits, merges segment claims, posts the DP-done once
@@ -1055,30 +1150,35 @@ int main(int argc, char** argv) {
         // container instead of guessing from mallinfo deltas. seg/tex/wide/setup are the
         // bridge's cross-frame containers (gdx_gfx_mem_census), lus is the ResourceManager
         // cache (byte-accounted by the 3DS cap patch), big is the cumulative >=256 KB C++
-        // allocation counters, lin is linearSpaceFree. Main-thread only — the same thread
-        // that runs the game fibers and gdx_gfx_run, so the container scan cannot race.
+        // allocation counters, lin is linearSpaceFree. Main-thread only. Periodic under
+        // verbose; also fired by HEAP-WATCH when the watchdog sees the heap cross a line.
         if (verboseTelemetry && frameNum > 8 && (frameNum & 255) == 2) {
-            unsigned long census[8] = {};
-            gdx3ds_rt_join_idle(); // the census scans the bridge's containers: render thread idle first
-            gdx_gfx_mem_census(census);
-            unsigned long lusBytes = 0;
-            if (ctx != nullptr && ctx->GetResourceManager() != nullptr) {
-                lusBytes = (unsigned long)ctx->GetResourceManager()->GetCacheByteSize();
+            emitMemCensus(ctx.get(), (unsigned long)frameNum, "periodic");
+        }
+        if (sHeapTriggerPending && frameNum > 8) {
+            sHeapTriggerPending = 0;
+            sHeapTriggers = sHeapTriggers + 1;
+            {
+                struct mallinfo mi = mallinfo();
+                char hm[160];
+                int hn = std::snprintf(hm, sizeof(hm),
+                                       "[heap-watch] trigger=%d frame=%lu used=%lu base=%lu hwm=%lu next=%lu",
+                                       (int)sHeapTriggers, (unsigned long)frameNum,
+                                       (unsigned long)mi.uordblks, (unsigned long)sHeapBaseline,
+                                       (unsigned long)sHeapHwm, (unsigned long)sHeapNextTrigger);
+                if (hn > 0) {
+                    svcOutputDebugString(hm, hn);
+                    gdx3ds_filelog_write(hm, (size_t)hn);
+                }
             }
-            struct mallinfo mi = mallinfo();
-            char msg[240];
-            int n = std::snprintf(
-                msg, sizeof(msg),
-                "[mem-census] frame=%lu heapUsed=%lu heapFree=%lu arena=%lu lin=%lu "
-                "seg=%lu/%lu tex=%lu/%lu wide=%lu/%lu setup=%lu ranges=%lu lus=%lu "
-                "big=%lu/%lu",
-                (unsigned long)frameNum, (unsigned long)mi.uordblks, (unsigned long)mi.fordblks,
-                (unsigned long)mi.arena, (unsigned long)linearSpaceFree(), census[0], census[1],
-                census[2], census[3], census[4], census[5], census[6], census[7], lusBytes,
-                gBigAllocBytes, gBigAllocCount);
-            if (n > 0) {
-                svcOutputDebugString(msg, n);
+            emitMemCensus(ctx.get(), (unsigned long)frameNum, "heap-watch");
+            if (sMallocHistogramEnabled) {
+                dumpLiveHistogram((unsigned long)frameNum);
+            } else if (sHeapWatchArm) {
+                sMallocHistogramEnabled = 1;
+                logStep("[heap-watch] live allocation histogram + RA sampler ARMED (levels count from now)");
             }
+            gdx3ds_filelog_flush();
         }
         // CADENCE ratio line (~every 64 host frames, 1 svc line per ~2-3 s): the
         // direct measurement of "does the game deliver a gfx task every host

@@ -266,6 +266,16 @@ class GfxRenderingAPIC3D final : public GfxRenderingAPI {
     shaderProgram_s mShaderProgram = {};
     int mProjectionUniformLoc = -1;
     C3D_Mtx mFixupMatrix = {};
+    /* [vpfix] Viewports that reach outside the target (F-Zero X menus: a full-size N64
+     * viewport translated onto each grid cell) cannot be expressed as a PICA viewport, so the
+     * GPU viewport stays full-screen and the requested rect is folded into the projection as
+     * an NDC scale+offset; the scissor is intersected with the visible part of the rect. */
+    bool mVpAffineActive = false;
+    float mVpSx = 1.0f, mVpSy = 1.0f, mVpTx = 0.0f, mVpTy = 0.0f;
+    int mVpVisX = 0, mVpVisY = 0, mVpVisW = 400, mVpVisH = 240;
+    int mScX = 0, mScY = 0, mScW = 400, mScH = 240; /* last LUS scissor (window coords) */
+    bool mScValid = false;
+    void ApplyScissorRect(int x, int y, int width, int height);
 
     /* Fixed-size linearAlloc vertex pool, reset every StartFrame. */
     float* mVboPool = nullptr;
