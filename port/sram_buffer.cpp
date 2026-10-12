@@ -186,6 +186,105 @@ static bool gdx_sram_path(char* outPath, size_t outCap) {
     }
     return true;
 }
+
+#ifdef GDX_PLATFORM_3DS
+// 3DS save-swap support. The sdmc: (FAT) devoptab's rename() refuses to replace an existing
+// destination, unlike POSIX rename(2). The plain "stage to .tmp, rename over the live file" in
+// gdx_sram_flush therefore only worked the FIRST time (fzerox.sav did not exist yet) and then
+// silently dropped every later save ("could not replace fzerox.sav; save not persisted"), so
+// only the initial blank image ever reached the SD card. Same FAT limitation the port already
+// works around in gdx3ds_fs_sd.c and gdx3ds_filelog.c (remove before rename).
+
+static bool gdx_sram_file_exists(const char* p) {
+    FILE* f = fopen(p, "rb");
+    if (f == nullptr) {
+        return false;
+    }
+    fclose(f);
+    return true;
+}
+
+static long gdx_sram_file_size(const char* p) {
+    FILE* f = fopen(p, "rb");
+    if (f == nullptr) {
+        return -1;
+    }
+    long sz = -1;
+    if (fseek(f, 0, SEEK_END) == 0) {
+        sz = ftell(f);
+    }
+    fclose(f);
+    return sz;
+}
+
+// tempPath is a COMPLETE, closed staging image and path is the live save (normally present: the
+// plain rename just refused to replace it). Swap the new image in without ever leaving the card
+// with no complete copy: move the live save aside to .bak, rename .tmp into place, and roll the
+// old save back from .bak if that second rename fails. gdx_sram_recover() finishes an
+// interrupted swap.
+static void gdx_sram_swap_in(const char* tempPath, const char* path) {
+    char bakPath[4096 + 8];
+    if (strlen(path) + 4 >= sizeof(bakPath)) {
+        gdx_port_logf("[sram] WARNING: save path too long for backup file; save not persisted.\n");
+        remove(tempPath);
+        return;
+    }
+    strcpy(bakPath, path);
+    strcat(bakPath, ".bak");
+
+    remove(bakPath); // stale backup from an earlier swap (the live save exists, so it is not needed)
+    if (rename(path, bakPath) != 0) {
+        int err = errno;
+        gdx_port_logf("[sram] WARNING: could not move fzerox.sav aside (errno %d: %s); save not persisted.\n", err,
+                      strerror(err));
+        remove(tempPath);
+        return;
+    }
+    if (rename(tempPath, path) != 0) {
+        int err = errno;
+        gdx_port_logf("[sram] WARNING: could not install new fzerox.sav (errno %d: %s); restoring previous save.\n",
+                      err, strerror(err));
+        if (rename(bakPath, path) != 0) {
+            // Both complete images are still on the card (.bak = old, .tmp = new); keep them so
+            // gdx_sram_recover() can restore one on the next boot.
+            gdx_port_logf("[sram] WARNING: rollback failed; previous save kept as fzerox.sav.bak.\n");
+        } else {
+            remove(tempPath);
+        }
+        return;
+    }
+    remove(bakPath);
+}
+
+// Run once from gdx_sram_init, before the live save is read. If a previous run was cut off in
+// the swap above (live save moved aside, new one not installed yet), fzerox.sav is missing but a
+// complete copy is still on the card: prefer the newer .tmp, else the .bak. The exact-size check
+// also rejects a half-written .tmp left by a cut-off very first save.
+static void gdx_sram_recover(const char* path) {
+    if (gdx_sram_file_exists(path)) {
+        return;
+    }
+    char tempPath[4096 + 8];
+    char bakPath[4096 + 8];
+    if (strlen(path) + 4 >= sizeof(tempPath)) {
+        return;
+    }
+    strcpy(tempPath, path);
+    strcat(tempPath, ".tmp");
+    strcpy(bakPath, path);
+    strcat(bakPath, ".bak");
+
+    const char* candidates[2] = { tempPath, bakPath };
+    for (int i = 0; i < 2; i++) {
+        if (gdx_sram_file_size(candidates[i]) == (long) GDX_SRAM_SIZE && rename(candidates[i], path) == 0) {
+            gdx_port_logf("[sram] recovered fzerox.sav from interrupted save (%s).\n",
+                          i == 0 ? "fzerox.sav.tmp" : "fzerox.sav.bak");
+            remove(bakPath); // no-op if it was the one just renamed
+            return;
+        }
+    }
+}
+#endif
 #endif
 
 void gdx_sram_init(void) {
@@ -232,6 +331,10 @@ void gdx_sram_init(void) {
         gdx_port_logf("[sram] WARNING: could not resolve save file path; starting with a fresh save.\n");
         return;
     }
+
+#ifdef GDX_PLATFORM_3DS
+    gdx_sram_recover(path);
+#endif
 
     FILE* f = fopen(path, "rb");
     if (f == nullptr) {
@@ -336,9 +439,16 @@ static void gdx_sram_flush(void) {
         return;
     }
     if (rename(tempPath, path) != 0) {
+#ifdef GDX_PLATFORM_3DS
+        // sdmc: FAT will not rename over an existing file, so every save after the first lands
+        // here; swap the staged image in through a .bak instead of dropping it.
+        gdx_sram_swap_in(tempPath, path);
+        return;
+#else
         gdx_port_logf("[sram] WARNING: could not replace fzerox.sav; save not persisted.\n");
         remove(tempPath);
         return;
+#endif
     }
 #endif
 }
