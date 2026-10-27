@@ -27,10 +27,11 @@ G-Diffuser 3DS ships as three builds:
 | **O3DS** | Old 3DS / 2DS | F-Zero X | `G-Diffuser-3DS-O3DS.3dsx` / `.cia` |
 | **N3DS** | New 3DS / New 2DS XL | F-Zero X | `G-Diffuser-3DS-N3DS.3dsx` / `.cia` |
 | **N3DS-EK** | New 3DS | F-Zero X + Expansion Kit | `G-Diffuser-3DS-N3DS-EK.3dsx` / `.cia` |
+| **O3DS-EK** | Old 3DS / 2DS | F-Zero X + Expansion Kit (**experimental**) | `G-Diffuser-3DS-O3DS-EK.3dsx` / `.cia` |
 
-A fourth target, **O3DS-EK**, builds from source (§14) but is not part of this release: on real
-Old 3DS hardware it boots and mounts the disk, but 64DD courses are jittery, the disk music
-breaks up, and the course editor/machine creator/menus are laggy — see §11.
+**O3DS-EK is experimental**: on real Old 3DS hardware it boots and mounts the disk, but 64DD
+courses are jittery, the disk music breaks up, and the course editor/machine creator/menus are
+laggy — see §11. On a New 3DS, use N3DS-EK.
 
 A few things worth knowing before you pick:
 
@@ -41,13 +42,13 @@ A few things worth knowing before you pick:
   after launch (see §12).
 - The Expansion Kit (EK) adds the 64DD course editor (COURSE EDIT) and machine creator (CREATE
   MACHINE), using the retail F-Zero X 64DD disk. It's a separate build of the whole game, not an
-  add-on, and in this release it's New 3DS only (see above) — see §6 for what you need to supply
+  add-on, and the Old 3DS version is experimental (see above) — see §6 for what you need to supply
   and what happens if you don't.
 - Vanilla and Expansion Kit builds install side by side (different HOME-menu titles, different
   save files) and share one SD-card folder for everything else.
 
 If a build isn't available as a ready download, anyone with the devkitPro toolchain can build
-it (or the experimental O3DS-EK) from source instead (§14).
+it from source instead (§14).
 
 ## 3. Prebake the game's assets on a PC (required, every build)
 
@@ -369,9 +370,9 @@ to set one.
   something crashes only on Old 3DS and not New 3DS, that's the most likely reason.
 - Hardware testing has covered the normal range of play, but not every mode on every console
   model yet — if you hit something that looks wrong, see §12.
-- **The Expansion Kit is New 3DS only for now.** An Old 3DS Expansion Kit build boots and mounts
-  the disk, but 64DD courses stutter, the disk music breaks up, and the course editor, machine
-  creator, and menus are very slow — it's not part of this release (§2).
+- **The Old 3DS Expansion Kit build (O3DS-EK) is experimental.** It boots and mounts the disk,
+  but 64DD courses stutter, the disk music breaks up, and the course editor, machine creator,
+  and menus are very slow (§2).
 - **Fan-translated Expansion Kit disk images can hang at boot.** Only the retail Japanese
   `baserom.jp.ek.ndd` is supported in this release — see §6.
 
@@ -403,7 +404,7 @@ overwritten fresh each boot.
 If you're filing a bug report, please include:
 
 1. **Console + firmware**: model (Old 3DS/2DS, New 3DS/New 2DS XL), Luma version.
-2. **Which build**: O3DS / N3DS / N3DS-EK (or the experimental, from-source-only O3DS-EK), and
+2. **Which build**: O3DS / N3DS / N3DS-EK / O3DS-EK, and
    `.3dsx` or `.cia`.
 3. **How far it got**: menus, a race, a specific mode — and the last line of `log.txt` if it
    stopped partway.
@@ -424,7 +425,6 @@ like a downloaded release:
 tools/build-3ds.sh <o3ds|n3ds|o3ds-ek|n3ds-ek|all>
 ```
 
-`o3ds-ek` is experimental and not released (§2/§11) — it builds and runs, just poorly on real
-Old 3DS hardware.
+`o3ds-ek` is experimental (§2/§11) — it builds and runs, just poorly on real Old 3DS hardware.
 
 Full toolchain setup and step-by-step instructions: `docs/BUILDING.md`.
