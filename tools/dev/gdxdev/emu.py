@@ -38,15 +38,22 @@ DEFAULT_SECONDS = 60
 # ini, which on this machine has carried `[debug] renderthread = 0` since 2026-09-17 — a
 # control value some earlier track left behind. Because `emu run` merges and never
 # overwrites, every Qt-lane run since then silently inherited it, including the oracle's
-# 6002-frame twin gate. Pinning it here makes the SHIPPING configuration (the thread on,
-# `bridgemain=1`) the default a gate measures, and makes `--ini debug.renderthread=0` an
-# explicit bisect lever rather than an accident of whoever used the SD last.
+# 6002-frame twin gate. Pinning it here makes the SHIPPING configuration the default a gate
+# measures, and makes `--ini debug.renderthread=1` an explicit bisect lever rather than an
+# accident of whoever used the SD last.
+#
+# The shipping value changed: since release-v1 78ff524 the built-in `auto` preset sets
+# renderthread = 0 on both models (port/3ds/gdx3ds_preset_n60.c), and the NRR refuses to run
+# under the render thread (`[nrr] REFUSED why=renderthread`, gdx3ds_nrr_game.c). An explicit
+# ini key beats the preset, so pinning "1" here turned the whole native race renderer OFF on
+# every New 3DS lane run while the shipped game runs it ON. (Old 3DS was unaffected: the
+# thread self-disables there.) Pin the shipped value.
 MEASUREMENT_INI = {
     ("debug", "console"): "1",
     ("debug", "filelog"): "1",
     ("debug", "filelog_max_kb"): "4096",
     ("debug", "verbose"): "1",
-    ("debug", "renderthread"): "1",
+    ("debug", "renderthread"): "0",
 }
 
 
@@ -171,7 +178,9 @@ def judge(emu_text, sd_text, out, replay_kind=None, replay_block=None,
     comp = replay.completion(replay_block, both, max_frame=max_frame,
                              emu_alive_at_end=emu_alive_at_end)
 
-    if max_frame is None or distinct < 2:
+    # One watchdog beat is not a stalled heartbeat when the replay COMPLETED: a short
+    # replay (probeboot, 420 ticks) quits via replay_quit before the second beat.
+    if max_frame is None or (distinct < 2 and not comp["replay_complete"]):
         verdict, detail = "FAIL", ("heartbeat not advancing (distinct=%d, max=%s)"
                                    % (distinct, max_frame))
     elif fatals:
@@ -295,7 +304,8 @@ def do_run(args, out, ctx):
             manifest["replay"] = block
             settings.update(extra)
             # NEXT.md B19: the run ends at the replay's last tick unless told otherwise.
-            replay.apply_implied(settings, explicit, kind=block.get("kind"), out=out)
+            replay.apply_implied(settings, explicit, kind=block.get("kind"), out=out,
+                                 last=block.get("last_tick"))
         else:
             manifest["replay"] = None
             replay.stale_autoinput_warning(out)

@@ -93,6 +93,8 @@ constexpr uint32_t kNiThrottle = 64;
 constexpr uint32_t kNiPlan = 160;         /* words a geometry plan covers (root span / one list) */
 constexpr uint32_t kNiSegs = 256;         /* interned geometry segments */
 constexpr uint32_t kNiSegMaxCmds = 96;
+constexpr uint32_t kNiOccBits = 6;         /* native-vs: marker words a multi-view task keys its spans by */
+constexpr uint32_t kNiOcc = 1u << kNiOccBits;
 enum : uint8_t { kPlanNone = 0, kPlanSkip = 1, kPlanMesh = 2, kPlanIn = 3 };
 
 /* op header: kind | flags | words << 8 | index << 20 (root: from the span's first word; nested: in the list) */
@@ -284,6 +286,10 @@ struct Interp::NrrRace {
     uint32_t task;
     uint32_t ordinal;  /* the task's span count: part of a span's key (several spans of a frame can
                           follow the same marker word with the same first word: the sky's loads) */
+    bool multiView;    /* native-vs: a 2-4P race task, its spans keyed by NrrRaceViewKey */
+    struct Occ {
+        uint32_t marker, task, n; /* native-vs: a marker word and this task's spans after it so far */
+    } occ[kNiOcc];
     uint32_t env[8];
     bool envValid;
     uint32_t poolUsed;
@@ -319,6 +325,8 @@ struct Interp::NrrRace {
                         first task -- nSegs is already 0 then, so the "reset" is a no-op either way */
     uint32_t segBuild[2 * kNiSegMaxCmds];
     bool noMesh; /* the slot being compiled had a segment the mesh path refused: plan no geometry */
+    bool menu;   /* menus-s2 [native] ni_menu_root: this task is a menu frame's root (NrrRaceArmMenu) */
+    uint32_t menuCloses; /* the window's open NRR HUD hand-offs closed at a menu span's start */
     /* W1/H1: no longer a per-task latch -- `gdx3ds_stereo_replay_frame` is read live at each
      * kNiMesh/NrrRaceSegRun dispatch (gdx_nirace.cpp:776/:1153) instead of being cached here once
      * at NrrRaceTaskBegin. The old latch could be a whole frame stale under the tick-ahead pipe
@@ -438,6 +446,16 @@ GDX_COLD void Interp::NrrRaceSet(int level, int log) {
     mNi->log = log;
 }
 
+/* menus-s2 [native] ni_menu_root: a menu frame's arm (cold, once per task). The programs are the race's;
+ * a menu frame plans no geometry segments (its 3D belongs to ni_course / ni_mach) and a span that starts
+ * with the NRR HUD's hand-off still open closes it first (NrrRaceMissRecover). */
+GDX_COLD void Interp::NrrRaceArmMenu(bool on) {
+    mNiOn = on && mNi != nullptr;
+    if (mNi != nullptr) {
+        mNi->menu = mNiOn;
+    }
+}
+
 /* The root's walk starts (the frame configuration of the task is set): the task's counters, and the
  * environment the compiled scissors rest on. */
 GDX_COLD void Interp::NrrRaceTaskBegin() {
@@ -470,6 +488,12 @@ GDX_COLD void Interp::NrrRaceTaskBegin() {
         }
         N.nSegs = 0;
         N.lastCourse = gCourseIndex;
+        /* the programs go with the segments their geometry ops point at -- a program that outlived
+         * them ran a freed segment (race-gp-cup, the first frame of the 6th course: a guest data abort
+         * in NrrRaceHotRun's geometry op; heap-layout dependent) */
+        memset(static_cast<void*>(N.slots), 0, sizeof(N.slots));
+        N.poolUsed = 0;
+        N.w.clears++;
     }
 }
 
@@ -495,6 +519,10 @@ GDX_COLD int Interp::NrrRaceReceipt(char* buf, int cap) {
     if (n < cap) {
         n += snprintf(buf + n, static_cast<size_t>(cap - n), " | compiles=%u clears=%u evicts=%u slots=%u pool=%u",
                       N.w.compiles, N.w.clears, N.w.evicts, used, N.poolUsed);
+    }
+    if (N.menuCloses != 0 && n < cap) {
+        n += snprintf(buf + n, static_cast<size_t>(cap - n), " menucloses=%.1f", N.menuCloses * inv);
+        N.menuCloses = 0;
     }
     if (N.level == 2 && n < cap) {
         n += snprintf(buf + n, static_cast<size_t>(cap - n), " | vfy ok=%u bad=%u", N.w.vOk, N.w.vBad);
@@ -570,7 +598,11 @@ __attribute__((noinline)) bool Interp::NrrRaceHotSpan(Frame& f, uint32_t marker)
     }
     NrrRace& N = *mNi;
     N.w.spans++;
-    marker ^= (++N.ordinal) << 24; /* the marker's opcode byte (0x00) carries the span's ordinal */
+    if (GDX_UNLIKELY(N.multiView)) {
+        marker = NrrRaceViewKey(marker); /* native-vs: a 2-4P frame's key (cold) */
+    } else {
+        marker ^= (++N.ordinal) << 24; /* the marker's opcode byte (0x00) carries the span's ordinal */
+    }
     const uint32_t h = NiHash(marker, c.w0);
     NI_NO_UNROLL
     for (uint32_t p = 0; p < kNiProbe; p++) {
@@ -1109,7 +1141,7 @@ GDX_COLD void Interp::NrrRaceSegRun(const uint32_t* seg, uint32_t cmds, const vo
  * [debug] nicensus is off, so this function returns immediately in the common case. */
 GDX_COLD void Interp::NrrRaceNoteEx(const Cmd& c) {
     if (mNc != nullptr) {
-        NcNote(c, false);
+        NcNote(c, false, NCS_NIEX);
     }
 }
 
@@ -1142,7 +1174,7 @@ GDX_COLD bool Interp::NrrRaceSegFallback(const uint32_t* seg, uint32_t cmds) {
         t.idx = k + 1u;
         (void)Exec(c, t, 0);
         if (GDX_UNLIKELY(mNc != nullptr)) { /* [debug] nicensus (nimenu W2, review M1) */
-            NcNote(c, false);
+            NcNote(c, false, NCS_NISEG);
         }
         N.w.ex++;
     }
@@ -1151,6 +1183,44 @@ GDX_COLD bool Interp::NrrRaceSegFallback(const uint32_t* seg, uint32_t cmds) {
 }
 
 /* ---- cold: misses, compiles, bails, verify -------------------------------------------------- */
+
+/* native-vs: the task's spans keyed per view (the glue: [native] ni_view's NRR_NI_VIEW_RACE, a 2-4P
+ * race frame). */
+GDX_COLD void Interp::NrrRaceSetMultiView(bool on) {
+    if (mNi != nullptr) {
+        mNi->multiView = on;
+    }
+}
+
+/* native-vs: a 2-4P frame's span key. The frame's span ordinal drifts with every view's variable span
+ * count (the track's material runs come and go with each camera), so a later view's spans took a new
+ * key -- a new compile -- nearly every frame (4P attract demo: 60-76 ordinals per (marker, first word),
+ * ~2,700 compiles, ~1,950 evictions and 11 pool clears per 256 frames). Here the ordinal is the span's
+ * occurrence after the same marker word in this task: an NRR marker carries its (view, category), so a
+ * view's spans keep their keys whatever the other views drew. The occurrence also goes into bits 4-11:
+ * NiHash's multiplies only carry a bit upward, so the opcode byte alone never reaches the slot index and
+ * a view's ~19 track-run spans (same marker, same first word) all probed one 8-slot window and evicted
+ * each other. The keys stay distinct (the opcode byte still decides n). A full table falls back to the
+ * frame's ordinal (a key only picks the cache slot: the program still checks its words). */
+GDX_COLD uint32_t Interp::NrrRaceViewKey(uint32_t marker) {
+    NrrRace& N = *mNi;
+    const uint32_t h = (marker * 2654435761u) >> (32u - kNiOccBits);
+    N.ordinal++;
+    for (uint32_t p = 0; p < kNiOcc; p++) {
+        NrrRace::Occ& o = N.occ[(h + p) & (kNiOcc - 1u)];
+        if (o.task != N.task) {
+            o.task = N.task;
+            o.marker = marker;
+            o.n = 1;
+            return marker ^ (1u << 24) ^ (1u << 4);
+        }
+        if (o.marker == marker) {
+            o.n++;
+            return marker ^ ((o.n & 0xFFu) << 24) ^ ((o.n & 0xFFu) << 4);
+        }
+    }
+    return marker ^ (N.ordinal << 24);
+}
 
 /* A span's native program did not take (NrrRaceHotSpan false): mSp/the top frame's idx are wherever
  * that left them -- unchanged (the throttle, `mNrrOpen`) or past a bailed op with a list pushed above
@@ -1164,6 +1234,9 @@ GDX_COLD bool Interp::NrrRaceSegFallback(const uint32_t* seg, uint32_t cmds) {
  * (an ENDDL popped mSp to 0) -- nothing left for the native loop to resume. Exact by construction: this
  * is the identical stock path a bail already fell back to; it is now bounded instead of open-ended. */
 GDX_COLD bool Interp::NrrRaceMissRecover() {
+    if (mNi->menu && mNrrOpen && mSp == 1 && NrrRaceMenuReopen()) {
+        return true; /* the span ran natively after all */
+    }
     while (mSp > 0) {
         Frame& t = mStack[mSp - 1];
         if (t.idx >= t.list.limit) {
@@ -1195,7 +1268,7 @@ GDX_COLD bool Interp::NrrRaceMissRecover() {
                                               * command, same as Walk()'s own loop counts -- stays in
                                               * whatever ctx this recovery inherited (NC_WALK), matching
                                               * the comment above: this IS the stock walk, word for word. */
-            NcNote(c, false);
+            NcNote(c, false, NCS_NIRECOV);
         }
         const int r = Exec(c, t, f3dXfer);
         if (r == 1) {
@@ -1203,6 +1276,31 @@ GDX_COLD bool Interp::NrrRaceMissRecover() {
         }
     }
     return false; /* the frame ended (mSp hit 0) inside the recovery walk */
+}
+
+/* menus-s2 [native] ni_menu_root: a menu span refused only because the NRR HUD still holds citro3d (a
+ * MENU run left its batch open; NrrRaceHotSpan's mNrrOpen test, the first refusal it can make on a span
+ * that has words). The hand-off is closed here -- the open batch drawn, the backend's viewport / scissor
+ * where the stock rectangles leave them -- and the span offered to its program again. The stock walk
+ * would close it at the first word that reaches the backend instead; what is drawn and in which order
+ * is the same (the batch is complete: only MENU runs add to it, and the next one reopens). The marker
+ * before the span is the root word before it (0 at the root's start), as NrrRaceHotDrive passed it.
+ * true: the span is done (as NrrRaceHotSpan's true); false: the stock walk takes it from where the
+ * program left the root. */
+GDX_COLD bool Interp::NrrRaceMenuReopen() {
+    Frame& f = mStack[0];
+    if (f.idx >= f.list.limit) {
+        return false;
+    }
+    uint32_t marker = 0;
+    if (f.idx > 0) {
+        const Cmd m = ReadCmd(f.list, f.idx - 1u);
+        const uint8_t mo = Opcode(m.w0);
+        marker = (mo == OP_NOOP || mo == OP_SPNOOP) ? m.w0 : 0u;
+    }
+    NrrHudHotClose();
+    mNi->menuCloses++;
+    return NrrRaceHotSpan(f, marker) && mSp == 1;
 }
 
 /* An ST op the hot loop does not apply: its words' stock handlers, in order, from the list they were
@@ -1223,7 +1321,7 @@ GDX_COLD void Interp::NrrRaceStOther(const uint32_t* op, const ListRef& list, si
         t.idx = idx + k + 1u;
         (void)Exec(c, t, 0);
         if (GDX_UNLIKELY(mNc != nullptr)) { /* [debug] nicensus (nimenu W2, review M1) */
-            NcNote(c, false);
+            NcNote(c, false, NCS_NISTX);
         }
     }
     N.w.stx += n;
@@ -1406,7 +1504,7 @@ GDX_COLD bool Interp::NrrRaceCompile(Frame& f, NrrRaceSlot* slot) {
     const char* why = "marker";
     /* ni_race_mesh: the span's geometry plan (its extent: up to the next root marker) */
     N.ps = 0;
-    N.noMesh = slot->noMesh != 0;
+    N.noMesh = slot->noMesh != 0 || N.menu; /* ni_menu_root: a menu frame plans no geometry */
     {
         size_t e = start;
         while (e < f.list.limit && e - start < kNiMaxRoot) {

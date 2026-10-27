@@ -56,6 +56,7 @@ hand.
 | `race-gp2-sector.gdxrec` | 5700 / **40** | GP on QUEEN cup — SELECT COURSE, SELECT MACHINE, machine settings, **SECTOR ALPHA** (Inverted Loop) with the 30-machine pack, the retire/restart course card | — |
 | `tunnel-silence-records.gdxrec` | 4700 / **20** | RECORDS(6) for **SILENCE**, dwelling over its course flyby: Silence carries three consecutive `TRACK_SHAPE_TUNNEL` control points and the flyby draws the enclosed tunnel interior (tags `r2710`-`r2850`, `r4250`-`r4320`) | — |
 | `race-4p-vs.gdxrec` | 5900 / **45** | VS BATTLE **4 PLAYERS**: the player-count sub-menu, the 4-cursor SELECT MACHINE, 4-player machine settings, **GAMEMODE_VS_4P(5) split screen**, VS RESULTS | **`--ini pads=4`** |
+| `race-3p-vs.gdxrec` | 5900 / **45** | `race-4p-vs` with its second D-down released (ticks 1320-1331): VS BATTLE **3 PLAYERS**, **GAMEMODE_VS_3P(4) split screen** (three views + the minimap quadrant), VS RESULTS. SHOTs as `race-4p-vs`, the race ones tagged `m04_` | **`--ini pads=4`** |
 
 ## two-course corpus (`texcacheinterp`-track, 2026-09-23, build `native/texcacheinterp@9f06edc`)
 

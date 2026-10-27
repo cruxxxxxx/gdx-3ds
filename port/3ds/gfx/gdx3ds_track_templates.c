@@ -3,8 +3,11 @@
 
 #include <string.h>
 
-const GdxTrkTemplate kGdxTrkGolden[GDXTRK_TEMPLATE_COUNT] = {
-#include "gdx3ds_track_templates_golden.inc"
+GdxTrkTemplate gGdxTrkTemplate[GDXTRK_TEMPLATE_COUNT];
+
+/* Byte length of each index list (course_track_gfx/D_8014*: 9-12 GBI commands). */
+const uint16_t kGdxTrkTemplateLen[GDXTRK_TEMPLATE_COUNT] = {
+    72, 72, 72, 72, 88, 88, 72, 72, 72, 72, 80, 80, 80, 80, 96, 96, 96, 96,
 };
 
 const char* const kGdxTrkTemplateNames[GDXTRK_TEMPLATE_COUNT] = {
@@ -104,5 +107,65 @@ int gdxtrk_template_equal(const GdxTrkTemplate* a, const GdxTrkTemplate* b) {
             return 0;
         }
     }
+    return 1;
+}
+
+static uint32_t GdxTrkFnvByte(uint32_t h, uint32_t v) {
+    return (h ^ (v & 0xFFu)) * 16777619u;
+}
+
+static uint32_t GdxTrkFnvWord(uint32_t h, uint32_t v) {
+    h = GdxTrkFnvByte(h, v);
+    h = GdxTrkFnvByte(h, v >> 8);
+    h = GdxTrkFnvByte(h, v >> 16);
+    return GdxTrkFnvByte(h, v >> 24);
+}
+
+uint32_t gdxtrk_templates_digest(const GdxTrkTemplate* t) {
+    uint32_t h = 2166136261u;
+    int i;
+    for (i = 0; i < GDXTRK_TEMPLATE_COUNT; i++) {
+        int j;
+        h = GdxTrkFnvByte(h, t[i].ntris);
+        h = GdxTrkFnvByte(h, t[i].nevents);
+        h = GdxTrkFnvByte(h, t[i].maxSlot);
+        for (j = 0; j < t[i].ntris * 3; j++) {
+            h = GdxTrkFnvByte(h, t[i].idx[j]);
+        }
+        for (j = 0; j < t[i].nevents; j++) {
+            h = GdxTrkFnvByte(h, t[i].events[j].beforeTri);
+            h = GdxTrkFnvWord(h, t[i].events[j].w0);
+            h = GdxTrkFnvWord(h, t[i].events[j].w1);
+        }
+    }
+    return h;
+}
+
+int gdxtrk_templates_install(const uint8_t* const src[GDXTRK_TEMPLATE_COUNT], int* failedIndex, int* failedRc) {
+    GdxTrkTemplate t[GDXTRK_TEMPLATE_COUNT];
+    int i;
+    if (failedIndex != NULL) {
+        *failedIndex = -1;
+    }
+    if (failedRc != NULL) {
+        *failedRc = GDXTRK_DECODE_OK;
+    }
+    for (i = 0; i < GDXTRK_TEMPLATE_COUNT; i++) {
+        const int rc = src[i] != NULL ? gdxtrk_decode_template(src[i], kGdxTrkTemplateLen[i], &t[i])
+                                      : GDXTRK_DECODE_BAD_ARGS;
+        if (rc != GDXTRK_DECODE_OK) {
+            if (failedIndex != NULL) {
+                *failedIndex = i;
+            }
+            if (failedRc != NULL) {
+                *failedRc = rc;
+            }
+            return 0;
+        }
+    }
+    if (gdxtrk_templates_digest(t) != GDXTRK_TEMPLATES_DIGEST) {
+        return 0;
+    }
+    memcpy(gGdxTrkTemplate, t, sizeof(t));
     return 1;
 }

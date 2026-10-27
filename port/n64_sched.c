@@ -845,12 +845,18 @@ void gdx_transition_step_begin(void) {
  * course at the mode-init checkpoint. Weak: absent on every other platform. */
 #if defined(__3DS__)
 extern void gdx3ds_course_force_hook(const char* label) __attribute__((weak));
+/* mp-online (port/3ds/net/gdx3ds_mp_game.c): an online session pins the race's settings, seeds and
+ * per-console leftovers at the same checkpoint. Weak; a no-op with no session. */
+extern void gdx3ds_mp_mode_init_hook(const char* label) __attribute__((weak));
 #endif
 
 void gdx_transition_step_mark(const char* label) {
 #if defined(__3DS__)
     if (gdx3ds_course_force_hook != NULL) {
         gdx3ds_course_force_hook(label);
+    }
+    if (gdx3ds_mp_mode_init_hook != NULL) {
+        gdx3ds_mp_mode_init_hook(label);
     }
 #endif
 #ifdef _WIN32
@@ -1531,8 +1537,10 @@ void osSpTaskStartGo(OSTask* tp) {
            it anyway and count the leak. */
         extern int gdx3ds_c5tick_take_hollow_task(void);
         extern void gdx3ds_c5tick_note_leak(void);
+        /* mp-snapshot (port/3ds/gdx_snapshot.c): a resimulated tick is never rendered. */
+        extern int gdx_snap_drop_task(void);
         const int hollowTask = gdx3ds_c5tick_take_hollow_task();
-        int dropTask = gdx3ds_frameskip_drop_task();
+        int dropTask = gdx3ds_frameskip_drop_task() || gdx_snap_drop_task();
         if (hollowTask && !dropTask) {
             gdx3ds_c5tick_note_leak();
             dropTask = 1;

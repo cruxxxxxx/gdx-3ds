@@ -1301,7 +1301,7 @@ __attribute__((noinline)) int NrrTrkHotAtlasHold(const GdxTrkResView* view, cons
         const uint32_t r0 = AtlasRing(op.ring[0], slot);
         const uint32_t r1 = AtlasRing(op.ring[1], slot);
         uint32_t rj = 0;
-        if (kGdxTrkGolden[op.tmpl].maxSlot >= 16) {
+        if (gGdxTrkTemplate[op.tmpl].maxSlot >= 16) {
             rj = AtlasRing(op.join, slot);
         }
         if (r0 == 0xFFFFu || r1 == 0xFFFFu || rj == 0xFFFFu) {
@@ -1645,7 +1645,7 @@ typedef uint32_t __attribute__((may_alias, aligned(4))) PairWord;
 
 __attribute__((noinline, cold)) void PairBuild() {
     for (int t = 0; t < GDXTRK_TEMPLATE_COUNT; t++) {
-        const GdxTrkTemplate& tm = kGdxTrkGolden[t];
+        const GdxTrkTemplate& tm = gGdxTrkTemplate[t];
         const int n = 3 * tm.ntris;
         PairTab& pt = sPair[t];
         for (int ph = 0; ph < 2; ph++) {
@@ -1680,7 +1680,7 @@ void PairEnsure() {
 
 /* A whole template (from 0 to ntris) into the open draw's indices, pair-packed. */
 __attribute__((noinline)) void NrrTrkHotAppendPairs(int tmpl, const uint32_t base[3]) {
-    const GdxTrkTemplate& t = kGdxTrkGolden[tmpl];
+    const GdxTrkTemplate& t = gGdxTrkTemplate[tmpl];
     const PairTab& pt = sPair[tmpl];
     uint16_t* d = sRing.base + sRing.n;
     const int ph = (int)(sRing.n & 1u);
@@ -1722,7 +1722,7 @@ __attribute__((noinline)) bool NrrTrkHotOp(NrrCtx* c, GdxInterpSeam& I, const Gd
     if (op.tmpl >= GDXTRK_TEMPLATE_COUNT || op.ring[0] >= set.nRings || op.ring[1] >= set.nRings) {
         return false;
     }
-    const GdxTrkTemplate& t = kGdxTrkGolden[op.tmpl];
+    const GdxTrkTemplate& t = gGdxTrkTemplate[op.tmpl];
     /* slots 16-20: a join template's join vertices (n60trk2; NO_RING >= nRings); no other template
        reads base[2] */
     if (t.maxSlot >= 16 && op.join >= set.nRings) {
@@ -1841,7 +1841,7 @@ __attribute__((noinline)) uint32_t NrrTrkHotRunIdx(const GdxNrrTrkFrame* f, cons
     uint32_t n = 0;
     for (uint32_t k = run.opStart; k < run.opEnd && k < f->nOps; k++) {
         const uint8_t t = f->ops[k].tmpl;
-        n += t < GDXTRK_TEMPLATE_COUNT ? 3u * kGdxTrkGolden[t].ntris : 0u;
+        n += t < GDXTRK_TEMPLATE_COUNT ? 3u * gGdxTrkTemplate[t].ntris : 0u;
     }
     return n;
 }
@@ -1878,7 +1878,7 @@ __attribute__((noinline)) bool NrrTrkHotHold(GdxInterpSeam& I, const GdxNrrTrkFr
         if (op.tmpl >= GDXTRK_TEMPLATE_COUNT || op.ring[0] >= set.nRings || op.ring[1] >= set.nRings) {
             return false;
         }
-        const GdxTrkTemplate& t = kGdxTrkGolden[op.tmpl];
+        const GdxTrkTemplate& t = gGdxTrkTemplate[op.tmpl];
         if (t.nevents != 0 || (t.maxSlot >= 16 && op.join >= set.nRings)) {
             return false;
         }
@@ -1952,7 +1952,7 @@ int NrrTrkHotPeek(void* seam, int view, const NrrFrame* nf) {
 void NrrTrkHotAppendRun(const GdxNrrTrkFrame* f, const GdxNrrTrkRun& run, bool atlas) {
     for (uint32_t k = run.opStart; k < run.opEnd; k++) {
         const GdxNrrTrkOp& op = f->ops[k];
-        const GdxTrkTemplate& t = kGdxTrkGolden[op.tmpl];
+        const GdxTrkTemplate& t = gGdxTrkTemplate[op.tmpl];
         const uint32_t base[3] = { (uint32_t)(atlas ? sOpRing[k][0] : op.ring[0]) * 8u,
                                    (uint32_t)(atlas ? sOpRing[k][1] : op.ring[1]) * 8u,
                                    (uint32_t)(atlas ? sOpRing[k][2] : op.join) * 8u };

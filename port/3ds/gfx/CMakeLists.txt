@@ -147,7 +147,7 @@ dkp_add_embedded_binary_library(gdx3ds_gfx_shbin gdx3ds_gfx_shader)
 add_library(gdx3ds_gfx STATIC
     gfx_citro3d.cpp
     gdx3ds_track_sink.c      # [native] track: game-side op recorder (gdx3ds_track_shim.h)
-    gdx3ds_track_templates.c # [native] track: index-template decoder + golden table
+    gdx3ds_track_templates.c # [native] track: index-template decoder (lists from the o2r)
     gdx3ds_track_replay.cpp  # [native] track: Interpreter::GdxTrackMarker (marker replay)
     gdx3ds_native_tri.cpp    # [native] shared exact/fast triangle replay (track + fx)
     gdx3ds_track_retained.cpp # [native] track_retained: course runs as eye-rebased gpuxf draws (C5 S3)
@@ -169,11 +169,13 @@ add_library(gdx3ds_gfx STATIC
     gdx3ds_c3d_diet.c # c5submit (r60 P3a): [native] c3d_diet levers over the vendored citro3d
     gdx3ds_overlap.c  # C5 Stage 4 [overlap]: mid-frame GX queue kicks ([debug] overlap_kick)
     gdx3ds_gputl.c    # n60gpu: [debug] gputl -- per-eye GPU timeline from GSP completion stamps (hardware receipt)
+    gdx3ds_prewrite.c # o3ds3d: [debug] prewrite / gpumem -- first-write window + GPU memory headroom receipts
     gdx3ds_gpucensus.c # n60gpu: [debug] gpucensus -- GPU work census per eye / category, fill counts
     nrr/gdx3ds_nrr_crumb.c # n60hwdiag: [debug] nrr_crumbs + nrr_bisect_cycle + gxq_watch_ms (in gfx: the harness links it too)
     gdx3ds_replay.cpp # C6 [replay]: pose-replay, "60 Hz motion" ([native] replay, default 0)
     gdx3ds_replay_tags.c # C6 [replay]: the interpreter-facing hook table + vertex tags (host-linkable)
     gdx3ds_hitch_ev.c # HITCH: per-frame event counters (here for gdx3ds-dl-tests, like gdx3ds_cov.c)
+    gdx3ds_cpucut.c   # o3ds-cpucuts: the CPU cuts' shared A/B block clock + [cpucut] receipt
     gdx3ds_stereo.cpp # stream S: stereo foundation (config-gated, default off)
     gdx3ds_stereo_frame.cpp # n60stereo: the stereo frame replay ([native] stereo_replay)
     gdx3ds_skylate.cpp # n60tail: [native] sky_late -- the sky's lists after the opaque track (stencil)
@@ -246,6 +248,11 @@ add_library(gdx3ds_n64 OBJECT
     nrr/gdx3ds_nrr_mach.cpp  # [native] nrr_mach (n60mach): BODY consumer snapshot, cold recorder, the hot draw
     nrr/gdx3ds_nrr_trk_draw.cpp # [native] nrr_trk (n60trk): resident-ring draws of the lean walk's runs
 )
+# ekeditmesh [native] ek_editmesh (o3dsek plan S5c): the course editor's preview memo. EK builds
+# only, so the shipped (non-EK) gdx3ds_n64 object list is unchanged.
+if(GDX_3DS_EXPANSION_KIT)
+    target_sources(gdx3ds_n64 PRIVATE n64/gdx_ekpreview.cpp)
+endif()
 target_include_directories(gdx3ds_n64 PUBLIC n64)
 target_include_directories(gdx3ds_n64 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}      # gdx3ds_vbopack.h, gfx_citro3d.h, gdx3ds_gpu_prof.h

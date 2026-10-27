@@ -18,6 +18,8 @@
  *   [debug]  c3dprof         1: per-section split of the stock path; 2: whole draw call timed
  *                            (stock, or the diet when c3d_diet=1). Profiles print with gputrace
  *                            or on their own.
+ *   [debug]  c3dprof_every   N (default 1): profile one 64-frame window of every N (onesubmit: the
+ *                            cheap sampled mode for a hardware card)
  *
  * Receipts: `[c3ddiet] init diet=.. mask=.. verify=.. prof=.. vendored=..` once, and with verify
  * or a profile armed, `[c3ddiet] frame=` / `[c3dprof] frame=` every 64 frames. */

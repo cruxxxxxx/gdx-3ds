@@ -1,0 +1,316 @@
+diff --git a/src/overlays/ovl_i4/machine.c b/src/overlays/ovl_i4/machine.c
+--- a/src/overlays/ovl_i4/machine.c
++++ b/src/overlays/ovl_i4/machine.c
+@@ -1585,7 +1585,153 @@
+     return gfx;
+ }
+ #endif
++
++#if defined(PORT) && defined(GDX_PLATFORM_3DS) && defined(EXPANSION_KIT)
++#include "nrr/gdx3ds_nrr_mach.h" /* EK_NIMACH (decomp-3ds-ek-nimach.patch): the EK menus' machines on the NRR */
++#include "fzx_machine.h"
++
++extern Machine gMachines[];
++extern s16 gGreyscaleMachinePart;
++/* port/3ds/game/gdx3ds_ek_nimach_game.c: the live ni_mach bits while [native] ek_nimach is on, else 0. */
++extern s32 gdx_ek_nimach_level(void);
++extern void gdx_ek_nimach_note(s32 ctx, s32 taken, s32 stockOnly);
++
++/* EK_NIMACH: func_8009CCBC's env colour on the Expansion Kit (a default machine is drawn grey while
++ * gGreyscaleMachinePart is set). */
++static void EkNimach_EnvColor(u8* rgb, s32 character, s32 skin) {
++    Machine* machine = &gMachines[character];
++    s32 color;
++
++    if (gGreyscaleMachinePart && (machine->customType == CUSTOM_MACHINE_DEFAULT)) {
++        color = (machine->red[skin] * 77) + (machine->green[skin] * 151) + (machine->blue[skin] * 28);
++        color >>= 8;
++        rgb[0] = color;
++        rgb[1] = color;
++        rgb[2] = color;
++    } else {
++        rgb[0] = machine->red[skin];
++        rgb[1] = machine->green[skin];
++        rgb[2] = machine->blue[skin];
++    }
++}
+ 
++/* EK_NIMACH: a player-designed machine (CUSTOM_MACHINE_EDITED: body and texture lists the game builds
++ * at run time from the design) always draws the stock way. */
++static s32 EkNimach_StockOnly(s32 character) {
++    return gMachines[character].customType == CUSTOM_MACHINE_EDITED;
++}
++
++static s32 MachineSelect_EkNimachSelected(s32 i) {
++    s32 j;
++
++    for (j = 0; j < gNumPlayers; j++) {
++        if (i == sMachineSelectIndex[j]) {
++            return true;
++        }
++    }
++    return false;
++}
++
++/* EK_NIMACH: one machine slot's stock commands (the EK loop body of MachineSelect_MachineDraw, with
++ * its render mode). */
++static Gfx* MachineSelect_EkNimachStock(Gfx* gfx, Object* machineObj, s32 i) {
++    s32 j = (i < sMachinesUnlocked) ? 0 : 1;
++
++    gDPPipeSync(gfx++);
++    gSPLight(gfx++, &D_1000000.unk_21A88[j].l[0], 1);
++    gSPLight(gfx++, &D_1000000.unk_21A88[j].a, 2);
++    gSPViewport(gfx++, MACHINE_VIEWPORT(machineObj) + i);
++    gSPMatrix(gfx++, &D_1000000.unk_20308[MachineSelect_EkNimachSelected(i) ? 0 : 1],
++              G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
++    gDPSetRenderMode(gfx++, G_RM_PASS, G_RM_AA_ZB_OPA_SURF2);
++    return func_8009CCBC(gfx, Character_GetCharacterFromSlot(i), 0);
++}
++
++/* EK_NIMACH ([native] ek_nimach + ni_mach bit 1): the Expansion Kit's machine select grid as ONE NRR
++ * mach marker -- MachineSelect_NimachMachines (decomp-3ds-nimach.patch) with the EK loop's
++ * differences: every slot draws under G_RM_PASS / G_RM_AA_ZB_OPA_SURF2 (written once before the
++ * marker; the body lists never set a render mode, so that is also the state the stock loop leaves),
++ * the env colour is the EK func_8009CCBC's, and a player-designed machine is always a stock slot.
++ * Stock slots follow the marker (the not-yet-recorded ones arm the recorder). Returns NULL when the
++ * NRR took nothing (the caller writes the stock loop over these words). No game state is written. */
++static Gfx* MachineSelect_EkNimachMachines(Gfx* gfx, Object* machineObj) {
++    static GdxNrrMachMenuSnap sSnap;
++    GdxNrrMachMenuSnap* f = &sSnap;
++    Gfx* out;
++    u32 legacy = 0;
++    u32 stockOnly = 0;
++    s32 fallback = 0;
++    s32 i;
++    s32 j;
++    s32 k;
++
++    f->n = 0;
++    f->rec = 0;
++    f->ctx = GDX_NRR_MACH_CTX_SELECT;
++    for (j = 0; j < 2; j++) {
++        Lights1* lights = &gGfxPool->unk_21A88[j];
++        for (k = 0; k < 3; k++) {
++            f->ldir[j][k] = lights->l[0].l.dir[k];
++            f->lcol[j][k] = lights->l[0].l.col[k];
++            f->amb[j][k] = lights->a.l.col[k];
++        }
++    }
++    for (i = 0; i < 30; i++) {
++        s32 character = Character_GetCharacterFromSlot(i);
++        GdxNrrMachMenuEnt* e;
++        const s32* words;
++        const Vp* vp = MACHINE_VIEWPORT(machineObj) + i;
++
++        if (EkNimach_StockOnly(character)) {
++            stockOnly |= 1u << i;
++            continue;
++        }
++        if (!gdx3ds_nrr_mach_ready(character * 6, GDX_NRR_MACH_MBODY)) {
++            legacy |= 1u << i;
++            fallback++;
++            continue;
++        }
++        e = &f->e[f->n++];
++        words = (const s32*) &gGfxPool->unk_20308[MachineSelect_EkNimachSelected(i) ? 0 : 1];
++        for (k = 0; k < 16; k++) {
++            e->mtx[k] = words[k];
++        }
++        for (k = 0; k < 4; k++) {
++            e->vp[k] = vp->vp.vscale[k];
++            e->vp[4 + k] = vp->vp.vtrans[k];
++        }
++        e->idx = character * 6;
++        e->kind = GDX_NRR_MACH_MBODY;
++        EkNimach_EnvColor(e->rgb, character, 0);
++        e->light = (i < sMachinesUnlocked) ? 0 : 1;
++    }
++    f->rec = legacy != 0;
++    gDPSetRenderMode(gfx++, G_RM_PASS, G_RM_AA_ZB_OPA_SURF2);
++    out = gdx3ds_nrr_mach_menu_publish(gfx, f, fallback);
++    gdx_ek_nimach_note(GDX_NRR_MACH_CTX_SELECT, out != NULL ? f->n : 0, (s32) __builtin_popcount(stockOnly));
++    if (out == NULL) {
++        return NULL;
++    }
++    gfx = out;
++    for (i = 0; i < 30; i++) {
++        if ((legacy | stockOnly) & (1u << i)) {
++            gfx = MachineSelect_EkNimachStock(gfx, machineObj, i);
++        }
++    }
++    if (!((legacy | stockOnly) & (1u << 29))) {
++        j = (29 < sMachinesUnlocked) ? 0 : 1;
++        gDPPipeSync(gfx++);
++        gSPLight(gfx++, &D_1000000.unk_21A88[j].l[0], 1);
++        gSPLight(gfx++, &D_1000000.unk_21A88[j].a, 2);
++        gSPViewport(gfx++, MACHINE_VIEWPORT(machineObj) + 29);
++        gSPMatrix(gfx++, &D_1000000.unk_20308[MachineSelect_EkNimachSelected(29) ? 0 : 1],
++                  G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
++        gDPSetRenderMode(gfx++, G_RM_PASS, G_RM_AA_ZB_OPA_SURF2);
++    }
++    return gfx;
++}
++#endif
++
+ Gfx* MachineSelect_MachineDraw(Gfx* gfx, Object* machineObj) {
+     bool var_t0;
+     s32 i;
+@@ -1615,6 +1761,14 @@
+         }
+     }
+ #endif
++#if defined(PORT) && defined(GDX_PLATFORM_3DS) && defined(EXPANSION_KIT)
++    if (gdx_ek_nimach_level() & GDX_NIMACH_SELECT) {
++        Gfx* nimach = MachineSelect_EkNimachMachines(gfx, machineObj);
++        if (nimach != NULL) {
++            return nimach;
++        }
++    }
++#endif
+     for (i = 0; i < 30; i++) {
+         gDPPipeSync(gfx++);
+         var_t0 = false;
+@@ -1803,6 +1957,94 @@
+ }
+ #endif
+ 
++#if defined(PORT) && defined(GDX_PLATFORM_3DS) && defined(EXPANSION_KIT)
++static void MachineSettings_EkNimachEnt(GdxNrrMachMenuSnap* f, Mtx* mtx, Object* machineObj, s32 i) {
++    GdxNrrMachMenuEnt* e = &f->e[f->n++];
++    const s32* words = (const s32*) mtx;
++    const Vp* vp = MACHINE_VIEWPORT(machineObj) + i;
++    s32 k;
++
++    for (k = 0; k < 16; k++) {
++        e->mtx[k] = words[k];
++    }
++    for (k = 0; k < 4; k++) {
++        e->vp[k] = vp->vp.vscale[k];
++        e->vp[4 + k] = vp->vp.vtrans[k];
++    }
++    e->idx = gRacers[i].character * 6;
++    e->kind = GDX_NRR_MACH_MSBODY;
++    EkNimach_EnvColor(e->rgb, gRacers[i].character, gRacers[i].machineSkinIndex);
++    e->light = 0;
++}
++
++/* EK_NIMACH ([native] ek_nimach + ni_mach bit 2): machine settings / GP next machine on the Expansion
++ * Kit -- MachineSettings_NimachBodies (decomp-3ds-nimach.patch) with the EK env colour, and a
++ * player-designed machine always a stock body. Makes the stock pass's game-state write
++ * (Lights_SetSource) first; returns NULL when the NRR took nothing (the caller writes the stock pass;
++ * Lights_SetSource writes the same values again). */
++static Gfx* MachineSettings_EkNimachBodies(Gfx* gfx, Object* machineObj) {
++    static GdxNrrMachMenuSnap sSnap;
++    GdxNrrMachMenuSnap* f = &sSnap;
++    Gfx* out;
++    u32 legacy = 0;
++    u32 stockOnly = 0;
++    s32 fallback = 0;
++    s32 last = gNumPlayers - 1;
++    s32 i;
++    s32 k;
++
++    if ((gNumPlayers < 1) || (gNumPlayers > 4)) {
++        return NULL;
++    }
++    Lights_SetSource(gGfxPool->unk_21A88, 0, 0, 0, 255, 255, 255, 50, 25, 34);
++    f->n = 0;
++    f->ctx = GDX_NRR_MACH_CTX_SETTINGS;
++    for (k = 0; k < 3; k++) {
++        f->ldir[0][k] = f->ldir[1][k] = gGfxPool->unk_21A88[0].l[0].l.dir[k];
++        f->lcol[0][k] = f->lcol[1][k] = gGfxPool->unk_21A88[0].l[0].l.col[k];
++        f->amb[0][k] = f->amb[1][k] = gGfxPool->unk_21A88[0].a.l.col[k];
++    }
++    for (i = 0; i < gNumPlayers; i++) {
++        if (EkNimach_StockOnly(gRacers[i].character)) {
++            stockOnly |= 1u << i;
++        } else if (gdx3ds_nrr_mach_ready(gRacers[i].character * 6, GDX_NRR_MACH_MSBODY)) {
++            MachineSettings_EkNimachEnt(f, &gGfxPool->unk_20308[i], machineObj, i);
++        } else {
++            legacy |= 1u << i;
++            fallback++;
++        }
++    }
++    f->rec = legacy != 0;
++    gSPDisplayList(gfx++, D_303A5F8);
++    gSPLight(gfx++, &D_1000000.unk_21A88[0].l[0], 1);
++    gSPLight(gfx++, &D_1000000.unk_21A88[0].a, 2);
++    out = gdx3ds_nrr_mach_menu_publish(gfx, f, fallback);
++    gdx_ek_nimach_note(GDX_NRR_MACH_CTX_SETTINGS, out != NULL ? f->n : 0, (s32) __builtin_popcount(stockOnly));
++    if (out == NULL) {
++        return NULL;
++    }
++    gfx = out;
++    for (i = 0; i < gNumPlayers; i++) {
++        if ((legacy | stockOnly) & (1u << i)) {
++            gSPViewport(gfx++, MACHINE_VIEWPORT(machineObj) + i);
++            gSPMatrix(gfx++, &D_1000000.unk_20308[i], G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
++            gfx = func_8009CCBC(gfx, gRacers[i].character, gRacers[i].machineSkinIndex);
++        }
++    }
++    if (!((legacy | stockOnly) & (1u << last))) {
++        gSPViewport(gfx++, MACHINE_VIEWPORT(machineObj) + last);
++        gSPMatrix(gfx++, &D_1000000.unk_20308[last], G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
++    }
++    return gfx;
++}
++
++/* EK_NIMACH: the reflection pass's model marker only for a machine func_8009CEA0 draws as its one
++ * stock model list (no custom parts, no special variant). */
++static s32 MachineSettings_EkNimachModelOk(s32 character) {
++    return gCustomMachinesInfo.characterCustomState[Character_GetSlotFromCharacter(character)] == 0;
++}
++#endif
++
+ Gfx* MachineSettings_MachineDraw(Gfx* gfx, Object* machineObj) {
+     s32 i;
+ #if defined(PORT) && defined(GDX_PLATFORM_3DS) && !defined(EXPANSION_KIT)
+@@ -1812,6 +2054,9 @@
+      * nimach@0efdbf0d; this just stops asking it the same question twice below). */
+     const s32 nimachLevel = gdx3ds_nimach_level();
+ #endif
++#if defined(PORT) && defined(GDX_PLATFORM_3DS) && defined(EXPANSION_KIT)
++    const s32 ekNimachLevel = gdx_ek_nimach_level(); /* EK_NIMACH: one call per frame */
++#endif
+ 
+     gSPPerspNormalize(gfx++, gCameras[0].perspectiveScale);
+ 
+@@ -1852,6 +2097,16 @@
+         if (nimach != NULL) {
+             gfx = nimach;
+             goto nimach_reflection;
++        }
++    }
++#endif
++#if defined(PORT) && defined(GDX_PLATFORM_3DS) && defined(EXPANSION_KIT)
++    {
++        Gfx* nimach = (ekNimachLevel & GDX_NIMACH_SETTINGS) ? MachineSettings_EkNimachBodies(gfx, machineObj)
++                                                             : NULL;
++        if (nimach != NULL) {
++            gfx = nimach;
++            goto ek_nimach_reflection;
+         }
+     }
+ #endif
+@@ -1869,6 +2124,9 @@
+ #if defined(PORT) && defined(GDX_PLATFORM_3DS) && !defined(EXPANSION_KIT)
+ nimach_reflection:
+ #endif
++#if defined(PORT) && defined(GDX_PLATFORM_3DS) && defined(EXPANSION_KIT)
++ek_nimach_reflection:
++#endif
+ 
+     gSPDisplayList(gfx++, D_90186C8);
+ 
+@@ -1910,6 +2168,11 @@
+             gfx = gdx3ds_nimach_model_marker(gfx); /* NIMACH: the model below draws as a retained mesh */
+         }
+ #endif
++#if defined(PORT) && defined(GDX_PLATFORM_3DS) && defined(EXPANSION_KIT)
++        if ((ekNimachLevel & GDX_NIMACH_SETTINGS) && MachineSettings_EkNimachModelOk(gRacers[i].character)) {
++            gfx = gdx3ds_nimach_model_marker(gfx); /* EK_NIMACH: the model below draws as a retained mesh */
++        }
++#endif
+         gfx = func_8009CEA0(gfx, gRacers[i].character);
+     }
+ 

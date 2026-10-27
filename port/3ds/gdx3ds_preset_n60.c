@@ -31,6 +31,48 @@
 #include <stddef.h>
 #include <strings.h>
 
+/* preset-fix: the levers the hardware test cards carried as explicit ini keys ([variant.new] of
+ * TEST-*-0c2668a, the last known-good cards) and card-2's "shipped defaults" ini dropped -- card-2 on
+ * the Old 3DS then ran 2-3x slower (menus misc ~35 ms/frame, no `[nicourse] init ... ni_course=1`).
+ * None of them was a built-in default, so a no-ini player silently lost them too. They are rows of
+ * BOTH tables now (they replace the GDX3DS_PRESET_NI staging switch, whose rows had never matched
+ * the cards: ni_view 0x57A on both models). tools/ci-3ds.sh's gdx3ds_preset_mustship_tests fails if
+ * any of them (or the rest of each model's must-ship list) stops resolving from an EMPTY ini.
+ *   - native menus S1/S2/S2b/S4 + course select + machine select / settings: ni_menu, ni_menu_root,
+ *     ni_menu_split 3, ni_menu_keep, ni_menu_ucode, ni_menu_xition, ni_course, ni_mach 3,
+ *     atlas_race_reset (every hardware card since ni-s0 ran them on both models);
+ *   - Expansion Kit course editor: nrr_testdrive, ek_editmesh, ek_editmesh_track, ek_nimach (inert
+ *     without the EK disk / editor);
+ *   - 3D GPU overlap: native stereo_fold, stereo head_kick, stereo resume_fold (3D frames only; hw
+ *     52acd44: GPU tail p50 8.6 -> 6.7 ms);
+ *   - 3D one submission (ship6, hw card-6 ba0692e A/B, onesubmit-progress.md "Hardware result"):
+ *     stereo onesubmit 1 + onesubmit_narrow 1 (arm 3; Old 3DS 3D menu 40.2 -> 44.6 fps, 1P 3D race
+ *     ~1.5-1.8 ms/frame headroom: ~1.8 for this arm, ~1.5 onesubmit alone; New 3DS neutral),
+ *     onesubmit_kicks 0 (lost CPU/GPU overlap cancels its
+ *     CPU saving), onesubmit_ab 0 (the per-block A/B is test cards only). */
+#define GDX3DS_PRESET_CARD_ROWS                   \
+    { "native", "ni_menu", "1" },                \
+    { "native", "ni_menu_root", "1" },           \
+    { "native", "ni_menu_split", "3" },          \
+    { "native", "ni_menu_keep", "1" },           \
+    { "native", "ni_menu_ucode", "1" },          \
+    { "native", "ni_menu_xition", "1" },         \
+    { "native", "ni_course", "1" },              \
+    { "native", "ni_mach", "3" },                \
+    { "native", "atlas_race_reset", "1" },       \
+    { "native", "nrr_testdrive", "1" },          \
+    { "native", "ek_editmesh", "1" },            \
+    { "native", "ek_editmesh_track", "1" },      \
+    { "native", "ek_nimach", "1" },              \
+    { "native", "stereo_fold", "1" },            \
+    { "stereo", "head_kick", "1" },              \
+    { "stereo", "resume_fold", "1" },            \
+    { "stereo", "onesubmit", "1" },              \
+    { "stereo", "onesubmit_narrow", "1" },       \
+    { "stereo", "onesubmit_kicks", "0" },        \
+    { "stereo", "onesubmit_ab", "0" },           \
+    { "ui", "bottom_menus", "1" },
+
 static const Gdx3dsCfgPresetEntry kN60Preset[] = {
     /* host loop / pacing / frame skip */
     { "debug", "renderthread", "0" },
@@ -107,8 +149,16 @@ static const Gdx3dsCfgPresetEntry kN60Preset[] = {
     { "native", "finish_direct", "0" },
     { "native", "prewarm", "7" },
     { "native", "prewarm_draws", "256" },
-    { "native", "zclear_elide", "2" },
+    { "native", "zclear_elide", "1" }, /* o3ds3d: pinned on in the shipped preset (2 = the 1024-frame A/B) */
     { "native", "lcd_vram", "0" },
+    /* preset-fix: the hardware cards' native menus / EK / 3D-overlap levers (GDX3DS_PRESET_CARD_ROWS) */
+    GDX3DS_PRESET_CARD_ROWS
+    /* preset-fix, New 3DS only (TEST-NEW3DS-0c2668a): the multi-view race / records flyby categories
+     * on the NRR + span programs (ni_view 0x97A, as the Old 3DS table's MP-only ni_fullview) and the
+     * 1P race's inter-marker walk as span programs (ni_race); 3D menus with depth (menu_depth). */
+    { "native", "ni_view", "0x97A" },
+    { "native", "ni_race", "1" },
+    { "stereo", "menu_depth", "1" },
     /* stereo */
     { "native", "stereo_interleave", "1" },
     { "native", "stereo_noreflush", "1" },
@@ -127,11 +177,12 @@ static const Gdx3dsCfgPresetEntry kN60Preset[] = {
  * ships_census, logic_split -- a read-only receipts pair with ships_census, launch_variants,
  * pcm_dump_s), a user preference (border_mode, stereo.enabled already matches n60, menu
  * screen_off, the [input] block, bottom_race -- left to the player on every build, same as
- * n60), out-of-scope Expansion Kit disk scaffolding (disk_stream; inert without a mounted
- * .ndd), or already the shipped default with the model it already carries (vram_guard's
+ * n60), or already the shipped default with the model it already carries (vram_guard's
  * default IS VRAM_GUARD_REPAIR=1; audio_simd/audio_ctx_narrow/adpcm_scale_clamp already default
- * ON for an Old 3DS at their own call sites, texburst/stereo_fold/stereo_xl_early/sky_late
- * already default to what the card sets) -- none of those belong in a performance preset. Full
+ * ON for an Old 3DS at their own call sites, texburst/stereo_xl_early/sky_late already default
+ * to what the card sets) -- none of those belong in a performance preset. (preset-fix: the EK
+ * disk streaming keys and stereo_fold, once listed here, are rows now -- see
+ * GDX3DS_PRESET_CARD_ROWS and the Old-3DS-only block below.) Full
  * key-by-key classification: the commit message that added this table.
  *
  *   - audio_stream = 1 / tex_upload_kb = 512: the Old 3DS memory-fit levers kN60Preset's own
@@ -220,8 +271,41 @@ static const Gdx3dsCfgPresetEntry kO3dsAutoPreset[] = {
     { "native", "finish_direct", "0" },
     { "native", "prewarm", "7" },
     { "native", "prewarm_draws", "256" },
-    { "native", "zclear_elide", "2" },
+    { "native", "zclear_elide", "1" }, /* identical to kN60Preset (o3ds3d: pinned on; 2 = the A/B) */
     { "native", "lcd_vram", "0" },
+    /* preset-fix: the hardware cards' levers -- identical to kN60Preset (GDX3DS_PRESET_CARD_ROWS) */
+    GDX3DS_PRESET_CARD_ROWS
+    /* preset-fix, Old 3DS only: the EK disk / audio streaming levers TEST-OLD3DS-0c2668a pinned.
+     * Each equals its compiled-in Old 3DS model default (disk_buffer.cpp, gdx3ds_disk_async.c,
+     * gdx3ds_ek_audio_bulk.c); pinned here so the must-ship check guards them and a later change of a
+     * call-site default cannot drop them unseen. Inert without a mounted .ndd. */
+    { "debug", "disk_stream", "2" },
+    { "debug", "audio_disk_async", "1" },
+    { "debug", "disk_stream_coalesce_kb", "64" },
+    { "debug", "audio_disk_readahead_kb", "64" },
+    { "debug", "audio_sync_bulk_kb", "256" },
+    /* o3ds60, Old 3DS only: the MP fullview race's one local view takes the NRR categories the 1P
+     * race takes (trk sky dress shd fx deco) and the span programs (0x800 with ni_race). hw
+     * 158a13e: with ni_view 0 the Old 3DS MP view drew its sky, track and dressing on the
+     * interpreter, scene 11-14 ms per drawn frame vs 2.6-4.6 ms for the same categories in a 1P race
+     * on the NRR (the New 3DS card has run ni_view 0x97A + ni_race in the same MP race). Render
+     * only; split-screen VS and the attract demos keep ni_view. ni_race: the 1P (and, with
+     * ni_fullview's 0x800, the MP fullview) race's walk between the NRR markers as span programs,
+     * exact by construction (every word checked against the one it was compiled from). */
+    { "native", "ni_fullview", "0x97A" },
+    { "native", "ni_race", "1" },
+    /* o3ds-mp16, Old 3DS only: the o3ds-cpucuts levers the hardware A/B proved (card-3 3c0c7b7, 2D
+     * VS 2P + 14 CPU, [cpucut] blocks paired with the [c5cat] window they measured):
+     *   - overlap_hud_kick 0: the HUD's mid-frame GPU kick refused. 8 of 9 adjacent on/off block
+     *     pairs cost more with the kick: +1.3 +-0.5 ms of render columns per rendered frame (OLS
+     *     with race effects), most of it in trk and hud; fbeg (the GPU wait it buys) moved by
+     *     +-0.05 ms. A 2D frame's GPU work is small, so the early start bought nothing. 3D MP is
+     *     locked at D = 2, where cadence mode never kicks; 1P 3D was estimated -0.6 ms
+     *     (agent-D-cpu-cuts.md 3.1a). An ini overlap_hud_kick = 1 (or 2, the A/B) still wins.
+     *   - nrr_speck_batch 1: the code default already; pinned so the must-ship check guards it.
+     *     5 of 5 block pairs drew the machines cheaper batched (mach -0.30 ms per rendered frame). */
+    { "debug", "overlap_hud_kick", "0" },
+    { "native", "nrr_speck_batch", "1" },
     /* stereo -- identical to kN60Preset */
     { "native", "stereo_interleave", "1" },
     { "native", "stereo_noreflush", "1" },

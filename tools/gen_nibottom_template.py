@@ -9,16 +9,21 @@ JS. This script renders the same DASH composition nibottom-mockup.html's
 Font1/Font2 glyph text -- as a layered PNG export instead of an HTML canvas,
 using Pillow (PIL) instead of a browser's 2D context.
 
-Source textures are read from the coordinator's own full extraction
-(~/Desktop/g-diffuser-builds/fzerox-raw-assets/<folder>/<Symbol>.png, 1,495
+Source textures are read from a full PNG extraction of your own archive
+(<gallery>/<folder>/<Symbol>.png, passed as --gallery; about 1,495
 PNGs, already decoded -- this script does NOT re-decode the .o2r archive,
 it reuses that gallery) rather than re-running o2r_texture_extract.py.
 
-Usage:
-    python3 tools/gen_nibottom_template.py [--gallery DIR] [--out DIR]
+The 3DS build ships none of these pixels: port/3ds/gdx3ds_hudbake.c re-runs the drawing steps
+of build() below (background, header, standings, lap, timer, gap, energy_bar) at boot against
+the user's own fzerox.o2r, bit-exact with the Pillow calls here (the user's Photoshop pass only
+moved the header and energy bar; their placement lives in kDashAssetWidgets). Change a recipe
+here and there together.
 
-Writes, under --out (default ~/Desktop/g-diffuser-builds/fzerox-raw-assets/
-template/):
+Usage:
+    python3 tools/gen_nibottom_template.py --gallery DIR [--out DIR]
+
+Writes, under --out (default <gallery>/template/):
     dash-full.png       -- the complete DASH screen, 320x240, mode 1 (ALL_TOP).
     layers/*.png         -- one transparent 320x240 PNG per widget, already
                              placed at its real coordinates.
@@ -41,7 +46,6 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_GALLERY = Path.home() / "Desktop" / "g-diffuser-builds" / "fzerox-raw-assets"
 
 DASH_W, DASH_H = 320, 240
 TOP_W, TOP_H = 400, 240
@@ -547,18 +551,22 @@ How to edit:
      is wired into the build (nibottom-plan.md's STOP line still applies).
 
 Regenerating this template from scratch (e.g. after the mockup's geometry
-changes): `python3 tools/gen_nibottom_template.py`. It reads the
-coordinator's already-extracted PNG gallery
-(~/Desktop/g-diffuser-builds/fzerox-raw-assets/<folder>/<Symbol>.png) rather
+changes): `python3 tools/gen_nibottom_template.py --gallery DIR`. It reads
+an already-extracted PNG gallery
+(<gallery>/<folder>/<Symbol>.png) rather
 than re-decoding the .o2r archive.
 """
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gallery", default=str(DEFAULT_GALLERY))
-    ap.add_argument("--out", default=str(DEFAULT_GALLERY / "template"))
+    ap.add_argument("--gallery", required=True, metavar="DIR",
+                    help="extracted PNG gallery: DIR/<folder>/<Symbol>.png")
+    ap.add_argument("--out", default=None, metavar="DIR",
+                    help="output directory (default: <gallery>/template)")
     args = ap.parse_args()
+    if args.out is None:
+        args.out = str(Path(args.gallery) / "template")
 
     gallery = Gallery(args.gallery)
     out_dir = Path(args.out)

@@ -247,6 +247,22 @@ def build_info_for_manifest(root, build_dir, artifact):
 # So the harness writes the branch point into every run manifest. An agent cannot quote a
 # parity number out of a manifest without the branch point sitting next to it.
 BASE_BRANCH = os.environ.get("GDX_BASE_BRANCH", "native/main")
+# Only when GDX_BASE_BRANCH is unset: the release repo has no native/main, and an absent base
+# left branch_point empty, which fails every manifest (and kills the run before its graceful
+# stop). Try these in order instead; an explicit GDX_BASE_BRANCH is never second-guessed.
+BASE_BRANCH_FALLBACKS = ("release-v1", "main")
+
+
+def resolve_base(root, base=None):
+    """`base` if given, else GDX_BASE_BRANCH, else the first default that exists in `root`."""
+    if base:
+        return base
+    if "GDX_BASE_BRANCH" in os.environ:
+        return BASE_BRANCH
+    for candidate in (BASE_BRANCH,) + BASE_BRANCH_FALLBACKS:
+        if git(["rev-parse", "--verify", "--quiet", candidate], root, ""):
+            return candidate
+    return BASE_BRANCH
 
 
 def tree_info(root, base=None):
@@ -259,7 +275,7 @@ def tree_info(root, base=None):
     `behind > 0` is the whole point of the block: it is exactly the condition under which
     a "pre-existing on main" claim made from this tree cannot be checked.
     """
-    base = base or BASE_BRANCH
+    base = resolve_base(root, base)
     branch = git(["rev-parse", "--abbrev-ref", "HEAD"], root, "unknown")
     head = git(["rev-parse", "HEAD"], root, "")
     base_head = git(["rev-parse", base], root, "")

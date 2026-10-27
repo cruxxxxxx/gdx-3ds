@@ -18,6 +18,8 @@ must remain with binary packages.
 | SSE2NEON | ARM SIMD compatibility header used by cxd4 | `LICENSES/MIT-SSE2NEON.txt` |
 | discord-rpc | Discord Rich Presence (optional, off by default) | `LICENSES/MIT-discord-rpc.txt` |
 | RapidJSON | JSON serialization inside discord-rpc | `LICENSES/MIT-rapidjson.txt` |
+| QR Code generator (Project Nayuki) | Expansion Kit 3DS build only: draws `[ek] course_share` QR codes; vendored at `port/3ds/vendor/qrcodegen/` | `LICENSES/MIT-qrcodegen.txt` |
+| quirc | QR decoder; host unit test only today (reads back the course-share QR frames); vendored at `port/3ds/vendor/quirc/` | `LICENSES/ISC-quirc.txt` |
 
 ## Runtime and extraction dependencies
 
@@ -30,9 +32,18 @@ are included both under `LICENSES/` and beside the fonts in release packages.
 
 ## Asset boundary
 
-- G-Diffuser distributions do not include Nintendo ROM, disk, IPL, texture, model, audio, or other
-  game payloads.
-- `decomp-recipes/` contains CC0-licensed extraction metadata and no embedded game payload.
+- G-Diffuser distributions do not include a Nintendo ROM, disk image, or IPL image, or game
+  assets (textures, models, audio, or other game payloads). The binaries do contain code compiled
+  from the community decompilations listed above, including the N64 SDK library code those
+  decompilations carry. Users must dump their own cartridge (and, for the Expansion Kit, their own
+  64DD disk).
+- The `fzerox-expansion-kit` submodule is pinned to a copy of the upstream decompilation's history
+  with an accidentally committed retail disk image (`baserom.jp.disk`) purged from every commit;
+  see `.gitmodules`.
+- Binary packages (release zips) carry `LICENSE`, this file, and `LICENSES/`.
+- The `decomp-recipes/` folder that desktop builds place beside the executable is not tracked in
+  this repository: the build copies it from the `decomp` submodule. It contains CC0-licensed
+  extraction metadata and no embedded game payload.
 - `fzerox.o2r` is generated locally from files supplied by the user and must not be redistributed
   with G-Diffuser.
 - RSP microcode (aspMain) is not shipped in the source tree or in binaries; the low-level audio

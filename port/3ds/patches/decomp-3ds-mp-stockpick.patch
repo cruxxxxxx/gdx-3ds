@@ -1,0 +1,175 @@
+diff --git a/src/game/game.c b/src/game/game.c
+index ed28611..5eb3328 100644
+--- a/src/game/game.c
++++ b/src/game/game.c
+@@ -653,9 +653,18 @@ void func_800690FC(void) {
+             switch (gGameMode) {
+                 case GAMEMODE_LX_MACHINE_SETTINGS:
+                 case GAMEMODE_LX_GP_RACE_NEXT_MACHINE_SETTINGS:
++#ifdef PORT
++                    /* The MP stock picker reuses this screen but must never write the save. */
++                    { extern int gdx_mp_pick_active(void);
++                      if ((gNumPlayers == 1) && (gCourseIndex < COURSE_EDIT_1) && !gdx_mp_pick_active()) {
++                          Save_UpdateCourseCharacterSave(gCourseIndex);
++                      }
++                    }
++#else
+                     if ((gNumPlayers == 1) && (gCourseIndex < COURSE_EDIT_1)) {
+                         Save_UpdateCourseCharacterSave(gCourseIndex);
+                     }
++#endif
+                     break;
+                 case GAMEMODE_FLX_MACHINE_SELECT:
+                     func_i4_8011A7B8();
+@@ -921,6 +930,11 @@ void func_800690FC(void) {
+ #endif
+     gQueuedGameMode = sGamemodeUpdateFuncs[GET_MODE(gGameMode)]();
+ #ifdef PORT
++    /* MP stock picker: the final confirms of the stock machine / course screens are recorded
++     * as the player's pick and the confirmed screen stays (port/3ds/game/gdx3ds_mp_pick_game.c).
++     * Returns gQueuedGameMode unchanged whenever no pick is running. */
++    { extern s32 gdx_mp_pick_filter(s32 mode, s32 queued);
++      gQueuedGameMode = gdx_mp_pick_filter(gGameMode, gQueuedGameMode); }
+     { extern void gdx_ck(const char*); if (gdx_diag_verbose()) gdx_ck("[game] GMI_H_pre_68F04"); }
+     /* Probe for the Time Attack ending-screen black region: the gfx bridge's [bigtri] /
+      * [gpustate] logs cannot see the CPU-side camera viewport state feeding Camera_Draw's
+diff --git a/src/overlays/course_select/course_select.c b/src/overlays/course_select/course_select.c
+index 9e79e58..966921f 100644
+--- a/src/overlays/course_select/course_select.c
++++ b/src/overlays/course_select/course_select.c
+@@ -21,6 +21,13 @@ UNUSED s32 D_i5_8007B080 = 0;
+ 
+ #ifdef PORT
+ extern int gdx_ghost_library_has_player(s32 encodedCourseIndex);
++extern int gdx_mp_pick_active(void);
++extern int gdx_mp_pick_course_refused(s32 course);
++/* The X cup is hidden like in time attack while the MP stock picker runs: its course is generated
++   from per-console RNG, so it cannot be raced in lockstep. */
++#define GDX_CS_NO_X_CUP()                                                                         \
++    ((gGameMode == GAMEMODE_FLX_RECORDS_COURSE_SELECT) || (gSelectedMode == MODE_TIME_ATTACK) || \
++     gdx_mp_pick_active())
+ 
+ /* Which update/draw path emits the one fixed-4:3 viewport frame per cup-selection change
+    (GDX_TRACE=1; bounded to a few frames after each change so browsing stays readable). */
+@@ -29,6 +36,9 @@ extern u32 gGameFrameCount;
+ static u32 sGdxCupChangeFrame = 0xFFFFFFFFu;
+ #define GDX_CUPSEL_WINDOW() \
+     (sGdxCupChangeFrame != 0xFFFFFFFFu && (gGameFrameCount - sGdxCupChangeFrame) <= 4u)
++#else
++#define GDX_CS_NO_X_CUP() \
++    ((gGameMode == GAMEMODE_FLX_RECORDS_COURSE_SELECT) || (gSelectedMode == MODE_TIME_ATTACK))
+ #endif
+ 
+ s32 sCourseSelectState = COURSE_SELECT_CUP_SELECT;
+@@ -458,7 +468,7 @@ void CourseSelect_Init(void) {
+     }
+ #endif
+     if ((gCupSelectOption == 4) &&
+-        ((gGameMode == GAMEMODE_FLX_RECORDS_COURSE_SELECT) || (gSelectedMode == MODE_TIME_ATTACK))) {
++        GDX_CS_NO_X_CUP()) {
+         gCupSelectOption = 3;
+     }
+     if (gCupSelectOption >= 10) {
+@@ -495,8 +505,7 @@ void CourseSelect_Init(void) {
+     Object_Init(OBJECT_COURSE_SELECT_CUP_5, 128, 0, 6);
+     Object_Init(OBJECT_COURSE_SELECT_CUP_6, 128, 0, 6);
+ #endif
+-    if ((gSettingEverythingUnlocked || (gUnlockableLevel >= 2)) && (gGameMode != GAMEMODE_FLX_RECORDS_COURSE_SELECT) &&
+-        (gSelectedMode != MODE_TIME_ATTACK)) {
++    if ((gSettingEverythingUnlocked || (gUnlockableLevel >= 2)) && !GDX_CS_NO_X_CUP()) {
+         Object_Init(OBJECT_COURSE_SELECT_CUP_4, 0, -100, 6);
+     }
+     if ((gUnlockableLevel >= 1) || gSettingEverythingUnlocked) {
+@@ -624,7 +633,7 @@ s32 CourseSelect_Update(void) {
+                 }
+ 
+                 if ((var_v1 == 2) &&
+-                    ((gGameMode == GAMEMODE_FLX_RECORDS_COURSE_SELECT) || (gSelectedMode == MODE_TIME_ATTACK))) {
++                    GDX_CS_NO_X_CUP()) {
+                     var_v1 = 1;
+                 }
+ 
+@@ -671,7 +680,7 @@ s32 CourseSelect_Update(void) {
+                 func_i5_80077D60();
+ #endif
+                 if ((gCupSelectOption == 4) &&
+-                    ((gGameMode == GAMEMODE_FLX_RECORDS_COURSE_SELECT) || (gSelectedMode == MODE_TIME_ATTACK))) {
++                    GDX_CS_NO_X_CUP()) {
+                     gCupSelectOption = 3;
+                 }
+ #ifdef EXPANSION_KIT
+@@ -880,6 +889,14 @@ s32 CourseSelect_Update(void) {
+                 sCourseSelectState = COURSE_SELECT_CUP_SELECT;
+                 Audio_TriggerSystemSE(NA_SE_16);
+             } else if (gInputButtonPressed & (BTN_A | BTN_START)) {
++#ifdef PORT
++                /* MP stock picker: a course multiplayer cannot race (an EDIT-cup course, for now)
++                   is refused like time attack's empty edit slot; the bottom screen says why. */
++                if (gdx_mp_pick_course_refused(gCourseIndex)) {
++                    Audio_TriggerSystemSE(NA_SE_32);
++                    break;
++                }
++#endif
+ #ifdef EXPANSION_KIT
+                 if ((gSelectedMode == MODE_TIME_ATTACK) && (gCupType == EDIT_CUP) &&
+                     (gEditCupTrackNames[gCourseIndex - COURSE_EDIT_1][0] == '\0')) {
+@@ -1753,7 +1770,7 @@ void CourseSelect_CupUpdate(Object* cupObj) {
+                     default:
+                     case 2:
+                     case 3:
+-                        if ((gGameMode != GAMEMODE_FLX_RECORDS_COURSE_SELECT) && (gSelectedMode != MODE_TIME_ATTACK)) {
++                        if (!GDX_CS_NO_X_CUP()) {
+                             var_a1 = ((s32) (var_v1 << 7) / 2) + (var_v1 * -8) + 0x10;
+                             break;
+                         }
+diff --git a/src/overlays/ovl_i4/machine.c b/src/overlays/ovl_i4/machine.c
+index ca928da..7851fdc 100644
+--- a/src/overlays/ovl_i4/machine.c
++++ b/src/overlays/ovl_i4/machine.c
+@@ -544,6 +544,9 @@ extern s32 gGameMode;
+ extern s32 gCourseIndex;
+ extern f32 gCharacterLastEngine[];
+ extern f32 gPlayerEngine[];
++#ifdef PORT
++extern int gdx_mp_pick_active(void);
++#endif
+ 
+ void MachineSettings_Init(void) {
+     s32 i;
+@@ -560,10 +563,21 @@ void MachineSettings_Init(void) {
+         }
+     }
+ 
++#ifdef PORT
++    /* MP stock picker: no save read; gCharacterLastEngine holds the lobby's engine for the
++       lobby machine (seeded and restored by port/3ds/game/gdx3ds_mp_pick_game.c). */
++    if (gdx_mp_pick_active()) {
++        gPlayerEngine[0] = gCharacterLastEngine[gRacers[0].character];
++    } else if ((gNumPlayers == 1) && (gCourseIndex < COURSE_EDIT_1)) {
++        Save_UpdateCharacterSave(gCourseIndex);
++        gPlayerEngine[0] = gCharacterLastEngine[gRacers[0].character];
++    }
++#else
+     if ((gNumPlayers == 1) && (gCourseIndex < COURSE_EDIT_1)) {
+         Save_UpdateCharacterSave(gCourseIndex);
+         gPlayerEngine[0] = gCharacterLastEngine[gRacers[0].character];
+     }
++#endif
+ 
+     Object_Init(OBJECT_FRAMEBUFFER, 0, 0, 1);
+     Object_Init(OBJECT_MACHINE_SETTINGS_BACKGROUND, 0, 0, 4);
+@@ -846,7 +860,14 @@ s32 MachineSettings_Update(void) {
+                     Audio_PlayerTriggerSEStart(i, NA_SE_16);
+                 } else if (gInputButtonPressed & (BTN_A | BTN_START)) {
+                     Audio_PlayerTriggerSEStart(i, NA_SE_62);
++#ifdef PORT
++                    /* MP stock picker: no race follows (the screen stays, or course select is next): the menu music plays on. */
++                    if (!gdx_mp_pick_active()) {
++                        func_8007E0CC();
++                    }
++#else
+                     func_8007E0CC();
++#endif
+                     gMachineSettingsState = MACHINE_SETTINGS_CONTINUE;
+                     switch (gSelectedMode) {
+                         case MODE_GP_RACE:

@@ -1,0 +1,145 @@
+--- a/src/overlays/ovl_i6/main_menu.c
++++ b/src/overlays/ovl_i6/main_menu.c
+@@ -163,6 +163,15 @@
+ extern s32 gLeoDriveConnectionState;
+ 
+ #ifdef PORT
++/* decomp-3ds-unlock-3ds-code.patch: an unlock code (the stock one or the 3DS one) waits on its
++ * last input, START, which must not also pick the highlighted mode. */
++static bool MainMenu_UnlockAwaitsStart(void);
++#define MAIN_MENU_UNLOCK_AWAITS_START() MainMenu_UnlockAwaitsStart()
++#else
++#define MAIN_MENU_UNLOCK_AWAITS_START() (OBJECT_STATE(Object_Get(OBJECT_MAIN_MENU_UNLOCK_EVERYTHING)) == 7)
++#endif
++
++#ifdef PORT
+ /* mp-menus: with one pad, the VS icon opens the bottom screen's MULTIPLAYER menu (online and
+  * local wireless rooms; their races still run as stock VS) instead of the player-count step that
+  * needs a second controller. port/3ds/gdx3ds_bui.c defines both; weak so a build without the
+@@ -275,7 +284,7 @@
+             }
+ 
+             if ((gInputButtonPressed & BTN_START) &&
+-                (OBJECT_STATE(Object_Get(OBJECT_MAIN_MENU_UNLOCK_EVERYTHING)) == 7)) {
++                MAIN_MENU_UNLOCK_AWAITS_START()) {
+                 break;
+             }
+ 
+@@ -372,7 +381,7 @@
+                 D_800CD384 = 0;
+                 Audio_TriggerSystemSE(NA_SE_16);
+             } else if ((gInputButtonPressed & BTN_START) &&
+-                       (OBJECT_STATE(Object_Get(OBJECT_MAIN_MENU_UNLOCK_EVERYTHING)) == 7)) {
++                       MAIN_MENU_UNLOCK_AWAITS_START()) {
+                 break;
+             } else if (gInputButtonPressed & (BTN_A | BTN_START)) {
+                 Audio_TriggerSystemSE(NA_SE_33);
+@@ -419,7 +428,7 @@
+                 break;
+             }
+             if ((gInputButtonPressed & BTN_START) &&
+-                (OBJECT_STATE(Object_Get(OBJECT_MAIN_MENU_UNLOCK_EVERYTHING)) == 7)) {
++                MAIN_MENU_UNLOCK_AWAITS_START()) {
+                 break;
+             }
+             if (gInputButtonPressed & (BTN_A | BTN_START)) {
+@@ -574,10 +583,14 @@
+ }
+ 
+ s32 func_i6_8011DBD0(void);
++#ifdef PORT
++static void MainMenu_UnlockEverythingAltReset(void);
++#endif
+ 
+ void MainMenu_UnlockEverythingInit(Object* unlockEverythingObj) {
+     UNLOCK_EVERYTHING_ROMDATA(unlockEverythingObj) = func_i6_8011DBD0();
+ #ifdef PORT
++    MainMenu_UnlockEverythingAltReset();
+     gdx_unlock_diagf("[unlock] mode-select ready state=%d alreadyUnlocked=%d\n",
+                      OBJECT_STATE(unlockEverythingObj), gSettingEverythingUnlocked);
+ #endif
+@@ -1111,10 +1124,61 @@
+ }
+ 
+ const u16 gUnlockEverythingInputs[] = { BTN_L, BTN_Z, BTN_R, BTN_CUP, BTN_CDOWN, BTN_CLEFT, BTN_CRIGHT, BTN_START };
++
++#ifdef PORT
++/* 3DS: the stock code needs N64 L (no 3DS button maps to it) and the C buttons (no C-stick on an
++ * Old 3DS), so the port also takes a 3DS-native code at SELECT MODE: L, R, D-Up, D-Down, D-Left,
++ * D-Right, START -- in N64 terms Z (3DS L / X), R, the D-pad and START, on press edges. The stock
++ * code keeps working; either one completes the same unlock (the stock flag, save and sound). */
++static const u16 sGdxUnlockEverythingAltInputs[] = { BTN_Z, BTN_R, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_START };
++#define GDX_UNLOCK_ALT_STEPS ((s32) (sizeof(sGdxUnlockEverythingAltInputs) / sizeof(sGdxUnlockEverythingAltInputs[0])))
++static s32 sGdxUnlockAltStep = 0;
+ 
++static void MainMenu_UnlockEverythingComplete(Object* unlockEverythingObj);
++
++static void MainMenu_UnlockEverythingAltReset(void) {
++    sGdxUnlockAltStep = 0;
++}
++
++static bool MainMenu_UnlockAwaitsStart(void) {
++    return (OBJECT_STATE(Object_Get(OBJECT_MAIN_MENU_UNLOCK_EVERYTHING)) == 7) ||
++           (sGdxUnlockAltStep == GDX_UNLOCK_ALT_STEPS - 1);
++}
++
++/* One press edge against the 3DS code: 1 when it completes it. */
++static bool MainMenu_UnlockEverythingAltStep(void) {
++    if ((sGdxUnlockAltStep > 0) && (sGdxUnlockEverythingAltInputs[sGdxUnlockAltStep - 1] & gInputButtonPressed) &&
++        !(sGdxUnlockEverythingAltInputs[sGdxUnlockAltStep] & gInputButtonPressed)) {
++        /* The input just taken, again: a D-pad press is also the stick's edge a frame later. */
++        return false;
++    } else if (sGdxUnlockEverythingAltInputs[sGdxUnlockAltStep] & gInputButtonPressed) {
++        sGdxUnlockAltStep++;
++    } else if (sGdxUnlockEverythingAltInputs[0] & gInputButtonPressed) {
++        sGdxUnlockAltStep = 1;
++    } else {
++        sGdxUnlockAltStep = 0;
++    }
++    gdx_unlock_diagf("[unlock] 3ds code edge=0x%04X step=%d/%d\n", gInputButtonPressed, sGdxUnlockAltStep,
++                     GDX_UNLOCK_ALT_STEPS);
++    if (sGdxUnlockAltStep < GDX_UNLOCK_ALT_STEPS) {
++        return false;
++    }
++    sGdxUnlockAltStep = 0;
++    return true;
++}
++#endif
++
+ void MainMenu_UnlockEverythingUpdate(Object* unlockEverythingObj) {
+     Object* backgroundObj;
+ 
++#ifdef PORT
++    if ((OBJECT_STATE(unlockEverythingObj) < 8) && (gInputButtonPressed != 0) && MainMenu_UnlockEverythingAltStep()) {
++        gdx_unlock_diagf("[unlock] 3ds code complete\n");
++        OBJECT_STATE(unlockEverythingObj) = 8;
++        MainMenu_UnlockEverythingComplete(unlockEverythingObj);
++        return;
++    }
++#endif
+     if ((OBJECT_STATE(unlockEverythingObj) < 8) && (gInputButtonPressed != 0)) {
+ #ifdef PORT
+         s32 previousState = OBJECT_STATE(unlockEverythingObj);
+@@ -1156,3 +1220,22 @@
+         }
+     }
+ }
++
++#ifdef PORT
++/* The 3DS code's completion: the stock one's steps exactly (the flag, the settings save, the
++ * jingle and the background's flourish). */
++static void MainMenu_UnlockEverythingComplete(Object* unlockEverythingObj) {
++    Object* backgroundObj;
++
++    gSettingEverythingUnlocked = true;
++    gdx_unlock_diagf("[unlock] sequence complete state=%d unlocked=%d; saving profiles\n",
++                     OBJECT_STATE(unlockEverythingObj), gSettingEverythingUnlocked);
++    Save_SaveSettingsProfiles();
++    gdx_unlock_diagf("[unlock] profiles saved; requesting NA_SE_46\n");
++    Audio_TriggerSystemSE(NA_SE_46);
++    backgroundObj = Object_Get(OBJECT_MAIN_MENU_BACKGROUND);
++    if (OBJECT_STATE(backgroundObj) < 2) {
++        OBJECT_STATE(backgroundObj) = (Math_Rand1() % 3) + (OBJECT_STATE(backgroundObj) * 10) + 10;
++    }
++}
++#endif

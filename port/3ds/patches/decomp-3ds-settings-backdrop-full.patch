@@ -1,0 +1,30 @@
+--- a/src/game/object.c
++++ b/src/game/object.c
+@@ -1237,6 +1237,27 @@
+             gfx = MachineSelect_BackgroundDraw(gfx);
+             break;
+         case OBJECT_MACHINE_SETTINGS_BACKGROUND:
++#if defined(PORT) && defined(__3DS__)
++            /* hwfix-combined (hardware report, 3D on: "the background doesn't fill the screen"):
++               the settings' flat grey is the stock overscan-safe 12..307 x 8..231 card, so on a
++               screen nothing crops it shows as a grey card in a black frame; with [stereo]
++               menu_depth the card is also a backdrop layer pushed behind the screen, its
++               free right edge a different column in each eye. With that lever on
++               (gdx3ds_stereo_menu_backdrop_full, port/3ds/gfx/gdx3ds_stereo.cpp) it fills the
++               whole frame, as func_8007AC48 already does with the borders removed: a frame-wide
++               draw, which the stereo layer keeps on the screen plane in both eyes. */
++            {
++                extern int gdx3ds_stereo_menu_backdrop_full(void);
++                if (gdx3ds_stereo_menu_backdrop_full()) {
++                    /* the menu scissor is the same overscan card: open it for the fill and restore
++                       it after, as MachineSelect_BackgroundDraw's widescreen stretch does */
++                    gDPSetScissor(gfx++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
++                    gfx = func_8007AD44(gfx, 24, 24, 24, 0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1);
++                    gDPSetScissor(gfx++, G_SC_NON_INTERLACE, 12, 8, 308, 232);
++                    break;
++                }
++            }
++#endif
+             gfx = func_8007AC48(gfx, 24, 24, 24);
+             break;
+         case OBJECT_MACHINE_SELECT_HEADER:

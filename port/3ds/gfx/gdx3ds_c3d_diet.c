@@ -53,6 +53,11 @@ static unsigned long sFrames = 0;
 static unsigned sWinFrames = 0;
 static uint32_t sReadTicks = 0;
 static int sProf = 0;
+/* onesubmit [debug] c3dprof_every = N (default 1): the profile runs in one 64-frame window of every
+ * N (the mode word's profile bits are cleared in the others), the cheap sampled mode for a card. */
+static unsigned sProfEvery = 1;
+static unsigned sProfWindow = 0;
+static uint32_t sProfBits = 0;
 static int sVerify = 0;
 /* Verify totals since arming (the window lines carry the window's own counts too). */
 static unsigned long sVfyTotal = 0;
@@ -86,6 +91,9 @@ static void LatchConfig(void) {
     sVerify = ConfigInt("native", "c3d_diet_verify", 0);
     sProf = ConfigInt("debug", "c3dprof", 0);
     C3Dgdx_mode = ModeFromConfig(diet, mask, sVerify, sProf);
+    sProfBits = C3Dgdx_mode & (C3DGDX_PROF_SPLIT | C3DGDX_PROF_TOTAL);
+    const int every = ConfigInt("debug", "c3dprof_every", 1);
+    sProfEvery = every > 1 ? (unsigned)every : 1u;
     if (sProf != 0) {
         sReadTicks = C3Dgdx_Calibrate();
     }
@@ -156,10 +164,17 @@ static void EmitWindow(void) {
             (unsigned long)s.mismatchWords, (unsigned long)s.mismatchState, (unsigned long)s.unverifiable, sVfyTotal,
             sVfyBadWords, sVfyBadState, sVfyUnverifiable, (unsigned long)s.firstBadDraw,
             (unsigned long)s.firstBadWord, (unsigned long)s.firstBadStock, (unsigned long)s.firstBadDiet);
-    if (sProf == 1) {
+    const int profiled = (sProfWindow % sProfEvery) == 0u;
+    if (sProf == 1 && profiled) {
         EmitSplit(&s);
-    } else if (sProf == 2) {
+    } else if (sProf == 2 && profiled) {
         EmitTotal(&s);
+    }
+    sProfWindow++;
+    if ((sProfWindow % sProfEvery) == 0u) { /* the next window's sampling */
+        C3Dgdx_mode |= sProfBits;
+    } else {
+        C3Dgdx_mode &= ~sProfBits;
     }
 }
 

@@ -37,7 +37,8 @@ extern "C" {
 /* 1 when the kick lever is latched on: the decomp's scene markers must be written even when the
  * [c5cat] clock is unarmed (port/n64_sched.c gdx_c5cat_armed). */
 int gdx3ds_overlap_markers_armed(void);
-/* n60tail: kicks so far in the frame being built (0 = its GX queue has not run yet). */
+/* n60tail: kicks so far in the frame being built (0 = its GX queue has not run yet; a head run,
+ * gdx3ds_overlap_head_run, counts as one). */
 int gdx3ds_overlap_frame_kicks(void);
 
 /* Fresh C3D frame opened (StartFrame, first begin of the frame): latches the ini once, resets
@@ -46,6 +47,21 @@ void gdx3ds_overlap_frame_begin(void);
 
 /* A c5cat scene marker reached the owned walker (gdx_rt_glue.cpp, p=0x61). */
 void gdx3ds_overlap_scene_marker(unsigned category);
+
+/* stereo-race-fps [stereo] head_kick: start the frame's GX queue NOW, with no heap flush, no split
+ * and no stereo chunk: what is queued (the frame's clears of both eyes and the closed pre-body list)
+ * runs on the GPU while the CPU builds the next categories. The caller (the stereo ReplayEnter) has
+ * just closed the open list and guarantees that nothing queued so far draws, so the GPU reads no
+ * CPU-written memory but that (flushed) list. Counts as a kick for the frame end's drain + stop, the
+ * split flags and gdx3ds_overlap_frame_kicks (sky_late refuses a frame whose queue ran), not for the
+ * kick budget, the kicked categories or the stereo chunks. Only when the kick lever is armed and the
+ * frame passes its cadence (the frames that kick). 1 = the queue runs now. */
+int gdx3ds_overlap_head_run(void);
+
+/* o3ds-cpucuts [debug] overlap_flush_ranges: a CPU writer of GPU-read linear memory that does NOT
+ * flush its own range notes it here, so a range-flush kick still cleans it (gdx3ds_overlap.c).
+ * c5overlap's flush audit found none today; the list resets at every kick and frame begin. */
+void gdx3ds_overlap_note_dirty(const void* addr, unsigned bytes);
 
 /* Right before C3D_FrameEnd: if this frame kicked, wait for the queue to drain and stop it. */
 void gdx3ds_overlap_before_frame_end(void);

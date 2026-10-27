@@ -1,0 +1,6 @@
+# docker compose (SELF-HOST.md): local settings, secrets and data
+.env
+grafana-admin-password
+data/
+monitoring/tls/
+__pycache__/

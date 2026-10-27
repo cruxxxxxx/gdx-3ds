@@ -3633,6 +3633,23 @@ extern "C" float gdx_get_widescreen_geometry_xscale(void) {
     return xscale;
 }
 
+// 3DS: extra slack on top of the hor+ widening while the full frame shows (RemoveBorders, the
+// 1P widescreen race frame). The stock 4:3 cull popped chunks behind the CRT-safe border; with
+// no border the pop lands on the screen edge (gdx3ds_widescreen.h). Weak: 1.0 without the 3DS
+// shell (host tests).
+extern "C" float gdx3ds_widescreen_cull_margin(void) __attribute__((weak));
+
+static float WidescreenCullMargin(bool bordersRemoved) {
+    if (!bordersRemoved || &gdx3ds_widescreen_cull_margin == nullptr) {
+        return 1.0f;
+    }
+    const float margin = gdx3ds_widescreen_cull_margin();
+    if (!(margin >= 1.0f && margin <= 2.0f)) {
+        return 1.0f;
+    }
+    return margin;
+}
+
 // Widening multiplier for the game's CPU-side frustum tests: it culls against +-1.0 in its own
 // 4:3 projection space, but under hor+ the visible band is +-(aspect/(4/3)), so on-screen
 // ultrawide content was culled (side pop-in). Returns exactly 1.0 unless UltrawideMode is on and
@@ -3644,7 +3661,10 @@ extern "C" float gdx_get_ultrawide_cull_xscale(void) {
         return 1.0f;
     }
     const float xscale = gdx_get_widescreen_geometry_xscale();
-    return (xscale > 0.0f) ? (1.0f / xscale) : 1.0f;
+    if (!(xscale > 0.0f)) {
+        return 1.0f;
+    }
+    return (1.0f / xscale) * WidescreenCullMargin(gfx->mRemoveBordersCache);
 }
 
 float Interpreter::AdjXForAspectRatio(float x) const {

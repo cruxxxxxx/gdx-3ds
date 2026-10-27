@@ -1,0 +1,116 @@
+# G-Diffuser rendezvous server, plus an optional monitoring stack (Prometheus, Loki, Grafana and a
+# UDP probe). Linux only: every service uses host networking, so the server sees the consoles' real
+# source addresses (Docker's port publishing on macOS / Windows hides them, which breaks hole
+# punching and per-address limits; run `python3 gdx_rendezvous.py` there instead). SELF-HOST.md.
+#
+#   docker compose up -d                          # the server alone: UDP 27200
+#   docker compose --profile monitoring up -d     # + Grafana on http://127.0.0.1:3000
+#
+# Everything except the game port listens on 127.0.0.1 unless .env says otherwise (.env.example).
+name: gdx-rendezvous
+
+x-hardening: &hardening
+  restart: unless-stopped
+  network_mode: host
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+services:
+  rendezvous:
+    <<: *hardening
+    image: python:3.13-alpine
+    user: "65534:65534"
+    read_only: true
+    volumes:
+      - ./gdx_rendezvous.py:/app/gdx_rendezvous.py:ro
+    environment:
+      RV_PORT: ${RV_PORT:-27200}
+      RV_METRICS_BIND: ${RV_METRICS_BIND:-127.0.0.1}
+      RV_LOKI_URL: ${RV_LOKI_URL:-}
+      RV_LOG_IP: ${RV_LOG_IP:-full}
+      RV_ARGS: ${RV_ARGS:-}
+      PYTHONUNBUFFERED: "1"
+    command:
+      - sh
+      - -c
+      - >-
+        exec python3 /app/gdx_rendezvous.py --port "$$RV_PORT" --json --log-ip "$$RV_LOG_IP"
+        --metrics-port 9727 --metrics-bind "$$RV_METRICS_BIND"
+        $${RV_LOKI_URL:+--loki-url "$$RV_LOKI_URL"} $$RV_ARGS
+    stop_signal: SIGTERM
+
+  probe:
+    <<: *hardening
+    profiles: [monitoring]
+    image: python:3.13-alpine
+    user: "65534:65534"
+    read_only: true
+    volumes:
+      - ./gdx_rendezvous.py:/app/gdx_rendezvous.py:ro
+      - ./gdx_rv_probe.py:/app/gdx_rv_probe.py:ro
+    environment:
+      PROBE_TARGET: ${PROBE_TARGET:-127.0.0.1:27200}
+      PYTHONDONTWRITEBYTECODE: "1"
+    command: ["sh", "-c", "exec python3 /app/gdx_rv_probe.py \"$$PROBE_TARGET\" --serve 9728 --every 15"]
+
+  prometheus:
+    <<: *hardening
+    profiles: [monitoring]
+    image: prom/prometheus:v3.15.1
+    user: "${DATA_UID:-65534}:${DATA_GID:-65534}"
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus:ro
+      - ${DATA_DIR:-./data}/prometheus:/prometheus
+    command:
+      - --config.file=/etc/prometheus/${PROM_CONFIG:-prometheus.yml}
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROM_RETENTION:-30d}
+      - --storage.tsdb.retention.size=${PROM_RETENTION_SIZE:-4GB}
+      - --web.listen-address=127.0.0.1:9090
+
+  loki:
+    <<: *hardening
+    profiles: [monitoring]
+    image: grafana/loki:3.7.9
+    user: "${DATA_UID:-65534}:${DATA_GID:-65534}"
+    volumes:
+      - ./monitoring/loki/loki.yml:/etc/loki/loki.yml:ro
+      - ${DATA_DIR:-./data}/loki:/loki
+    environment:
+      LOKI_BIND: ${LOKI_BIND:-127.0.0.1}
+      LOKI_RETENTION: ${LOKI_RETENTION:-336h}
+      LOKI_DATA: /loki
+    command: ["-config.file=/etc/loki/loki.yml", "-config.expand-env=true"]
+
+  grafana:
+    <<: *hardening
+    profiles: [monitoring]
+    image: grafana/grafana-oss:13.0.2
+    user: "${DATA_UID:-65534}:${DATA_GID:-65534}"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - ${DATA_DIR:-./data}/grafana:/var/lib/grafana
+      - ${GRAFANA_ADMIN_PASSWORD_FILE:-./grafana-admin-password}:/run/gdx/grafana-admin-password:ro
+      - ${GRAFANA_TLS_DIR:-./monitoring/tls}:/run/gdx/tls:ro
+    environment:
+      GDX_DASHBOARD_DIR: /etc/grafana/dashboards
+      GF_SERVER_HTTP_ADDR: ${GRAFANA_BIND:-127.0.0.1}
+      GF_SERVER_HTTP_PORT: ${GRAFANA_PORT:-3000}
+      GF_SERVER_PROTOCOL: ${GRAFANA_PROTOCOL:-http}
+      GF_SERVER_CERT_FILE: /run/gdx/tls/grafana.crt
+      GF_SERVER_CERT_KEY: /run/gdx/tls/grafana.key
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/gdx/grafana-admin-password
+      GF_SECURITY_COOKIE_SECURE: ${GRAFANA_COOKIE_SECURE:-false}
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"

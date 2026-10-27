@@ -1,0 +1,26 @@
+diff --git a/src/game/racer.c b/src/game/racer.c
+--- a/src/game/racer.c
++++ b/src/game/racer.c
+@@ -5104,6 +5104,7 @@ void func_80095144(void) {
+ extern int gdx_autodrive_racer(int racerId); /* port/3ds/gdx3ds_autodrive.c, [debug] autodrive */
+ extern int gdx_autodrive_mix(int racerId);   /* mp-online test bots: 1 = blend the player's pad in */
+ extern int gdx_autodrive_pin_energy(int racerId); /* MP30: 0 for a dropped human the CPU took over */
++extern int gdx_autodrive_full_buttons(int racerId); /* MP30: 1 = ram-mode test bot: the CPU's attacks too */
+ #endif
+ 
+ void Racer_UpdateMovement(Racer* racer) {
+@@ -5133,9 +5134,11 @@ void Racer_UpdateMovement(Racer* racer) {
+            machine is never retired before the finish line. */
+         GDX_LSPLIT(AI);
+         Cpu_GenerateInputs(racer, &dummyController);
+-        dummyController.buttonCurrent &= BTN_A;
+-        dummyController.buttonPressed &= BTN_A;
+-        dummyController.buttonReleased &= BTN_A;
++        if (!gdx_autodrive_full_buttons(racer->id)) {
++            dummyController.buttonCurrent &= BTN_A;
++            dummyController.buttonPressed &= BTN_A;
++            dummyController.buttonReleased &= BTN_A;
++        }
+         if (gdx_autodrive_mix(racer->id)) {
+             /* mp-online [net] mp_bot: the exchanged pad still steers a little and leans, so every
+                console's race depends on every console's pad (a lockstep test that proves the

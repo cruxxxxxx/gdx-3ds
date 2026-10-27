@@ -1,12 +1,16 @@
-# menu: A-mash through the title into the menus.
+# menu: tap A through the title into the menus.
+# A HOLD is ONE press (menus read edges): one 10-tick tap
+# per step. 650 passes the title before the ~900 attract
+# demo. 3000 opens the GP difficulty box, 6000 picks
+# NOVICE, 9000 lands on SELECT COURSE (gstate mode 10).
 # SHOTs are interleaved among the button lines.
 ticks
-20 A 2980
 600 SHOT title
-3000 A 2980
+650 A 10
+3000 A 10
 3200 SHOT menu1
-6000 A 2980
+6000 A 10
 6200 SHOT menu2
-9000 A 2980
+9000 A 10
 9200 SHOT menu3
-12000 A 2980
+12000 A 10

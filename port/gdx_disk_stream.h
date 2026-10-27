@@ -130,6 +130,27 @@ void gdx_disk_stream_reset_stats(void);
  * `[debug] disk_stream_cache_kb` reads these two numbers and nothing else. */
 unsigned long long gdx_disk_stream_unique_blocks(void);
 
+/* ekaudio2 COALESCED FILL. Makes [offset, offset+length) resident, reading each run of
+ * consecutive MISSING blocks with ONE fseek/fread of up to `maxRunBytes` instead of one per
+ * block. `extra` (READ-AHEAD) extends the range by that many bytes, but only when the range
+ * itself has a missing block -- so a sequential walk pays one large request every few calls
+ * instead of topping the window up by a block on every call. The whole fill is capped at half
+ * the cache. Resident blocks split runs and are left alone; a lone missing block is skipped (the
+ * demand read fetches it at the same one-request cost). A run is capped at the set count and
+ * at half the cache, so it can neither evict itself nor flush the working set. Blocks it
+ * installs count as fills and as speculative fills (`pf=` in the receipt), and as working
+ * set, exactly as a demand fill would.
+ *
+ * Purely an optimisation: it copies nothing to the caller, applies no overlay, and a failed
+ * or short read installs nothing (the demand read then refuses on its own terms). Returns the
+ * number of SD requests issued, 0 when there was nothing to do, -1 on a failed read.
+ * `[debug] disk_stream_coalesce_kb` (port/n64_leo.c) is the lever; this is the mechanism. */
+int gdx_disk_stream_fill_range(unsigned int offset, unsigned int length, unsigned int extra,
+                               unsigned int maxRunBytes);
+
+/* SD requests the coalesced fill has issued, and the blocks they installed, since boot. */
+void gdx_disk_stream_fill_stats(unsigned long long* runs, unsigned long long* blocks);
+
 /* Formats the stats into `buf` as the one-line `[diskstream]` receipt body. Returns `buf`. */
 const char* gdx_disk_stream_format_stats(char* buf, unsigned int bufSize);
 

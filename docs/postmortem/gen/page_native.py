@@ -1,151 +1,136 @@
 from framework import *
+import pc_native
+import pd_o3ds
+from pc_diagrams import STYLE as PC_STYLE
+
+# Part dividers. Not class="eyebrow" alone, so framework.number_eyebrow() leaves them alone.
+PART_CSS = ('<style>.pd-part { font-family:var(--sans); font-weight:700; font-size:11.5px; letter-spacing:.14em; text-transform:uppercase; '
+            'color:var(--accent); border-top:3px solid var(--rule); padding-top:14px; margin:64px 0 -26px; max-width:none; } '
+            '.pd-mp img { max-height:420px; object-fit:contain; }</style>')
+
+# The multiplayer gallery: (file in docs/media/, alt text, caption). Both screens, top above bottom.
+MP_SHOTS = [
+    ("mp-menu.png", "The MULTIPLAYER menu on the bottom screen: PLAY NEARBY and PLAY ONLINE; Select Mode with VS on the top screen",
+     "VS opens MULTIPLAYER on the bottom screen."),
+    ("mp-join-code.png", "The ROOM CODE keypad on the bottom screen with four of five letters typed",
+     "Joining an online room with the host's 5-letter code."),
+    ("mp-machine-select.png", "Select Machine on the top screen; the room panel on the bottom screen with every player picking and a round timer",
+     "Machine select, with every player's pick on the bottom screen."),
+    ("mp-race-countdown.png", "Race countdown with two other players' machines alongside; the DASH lists all four players' standings",
+     "The countdown: each console shows its own racer."),
+]
+
+
+def part(label):
+    return f'<p class="pd-part">{label}</p>'
+
+
+def renderer():
+    b = [part("Part 1 · The renderer")]
+    b.append('<h2>The convention</h2>')
+    b.append('<p>Every N64 PC port in this family renders the same way.</p>')
+    b.append(pc_native.convention())
+    b.append('<h2>Where we were — v0.9.0</h2>')
+    b.append('<p>v0.9.0 ran that convention unchanged. On a 3DS it is CPU-bound.</p>')
+    b.append(pc_native.where_we_were())
+    b.append('<h2>Where we ended up — v1.1.0</h2>')
+    b.append('<p>The game still decides <i>what</i> to draw; the native renderer replaces <i>how</i> it reaches the GPU, one '
+             'category at a time.</p>')
+    b.append(pc_native.where_we_ended_up())
+
+    b.append('<h2>Why fork the renderer</h2>')
+    b.append('<p>On 09-07 the 3DS build compiled 36 libultraship files, 15,043 lines, dominated by the Fast3D interpreter (10,466 lines), '
+             'plus a 12,353-line bridge that only widens the game\'s 32-bit display-list words to 64 bits. Everything else (window, audio, '
+             'input, config) was already the port\'s own code. A census found machines, track and effects each drawn differently, so the '
+             'fork is a <b>hybrid</b>: our own interpreter for everything, plus race-only paths for what a race frame spends its time on. '
+             'The long tail (editors, ending, one-off screens) stays interpreted.</p>')
+    b.append(table(["Tier", "What it does", "At release"], [
+        ["1 · Own the interpreter", "A purpose-built F3DEX2 → citro3d walker reads the game's display list directly. No bridge.",
+         "Default on both consoles; <code>[perf] preset = off</code> restores the libultraship path."],
+        ["2 · Bypass it for races", "Track, machines, sky, HUD, effects and shadows drawn from baked or recorded data: the native race renderer (NRR).",
+         "Default on both consoles; since v1.1.0 it also covers menus, course select and machine select."],
+    ]))
+    b.append('<p>Every lever is an ini killswitch with a verify mode that draws both paths and compares the vertex bytes bit for bit. '
+             '<code>[perf] preset = auto</code> resolves per console at startup (<code>n60</code> on New 3DS, <code>o3ds-auto</code> on '
+             'Old 3DS) and turns the whole set on; an explicit ini key always wins.</p>')
+    b.append('<p>The renderer work waited two weeks for the dev loop: a network listener that accepts a build, writes it to SD and '
+             'relaunches through the Homebrew Launcher, and a live log link over 3dslink\'s protocol. One Y-press per power-on; after '
+             'that the console reloaded builds on its own.</p>')
+
+    b.append('<h2>Case by case</h2>')
+    b.append('<p>Each part of a frame at v1.1.0 defaults. The last column is Old 3DS CPU per rendered 2D race frame: the 10-01 '
+             'interpreter build against native-renderer card 3 the next day.</p>')
+    b.append(pc_native.case_table())
+    return "".join(b)
+
+
+def shipping():
+    b = [part("Part 3 · What shipped")]
+    b.append('<h2>The Expansion Kit</h2>')
+    b.append('<p>The 64DD Expansion Kit (course editor, machine creator, disk content) is its own build, "G-Diffuser EK", with its own '
+             'HOME-menu title, save and log, so it installs beside the plain game. It needs the player\'s own retail Japanese 64DD disk '
+             'image, streamed from SD rather than held in RAM (62 MB saved); without one, the EK entries simply don\'t open. A fan-translated '
+             'English image froze at boot in testing and is a known issue.</p>')
+    b.append('<p>Under the Old 3DS profile in the emulator it fits with ~6 MB spare and matches the plain game tick for tick (6,002/6,002 on a '
+             'ROM course, 8,601/8,601 on a disk course). On Old 3DS hardware disk courses stuttered, disk music broke up and the editors '
+             'crawled, so it ships for the New 3DS only.</p>')
+
+    b.append('<h2>The bottom screen: DASH</h2>')
+    b.append('<p>The second screen started as a debug console and became a race dashboard: lap, position, energy, splits and the map, '
+             'painted by the CPU straight into the bottom framebuffer, no GPU. Three layouts (all top, split, all bottom) cycle from a '
+             'touch chip or a SELECT long-press. On Old 3DS hardware it cost 4.2–5.6 ms a frame, so it was put on a 1 ms budget. In 2–4 '
+             'player races the HUD stays on the top screen. A drag-and-resize layout editor was shelved; a one-frame speed spike (up to '
+             '~826 KPH) at the finish line is known and cosmetic.</p>')
+
+    b.append('<h2>The New 3DS freeze</h2>')
+    b.append('<p>A real New 3DS froze, with no dump and no log line, every time the attract demo reached its full 30-machine race; the '
+             'emulator never reproduced it. Bisection on the console found the GPU command buffer sized at the edge of that frame: with '
+             'one lever off, the same frame hit a bounds-checked panic in the buffer writer instead. The buffer went from 2× to 4× the '
+             'citro3d default on both consoles, with a log line before any future overflow. Four hardware boots through that frame came back '
+             'clean.</p>')
+
+    b.append('<h2>Multiplayer</h2>')
+    b.append('<p>Most of v1.1.0: 2–4 players over local wireless, the same Wi-Fi, or online with a room code, each console showing its own '
+             'racer, CPU machines filling the field. Old and New 3DS can share a room. On the Old 3DS, multiplayer races run in 2D at 60 '
+             'by default; 3D is locked to 30. Player guide: <a href="../MULTIPLAYER.md">MULTIPLAYER.md</a>.</p>')
+    figs = "".join(f'<figure><a href="../media/{f}" target="_blank" rel="noopener"><img src="../media/{f}" alt="{esc(a)}" '
+                   f'loading="lazy"></a><figcaption>{esc(c)}</figcaption></figure>' for f, a, c in MP_SHOTS)
+    b.append(f'<div class="media four pd-mp">{figs}</div>')
+    b.append('<p class="note">Emulator captures (Azahar), not hardware: four New 3DS instances in an online room through a local '
+             'rendezvous server.</p>')
+
+    b.append('<h2>Release: v1.0.0, then v1.1.0</h2>')
+    b.append('<p>v1.0.0 (10-19) is three downloads from one tree: Old 3DS, New 3DS, and New 3DS with the Expansion Kit. All share one SD '
+             'folder and pick their preset at startup. v1.1.0 (10-26) keeps the same three downloads and adds multiplayer, native '
+             'menus and one-submission 3D. See <a href="../RELEASE-NOTES.md#known-issues">RELEASE-NOTES.md</a> and '
+             '<a href="../STATUS.md">STATUS.md</a>.</p>')
+    b.append(table(["Known issue (v1.0.0, still open)", "What it means"], [
+        ["3D is not a locked 60 on either console", "Old 3DS 3D is CPU-bound: 59–60 on most courses, some step to 30; multiplayer 3D is 30"],
+        ["The Old 3DS memory ceiling", "A large mid-race asset load can exhaust the budget in a worst-case emulator run; hardware peaks near 24.2 MB"],
+        ["Brief audio gaps during loads", "Short and occasional"],
+        ["A speed-readout spike at the finish", "Cosmetic, DASH only"],
+        ["Not every mode tested on every model", "Coverage favours the modes used most in development"],
+    ]))
+    b.append('<p>The day-by-day account is on <a href="timeline.html">Every step</a>; the hardest fights on '
+             '<a href="difficulties.html">Difficulties</a>.</p>')
+    return "".join(b)
 
 
 def build(D):
-    b = []
-    # The leading "05 ·" below is cosmetic placeholder text: framework.page()/number_eyebrow()
-    # overwrites it at build time to match this page's real position in PAGES.
-    b.append('<p class="eyebrow">05 · The native fork</p><h1>The native fork: six weeks, a second console</h1>')
-    b.append('<p class="lede">The New 3DS chapter ended on 09-03 with the game running through libultraship\'s Fast3D interpreter: every '
-             'triangle translated and lit on the CPU, one display-list command at a time. Starting 09-07, that path was replaced, piece by '
-             'piece, with code that talks to the PICA200 GPU directly — not because the interpreter was slow in the abstract, but because it '
-             'was the only way to also reach the Old 3DS. This page is that fork: why it started, what it replaced, and the four features it '
-             'shipped with by 10-19: Old 3DS support, the 64DD Expansion Kit on the New 3DS, a bottom-screen dashboard, and a fixed New 3DS freeze.</p>')
-
+    b = [PC_STYLE, PART_CSS]
+    # The leading "05 ·" below is cosmetic placeholder text: framework.page() renumbers it from PAGES.
+    b.append('<p class="eyebrow">05 · Road to 60, again</p><h1>The road to 60, all over again</h1>')
+    b.append('<p class="lede">On the Old 3DS, the original interpreter could not keep up. So from 09-07 we replaced it, piece by '
+             'piece, with code that writes PICA200 commands directly. This page covers that native renderer, the Old 3DS road to 60, '
+             'and what shipped with it.</p>')
     b.append(tiles([
-        ("~1,600", "commits reachable from the native integration branch, 09-07 → the morning of 10-19", True),
-        ("187", "feature branches cut for this chapter, almost all merged back", False),
-        ("199", "internal progress and plan documents dated 09-07 → 10-19, this chapter's window", False),
-        ("2", "consoles supported from one codebase: Old 3DS and New 3DS", True),
-        ("0<small> / 10,466</small>", "lines of the libultraship F3DEX2 interpreter (09-07 snapshot) that still run during a race with the native race renderer on — the default on both consoles at release (see the table below)", True),
-        ("43 <small>days</small>", "09-07 to 10-19, across five rate-limit or session pauses", False),
+        ("~1,600", "commits on the native integration branch, 09-07 → 10-19", True),
+        ("187", "feature branches, almost all merged", False),
+        ("2", "consoles from one codebase", True),
+        ("0<small> / 10,466</small>", "libultraship interpreter lines that run during a race at default settings", True),
     ]))
-
-    b.append('<h2>Why fork the renderer</h2>')
-    b.append('<p>A feasibility pass on 09-07 inventoried what the 3DS build actually compiles from libultraship: 36 files, 15,043 lines. '
-             'Of those, one thing dominates: the Fast3D interpreter itself (<code>interpreter.cpp</code>, 10,466 lines in that pre-fork '
-             'snapshot — F3DEX2 and RDP '
-             'opcodes, RSP transform-and-light on the CPU, texture cache, the combiner). Outside that 36-file total, but just as central '
-             'to a race frame, sits a separate 12,353-line bridge whose only job is to widen the game\'s 32-bit display-list words into '
-             'the 64-bit words the interpreter wants. Everything else libultraship provides on 3DS — window, audio, input, config, GUI — '
-             'was already replaced by this port\'s own glue code; graphics was the one piece still routed through someone else\'s '
-             'CPU-side renderer.</p>')
-    b.append('<p>A census — a short pass that counts how existing code already does something, before deciding whether a lever is worth '
-             'building — found machine meshes, the track, and effects/HUD each drawn a different way, which pointed to a hybrid '
-             'opportunity rather than a clean rewrite: the table below has the detail. The long tail — menus, the course editor, the '
-             'ending, one-off screens — stays on an interpreter forever, because translating all of it would cost more than it returns. '
-             'The fork is therefore a <b>hybrid renderer</b>: an owned interpreter for everything, plus three race-only paths that bypass '
-             'it for the things a race frame actually spends its time on.</p>')
-    b.append(table(["Tier", "What it does", "Status at release"], [
-        ["Tier 1 — own the interpreter", "A purpose-built F3DEX2 → citro3d walker reads the game's display list directly, replacing libultraship's interpreter and its bridge. Same pixels, no 32→64-bit conversion pass.", "Shipped and on by default on both consoles (see the preset note below); an explicit <code>[perf] preset = off</code> switches back to the exact prior libultraship path."],
-        ["Tier 2 — bypass it for races", "<code>track</code> replays the course tessellator's vertex stream straight into a GPU buffer; <code>machines</code> draws the racers from baked, retained lists; the HUD, effects and shadows batch into sprite passes. Together this is the native race renderer (NRR).", "Built and on by default on both consoles. On Old 3DS hardware an internal development card held 59–60 fps in Grand Prix races with the 3D slider up (see <a href=\"old-3ds.html\">Old 3DS</a>) — that card, not the shipped v1.0.0 binary, so it isn't a hardware-confirmed figure for this release's own 3D mode (see the release note below). On New 3DS the same default also turns the core-2 render thread off in favour of the NRR's sequential host loop — the two are mutually exclusive by design (see <a href=\"boundaries.html\">Pushing the Boundaries</a>) — and that stack is verified in the emulator and exercised on real hardware during the title-screen freeze fix below, but still awaits its own dedicated New 3DS hardware verification pass for full races."],
-    ]))
-    b.append('<p>Every individual lever is still an ini killswitch that compiles to off, with a verify mode that draws both paths and '
-             'compares the packed vertex bytes bit for bit before trusting the new one — that discipline is why a two-console fork stayed '
-             'tractable, since a regression on one model shows up as a byte mismatch, not a maybe. What changed for release: a no-ini player '
-             'no longer sees that off default. <code>[perf] preset</code> defaults to <code>auto</code>, which resolves per console at '
-             'startup — <code>n60</code> on New 3DS, the matching <code>o3ds-auto</code> table on Old 3DS — and switches the whole race-frame '
-             'lever set on out of the box. An explicit ini key always wins, so <code>preset = off</code> is the one-line escape hatch back to '
-             'every lever\'s compiled-off default.</p>')
-
-    b.append('<h2>Fixing the dev loop before forking</h2>')
-    b.append('<p>The 09-07 plan explicitly delayed the renderer work by about two weeks to fix the development loop first: every iteration '
-             'to that point meant a human carrying an SD card between a Mac and a console, and a renderer rewrite is a differential-testing '
-             'problem — the new path has to match the old one pixel for pixel before it is allowed to be faster. The fix added a network '
-             'path to the console: a control listener (TCP 17492) that accepts a new build, writes it to the SD card, and relaunches the app '
-             'through the Homebrew Launcher\'s own reload hook, plus a log link (TCP 17491, the same protocol <code>3dslink -s</code> already '
-             'speaks) that streams the console\'s log back live. One Y-button press on the Homebrew Launcher per power-on was enough; after '
-             'that the console reloaded builds on its own. By release, a 3dslink launch turns this network link on by default, alongside the '
-             'bottom-screen dashboard described below.</p>')
-
-    b.append('<h2>Native track, machines, sky, HUD and effects</h2>')
-    b.append('<p>Each race-frame category got its own small, specialised loop instead of a general-purpose interpreter pass:</p>')
-    b.append(table(["Category", "What changed"], [
-        ["Track", "The spline tessellator's per-frame vertex stream is written straight into a GPU-resident buffer instead of being walked and translated command by command."],
-        ["Machines", "The 30 racer meshes are retained on the GPU and redrawn from baked lists, instead of being re-submitted as fresh display-list commands every frame."],
-        ["Sky", "A small per-frame vertex path, kept resident where the scene allows it; the one category that needed explicit stereo and fallback handling of its own (see the New 3DS section below)."],
-        ["HUD and effects", "Texture-rect sprites (HUD gauges, particle effects) batch into atlas pages instead of one draw call per rectangle."],
-        ["Shadows", "Folded into the same batched pass as the effects sprites."],
-    ]))
-    b.append('<p>Each phase of a race frame — the shared core, one category, and the vendored GPU-command path underneath — is also sized to '
-             'fit inside the CPU\'s 16 KB instruction cache, the single biggest lesson of the Old 3DS phase below: code that does not fit in '
-             'L1-I pays for it on every fetch, regardless of how few instructions it runs.</p>')
-
-    b.append('<h2>A real 60 on the Old 3DS</h2>')
-    b.append('<p>The Old 3DS was ruled out on day one of the whole project (08-11): its 64 MB application region was judged too small. '
-             'The native fork revisited that from 09-24, and by 10-08 it held 59–60 fps (245–256 of 256 frames on the first vblank) in '
-             'Grand Prix races with the 3D slider up, on a console with no L2 cache and a third of the New 3DS\'s clock. That campaign — '
-             'the memory fit, the instruction-cache cliff that '
-             'explained why emulator wins did not transfer, and the race-by-race hardware numbers — is its own page: '
-             '<a href="old-3ds.html">Old 3DS: the road to a real 60</a>.</p>')
-
-    b.append('<h2>The Expansion Kit, shipped on the New 3DS</h2>')
-    b.append('<p>The 64DD Expansion Kit — the course editor, the machine creator, and the extra 64DD disk content — runs as its own build, '
-             '"G-Diffuser EK", with its own HOME-menu title and its own save file (<code>saves/fzerox-ek.sav</code>) and logs '
-             '(<code>log-EK.txt</code>), so it installs side by side with the plain build on the same SD card without either one touching the '
-             'other\'s save. It needs the user\'s own retail Japanese 64DD disk image (a fan-translated English image froze at boot in release testing, so it is a known issue); without one, the '
-             'game boots and plays normally and the EK-only menu entries simply don\'t open.</p>')
-    b.append('<p>Two things changed late for this release, both in the disk path: the disk image streams from the SD card instead of being '
-             'copied into RAM (a 62 MB saving), and <code>disk_stream</code> now defaults to its full-streaming mode (2) for every 3DS build '
-             'rather than being an opt-in flag. Japanese-region inputs are also accepted by default, since the only retail 64DD disk is '
-             'Japan-only. A first boot with a disk image does a roughly one-minute whole-image integrity pass once and remembers the result '
-             'for next time.</p>')
-    b.append('<p>The Expansion Kit was verified against the plain game under the native renderer and found to fit the Old 3DS\'s tighter '
-             'memory budget with a comparable margin, but on Old 3DS hardware it ran too slowly to release (64DD courses stutter, disk music '
-             'breaks up, the editors crawl), so it ships for the New 3DS only; see <a href="old-3ds.html">Old 3DS: the road to a real 60</a> for the tick-exact '
-             'verification numbers and the two drawing defects found and fixed along the way.</p>')
-
-    b.append('<h2>The bottom screen: DASH</h2>')
-    b.append('<p>The 3DS\'s second screen started this project as a debug console. Through the native-fork chapter it became a proper race '
-             'dashboard (DASH): the same information the top-screen HUD shows — lap, position, energy, split and best times, the minimap — '
-             'composited directly into the console\'s own bottom-screen framebuffer rather than drawn through the GPU, so it costs under a '
-             'millisecond of CPU time per frame and does not touch the render thread\'s budget at all. Three placement modes are available, '
-             'cycled with a touch-screen chip or a SELECT long-press: HUD elements all on the top screen (closest to the original game), '
-             'split between both screens, or all moved to the bottom screen. Outside a race the bottom screen shows an idle view instead; the '
-             'DEBUG button opens the same settings and log console the screen always had. In 2–4 player races the HUD is forced to the top '
-             'screen, since the bottom screen is one shared surface.</p>')
-    b.append('<p>A fourth mode — a fully custom, on-device drag-and-resize layout editor for the dashboard — was prototyped but shelved '
-             'before release; the three fixed layouts above are what ships. One cosmetic defect is known and left alone rather than chased '
-             'further: the speed readout can briefly show an implausible number — as high as ~826 KPH — in the single frame right at a '
-             'race\'s finish line.</p>')
-
-    b.append('<h2>The New 3DS freeze</h2>')
-    b.append('<p>Late in this chapter, a real New 3DS froze — not crashed, froze, with no crash dump and no log line — every single time '
-             'the title screen\'s attract-mode demo cycle reached its one full-30-machine race demo. The emulator never reproduced it in '
-             'repeated multi-minute runs, which argued for a genuine hardware timing issue rather than a logic bug.</p>')
-    b.append('<p>Bisection on the console (not the emulator) found the cause: the GPU command buffer that the native renderer and its '
-             'vendored graphics path both write into was sized the same on both consoles, and a full 30-machine race frame sits right at '
-             'that buffer\'s edge on New 3DS. With one specific lever disabled, the same frame instead hit a clean, bounds-checked panic in '
-             'the buffer writer at the identical point — the strongest evidence available that the freeze and the panic are two code paths '
-             'tripping over the same undersized buffer, though it doesn\'t by itself prove they\'re the identical bug.</p>')
-    b.append('<p>The fix doubles the buffer on New 3DS, which has the RAM margin to spare (the size multiplier goes from 2x to 4x the citro3d '
-             'default), and adds a durable log line the moment any future overflow is about to happen, so a recurrence would be diagnosable '
-             'from the log alone. Four separate real-hardware boot sessions through the exact frame that used to freeze every time came back '
-             'clean afterward. The same review re-measured the Old 3DS\'s own buffer and found it already running tight (70% of capacity on '
-             'the emulator, by this project\'s own margin for "raise it"); it got the same doubling, 2x to 4x, on the logic that the New 3DS '
-             'case had just shown an emulator reading can understate a real console\'s margin.</p>')
-
-    b.append('<h2>Release: v1.0.0</h2>')
-    b.append('<p>The native fork\'s work ships as three console builds from one source tree: the plain game for Old 3DS and for New 3DS, and '
-             'an Expansion Kit build for New 3DS (an Old 3DS Expansion Kit build compiles but is not released). Which performance profile runs is decided at startup by asking the console what it is, not by which '
-             'binary was installed — an Old 3DS build on a New 3DS still gets the New 3DS settings, but the reverse does not fit the memory '
-             'budget and is not supported. All of them share one SD-card folder for settings, save data and media. The native race renderer '
-             'ships on by default on both consoles — a no-ini <code>[perf] preset = auto</code> resolves to each console\'s own tuned lever '
-             'table, so a player does not need to write any ini lines for performance. Verification depth still differs by console and by '
-             'feature: the native draw paths themselves are extensively hardware-tested on Old 3DS; on New 3DS they are verified in the '
-             'emulator and exercised on real hardware during the freeze fix below, but still await a dedicated New 3DS hardware frame-rate '
-             'pass for full races (see the Tier 2 status above). Stereoscopic 3D is a separate, narrower claim: it is on by default on both '
-             'consoles, but the 59–60 fps figure above is from an internal development card, not the shipped binary, so it isn\'t yet a '
-             'hardware-confirmed locked 60 on either console (see <a href="../RELEASE-NOTES.md#known-issues">RELEASE-NOTES.md</a> and '
-             '<a href="../STATUS.md">STATUS.md</a>).</p>')
-    b.append(table(["Known at release", "What it means"], [
-        ["Stereoscopic 3D not yet a locked 60 fps on either console", "3D plays on by default on both consoles, but the 59–60 fps figure in the Tier 2 row above is from an internal development card, not the shipped binary — no hardware-confirmed 3D frame rate for v1.0.0 yet (see RELEASE-NOTES.md / STATUS.md)"],
-        ["A rare speed-readout spike (as high as ~826 KPH) at the finish line", "Cosmetic; the bottom-screen DASH only, noted above"],
-        ["Brief audio gaps during loads", "Short, occasional; not the crackle hypothesis this chapter investigated and refuted"],
-        ["The Old 3DS has a memory ceiling", "Reproduced on the Azahar emulator under the real 64 MB budget simulation, not yet on real Old 3DS hardware: a single large asset load during a race can exhaust the budget under worst-case conditions. A separate real-hardware capture (heapUsed≈24.2 MB peak) suggests the margin is thin on real hardware too"],
-        ["Not every mode is hardware-tested on every model", "The game has been played on real hardware throughout this chapter, but coverage favors the modes exercised most during development"],
-    ]))
-    b.append('<p>The day-by-day account of this chapter — including the parts that did not work on the first try — continues on '
-             '<a href="timeline.html">Every Step</a>; the hard problems it fought through are catalogued on '
-             '<a href="difficulties.html">Difficulties</a>.</p>')
-    return page("native.html", "The Native Fork", "".join(b))
+    b.append(renderer())
+    b.append(part("Part 2 · The Old 3DS"))
+    b.append(pd_o3ds.section(D))
+    b.append(shipping())
+    return page("native.html", "The Road to 60, All Over Again", "".join(b))

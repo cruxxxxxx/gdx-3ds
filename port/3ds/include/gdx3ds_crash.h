@@ -52,6 +52,11 @@ void gdx3ds_crash_arm_boot(GdxCrashBootSink sink);
 void gdx3ds_crash_disarm_boot(void);
 int gdx3ds_crash_boot_armed(void);
 
+/* CRASHFIX: main() is tearing down (the frame loop has ended). A fault from here on still writes
+ * crash<tag>.txt, then ends the process quietly instead of raising ErrDisp ("the system will
+ * reboot") over a close from HOME. */
+void gdx3ds_crash_note_exit(void);
+
 /* Arm the calling thread (used by the threadCreate wrapper; harmless when disabled). */
 void gdx3ds_crash_arm_current_thread(void);
 

@@ -9,13 +9,13 @@ this script reads frozen-new3ds.json (the values that were rendered from them th
 exist) for every other page's numbers, and re-wraps the two pages it cannot recompute without the raw
 per-session fps samples and the full token census (road-to-60.html, cost.html) in the current
 navigation, unchanged except for a short pointer forward that road-to-60.html gets appended regardless.
-The native-fork and Old 3DS chapters need no session scratchpad: their pages load their own data
+The native-fork page (which includes the Old 3DS campaign) needs no session scratchpad: it loads its own data
 (o3ds-data.json) or carry their numbers inline, cited to git history and docs/research.
 """
 import json, os, sys, collections
 sys.path.insert(0, os.path.dirname(__file__))
 from framework import *
-import page_index, page_author, page_timeline, page_road, page_native, page_o3ds, page_boundaries
+import page_index, page_author, page_timeline, page_road, page_native, page_boundaries
 import page_difficulties, page_frontier, page_agentic, page_cost
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -75,9 +75,13 @@ def load_live():
 
 def load_frozen():
     F = json.load(open(os.path.join(HERE, "frozen-new3ds.json")))
-    road = reframe("road-to-60.html", open(os.path.join(PM, "road-to-60.html")).read())
+    road = (page_road.build_current(F["D"]) if hasattr(page_road, "build_current")
+            else reframe("road-to-60.html", open(os.path.join(PM, "road-to-60.html")).read()))
     road = road.replace("</main>", page_road.continuation_note() + "</main>")
-    cost = reframe("cost.html", open(os.path.join(PM, "cost.html")).read())
+    if hasattr(page_cost, "build_current"):
+        cost = page_cost.build_current(F["D"])  # whole-project census from gen/pa_census.json
+    else:
+        cost = reframe("cost.html", open(os.path.join(PM, "cost.html")).read())
     return F["D"], F["commits_per_day"], F["prompts_per_day"], road, cost
 
 
@@ -89,13 +93,14 @@ pages = {
     "timeline.html": page_timeline.build(D, commits_per_day, prompts_per_day),
     "road-to-60.html": road_html,
     "native.html": page_native.build(D),
-    "old-3ds.html": page_o3ds.build(D),
     "boundaries.html": page_boundaries.build(D),
     "difficulties.html": page_difficulties.build(D),
     "frontier.html": page_frontier.build(D),
     "agentic.html": page_agentic.build(D),
     "cost.html": cost_html,
 }
+for old, target, title, why in REDIRECTS:
+    pages[old] = redirect(old, target, title, why)
 for name, html_ in pages.items():
     with open(os.path.join(OUT, name), "w") as f:
         f.write(html_)

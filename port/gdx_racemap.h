@@ -145,6 +145,9 @@ typedef struct GdxRaceHudSnapshot {
                            /* ~1.5s flash cadence (that reads an opaque per-player     */
                            /* static hud.c doesn't expose a field for) — a deliberate  */
                            /* simplification, documented rather than left silent.      */
+    int spareMachines;     /* gPlayerLives[0] (clamped >= 0) in GP, else -1 = hidden:  */
+                           /* hud.c's Hud_DrawPlayerLives draws only while gGameMode ==  */
+                           /* GAMEMODE_GP_RACE (no stock in practice/TT/VS/death race) */
     int top5Count;         /* min(totalRacers, GDX_RACEHUD_TOP5_MAX)                   */
     int top5Character[GDX_RACEHUD_TOP5_MAX]; /* gRacersByPosition[0..top5Count-1]->character */
     char trackName[24];    /* gCurrentTrackName (game/common.c's sTrackNames[gCourseIndex]),  */
@@ -158,10 +161,50 @@ typedef struct GdxRaceHudSnapshot {
 /* Fills `out`. Same safety/threading contract as gdx_racemap_snapshot(). */
 void gdx_racehud_snapshot(GdxRaceHudSnapshot* out);
 
+/* ──────────────────────────────────────────────────────────────────────────────────
+ * The whole field, for the multiplayer race dash (port/3ds/gdx3ds_bui_race.c): every racer in
+ * race order, up to 30 (mp30). A third sibling for the same reason GdxRaceHudSnapshot is one:
+ * its own consumer, its own (MP-only) caller, no change to the gated contracts above. Read-only,
+ * main thread only, same contract as gdx_racemap_snapshot. */
+#define GDX_RACEFIELD_MAX 30
+
+enum {
+    GDX_RACEFIELD_FINISHED = 1,
+    GDX_RACEFIELD_OUT = 2 /* retired or crashed out */
+};
+
+typedef struct GdxRaceFieldEntry {
+    signed char racer;     /* gRacers index; in a VS race 0..numPlayers-1 are the humans    */
+    signed char character; /* indexes the portrait / pilot-name tables                     */
+    signed char lap;       /* 1-based, clamped to totalLaps                                  */
+    unsigned char state;   /* GDX_RACEFIELD_* bits                                           */
+    short col, row;        /* minimap cell (gdx_racemap.h's grid), only when asked for       */
+    int gapMs;             /* behind the leader: race-time difference once both finished,    */
+                           /* else the distance gap at the leader's average speed (an        */
+                           /* estimate; 0 for the leader)                                    */
+    int timeMs;            /* raceTime                                                       */
+} GdxRaceFieldEntry;
+
+typedef struct GdxRaceFieldSnapshot {
+    int valid;      /* same gate as GdxRaceMapSnapshot.valid                                    */
+    int count;      /* gTotalRacers, clamped to GDX_RACEFIELD_MAX                                */
+    int numPlayers; /* gNumPlayers                                                              */
+    int totalLaps;
+    GdxRaceFieldEntry byPos[GDX_RACEFIELD_MAX]; /* byPos[0] leads                             */
+} GdxRaceFieldSnapshot;
+
+/* Fills `out`; withMap = 1 also computes every racer's minimap cell (the marker formula above,
+ * at the race's own scale). */
+void gdx_racefield_snapshot(GdxRaceFieldSnapshot* out, int withMap);
+
 /* 1 while the title screen's attract demo is playing a race (gTitleDemoState). The demo runs in
    an ordinary race game mode, so `valid` above is 1 during it; the 3DS bottom screen uses this
    to keep the idle view up instead of handing a demo race to the race DASH. */
 int gdx_title_demo_active(void);
+
+/* card-4b: clears an attract-demo state left armed on a settled MAIN MENU (see decomp_port.c).
+   Main thread, between game frames. Returns the cleared state, 0 = none. */
+int gdx_title_demo_clear_stale(void);
 
 #ifdef __cplusplus
 }

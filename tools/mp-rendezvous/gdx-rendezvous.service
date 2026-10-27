@@ -1,0 +1,42 @@
+# Hardened systemd unit for a self-hosted rendezvous server (Linux).
+#   sudo install -d /opt/gdx && sudo install -m 0644 gdx_rendezvous.py /opt/gdx/
+#   sudo install -m 0644 gdx-rendezvous.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gdx-rendezvous
+# Add flags (rate limits, --metrics-port, --loki-url, --log-ip, --update-url, --allow-v1 for cards
+# before the cookie build; see SELF-HOST.md) to ExecStart.
+[Unit]
+Description=G-Diffuser 3DS online multiplayer rendezvous
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=30
+ExecStart=/usr/bin/python3 /opt/gdx/gdx_rendezvous.py --port 27200 --json --log-ip hash
+# exit 75 = drained on SIGUSR1 (no rooms left): stay down until someone starts it again
+RestartPreventExitStatus=75
+SuccessExitStatus=75
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+MemoryMax=256M
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target

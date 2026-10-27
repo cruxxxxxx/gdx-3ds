@@ -411,7 +411,7 @@ GDX_COLD void Interp::NrrCourseLeave(Frame& f, size_t first, const uint32_t tail
         const Cmd c = ReadCmd(f.list, i);
         tf.idx = i + 1u;
         if (GDX_UNLIKELY(mNc != nullptr)) {
-            NcNote(c, false); /* [debug] nicensus: an executed command */
+            NcNote(c, false, NCS_COURSE); /* [debug] nicensus: an executed command */
         }
         (void)Exec(c, tf, 0);
     }

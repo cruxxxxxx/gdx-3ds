@@ -1,0 +1,42 @@
+--- a/src/audio/disk/external.c
++++ b/src/audio/disk/external.c
+@@ -2200,6 +2200,7 @@
+ #ifdef PORT
+ extern int gdx_det_audio_pin(void);
+ extern int gdx_det_title_demo_step(int gameModeIsTitle, int state);
++extern int gdx_title_demo_held(void);
+ #endif
+ extern s32 gGameMode;
+ 
+@@ -2219,7 +2220,9 @@
+        attract demo starts at a different frame, or not at all, per run. With the pin the
+        demo is never armed from audio state, so the title screen advances on tick count
+        alone. Unpinned (all real play) the expression is byte for byte the original. */
+-    const int gdxDetTitleDemoPin = gdx_det_audio_pin();
++    /* bottom-ui: a bottom-screen menu flow open on the title holds the attract demo back the
++       same way (gdx_title_demo_held), so it can not start under the player's thumbs. */
++    const int gdxDetTitleDemoPin = gdx_det_audio_pin() || gdx_title_demo_held();
+     if (gdxDetTitleDemoPin) {
+         /* niview: [debug] det_title_demo arms (and ends) the attract demo by tick count instead;
+            0 (the default) leaves the state untouched -- the pin's demo-never-fires behaviour. */
+--- a/src/audio/rom/external.c
++++ b/src/audio/rom/external.c
+@@ -529,6 +529,7 @@
+ #ifdef PORT
+ extern int gdx_det_audio_pin(void);
+ extern int gdx_det_title_demo_step(int gameModeIsTitle, int state);
++extern int gdx_title_demo_held(void);
+ #endif
+ extern s32 gGameMode;
+ 
+@@ -548,7 +549,9 @@
+        attract demo starts at a different frame, or not at all, per run. With the pin the
+        demo is never armed from audio state, so the title screen advances on tick count
+        alone. Unpinned (all real play) the expression is byte for byte the original. */
+-    const int gdxDetTitleDemoPin = gdx_det_audio_pin();
++    /* bottom-ui: a bottom-screen menu flow open on the title holds the attract demo back the
++       same way (gdx_title_demo_held), so it can not start under the player's thumbs. */
++    const int gdxDetTitleDemoPin = gdx_det_audio_pin() || gdx_title_demo_held();
+     if (gdxDetTitleDemoPin) {
+         /* niview: [debug] det_title_demo arms (and ends) the attract demo by tick count instead;
+            0 (the default) leaves the state untouched -- the pin's demo-never-fires behaviour. */

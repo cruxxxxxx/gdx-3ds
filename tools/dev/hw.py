@@ -817,7 +817,7 @@ def demo(drv):
 
 
 def run_input_script(drv, path):
-    """Line format:  <seconds> [BUTTON,BUTTON,...] [cx cy]
+    """Line format:  <seconds> [BUTTON,BUTTON,...] [cx cy] [@x,y]   (@x,y = touch, pixels)
     e.g.
         0.2  A
         1.0  -  1.0 0.0        # hold the circle pad right for a second
@@ -830,6 +830,15 @@ def run_input_script(drv, path):
             if not line:
                 continue
             parts = line.split()
+            touch = None
+            for tok in [t for t in parts if t.startswith("@")]:
+                # "@x,y": touch the bottom screen at (x, y) pixels for this step
+                try:
+                    tx, ty = tok[1:].split(",")
+                    touch = (int(tx), int(ty))
+                except ValueError:
+                    die("%s:%d: touch token must be @x,y" % (path, lineno))
+                parts.remove(tok)
             try:
                 secs = float(parts[0])
             except ValueError:
@@ -847,7 +856,9 @@ def run_input_script(drv, path):
             print("  %5.2fs %-14s circle=(%.2f,%.2f)%s"
                   % (secs, ",".join(btns) or "-", cx, cy,
                      (" special=" + ",".join(spec)) if spec else ""))
-            drv.hold(ir_packet(buttons=btns, circle=(cx, cy), special=spec), secs)
+            if touch is not None:
+                print("         touch=(%d,%d)" % touch)
+            drv.hold(ir_packet(buttons=btns, circle=(cx, cy), touch=touch, special=spec), secs)
 
 
 # --------------------------------------------------------------------------------------

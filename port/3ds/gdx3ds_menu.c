@@ -24,7 +24,14 @@
 #include "gdx3ds_frameskip.h"
 #include "gdx3ds_racemap.h"
 #include "gdx3ds_bottomhud.h"
+#include "gdx3ds_bui.h" /* the bottom-screen product menus ([ui] bottom_menus) */
 #include "gdx3ds_menu_tabbar_layout.h"
+#include "gdx3ds_widescreen.h" /* the DSP tab's WIDESCREEN row */
+#include "gdx3ds_mp_online.h" /* mp-online: the MP tab ([net] rendezvous) */
+#include "gdx_mp_lan.h"       /* GDX_NEARBY_MEDIUM_* */
+#ifdef GDX3DS_COURSE_SHARE
+#include "gdx3ds_course_share.h" /* [ek] course_share: the CRS tab (Expansion Kit builds only) */
+#endif
 
 #include <malloc.h>
 #include <stdarg.h>
@@ -64,7 +71,8 @@ extern void gdx3ds_disp_set_mode(int mode);
 #define MENU_ROW_SCROLL 30 /* stdout scroll window parks here */
 
 enum {
-    TAB_STATUS = 0,
+    TAB_RACE = 0, /* uipolish: EXIT, first so it sits at column 1 on every page; see below */
+    TAB_STATUS,
     TAB_DISP,
     TAB_3D,
     TAB_AUD,
@@ -72,8 +80,11 @@ enum {
     TAB_LOG,
     TAB_DBG,
     TAB_MAP,   /* BOTTOMHUD: gated on [debug] bottom_map; hidden (and unreachable) when off */
-    TAB_RACE,  /* BOTTOMHUD: gated on the DASH/idle view being dismissed; see MENU_TAB_HIDDEN */
-    TAB_ABOUT,
+#ifdef GDX3DS_COURSE_SHARE
+    TAB_CRS,   /* [ek] course_share: EK builds only, gated on the lever; see MENU_TAB_HIDDEN */
+#endif
+    TAB_MP,    /* mp-online: gated on [net] rendezvous / mp_lan (gdx3ds_mpo_enabled); both on by default */
+    TAB_ABOUT, /* hidden only when the visible tabs crowd the bar (gdx3ds_menu_tabs_crowd) */
     TAB_COUNT
 };
 /* nibottom Phase 2: the DASH race HUD is NOT a tab — see gdx3ds_bottomhud.h's "FULL-SCREEN
@@ -111,7 +122,11 @@ enum {
  * since they're the two tabs this fix is actually about. MenuLayoutTabs' sOffC0 below no longer
  * assumes a fixed worst case either -- see its own comment. */
 static const char* const kTabLabels[TAB_COUNT] = {
-    "STA", "DSP", "3D", "AUD", "IN", "LG", "DBG", "MAP", "RACE", "AB",
+#ifdef GDX3DS_COURSE_SHARE
+    "EXIT", "STA", "DSP", "3D", "AUD", "IN", "LG", "DBG", "MAP", "CRS", "MP", "AB",
+#else
+    "EXIT", "STA", "DSP", "3D", "AUD", "IN", "LG", "DBG", "MAP", "MP", "AB",
+#endif
 };
 static Gdx3dsMenuTabCols sTabCols[TAB_COUNT];
 static int sMapTabShown = 0;   /* == gdx3ds_racemap_enabled(), latched at init */
@@ -127,9 +142,36 @@ static int sOffC1 = 40;
     (sRaceHudEnabled && gdx3ds_bottomhud_dismissed() && gdx3ds_bottomhud_race_live())
 #define MENU_TAB_RACE_IDLE_VISIBLE \
     (gdx3ds_bottomhud_idle_dismissed() && !gdx3ds_bottomhud_race_live())
-#define MENU_TAB_HIDDEN(t) \
+#ifdef GDX3DS_COURSE_SHARE
+/* [ek] course_share: CRS needs 4 columns, and MAP + RACE + CRS together overflow the 40-column
+ * bar (gdx3ds_menu_tabbar_host_tests.c), so CRS steps aside in exactly that case -- mid-race with
+ * the race map on, where there is nothing to share anyway. With MP shown too, AB makes room
+ * (MenuAboutCrowdedOut below). */
+#define MENU_TAB_CRS_HIDDEN \
+    (!gdx3ds_cshare_enabled() || (sMapTabShown && (MENU_TAB_RACE_DASH_VISIBLE || MENU_TAB_RACE_IDLE_VISIBLE)))
+#define MENU_TAB_HIDDEN_BASE(t) \
     (((t) == TAB_MAP && !sMapTabShown) || \
-     ((t) == TAB_RACE && !(MENU_TAB_RACE_DASH_VISIBLE || MENU_TAB_RACE_IDLE_VISIBLE)))
+     ((t) == TAB_RACE && !(MENU_TAB_RACE_DASH_VISIBLE || MENU_TAB_RACE_IDLE_VISIBLE)) || \
+     ((t) == TAB_CRS && MENU_TAB_CRS_HIDDEN) || \
+     ((t) == TAB_MP && !gdx3ds_mpo_enabled()))
+#else
+#define MENU_TAB_HIDDEN_BASE(t) \
+    (((t) == TAB_MAP && !sMapTabShown) || \
+     ((t) == TAB_RACE && !(MENU_TAB_RACE_DASH_VISIBLE || MENU_TAB_RACE_IDLE_VISIBLE)) || \
+     ((t) == TAB_MP && !gdx3ds_mpo_enabled()))
+#endif
+static int MenuAboutCrowdedOut(void);
+/* release: the PLAYER SETTINGS (gdx3ds_menu_open_settings): the console with the player tabs only,
+ * plus TAB_RACE, which reads HOME there and hands the screen back. */
+static int sPlayerSettings = 0;
+/* uipolish: [debug] dev_console = 1 folds the developer pages into SETTINGS (Home has no DEBUG
+ * button any more): the player tabs first, then every developer tab after them. */
+static int sDevConsole = 0;
+#define MENU_TAB_PLAYER(t) \
+    ((t) == TAB_DISP || (t) == TAB_3D || (t) == TAB_AUD || (t) == TAB_INPUT || (t) == TAB_RACE)
+#define MENU_TAB_HIDDEN(t)                                                                         \
+    (MENU_TAB_HIDDEN_BASE(t) || (sPlayerSettings && !sDevConsole && !MENU_TAB_PLAYER(t)) ||        \
+     ((!sPlayerSettings || sDevConsole) && (t) == TAB_ABOUT && MenuAboutCrowdedOut()))
 
 /* COORDINATOR FIX (hw bug n60-3d8, item 1: "the RACE tab was on debug but unclickable because
  * OFF was covering it"). This used to run exactly ONCE, from gdx3ds_menu_init, and cache
@@ -147,6 +189,15 @@ static int sOffC1 = 40;
  * TouchTabBar hit-tests THIS tick is always laid out from THIS tick's own live visibility,
  * never a stale one. The actual column arithmetic moved to gdx3ds_menu_tabbar_layout.h so the
  * host test (gdx3ds_menu_tabbar_host_tests.c) exercises the exact same code this calls. */
+/* mp-online: AB gives way when MAP + RACE + MP would not fit before OFF (never otherwise). */
+static int MenuAboutCrowdedOut(void) {
+    int hidden[TAB_COUNT];
+    for (int t = 0; t < TAB_COUNT; t++) {
+        hidden[t] = MENU_TAB_HIDDEN_BASE(t) ? 1 : 0;
+    }
+    return gdx3ds_menu_tabs_crowd(kTabLabels, hidden, TAB_COUNT, MENU_COLS, TAB_ABOUT);
+}
+
 static void MenuLayoutTabs(void) {
     int hidden[TAB_COUNT];
     for (int t = 0; t < TAB_COUNT; t++) {
@@ -199,8 +250,47 @@ int gdx_rival_detail_floor(void) {
     return sRivalDetail;
 }
 
+/* o3dsperf [perf] mp_rival_floor (0..rival_tier_max; the o3ds preset's default is 3 = LOW, 0 = off
+ * everywhere else): while a multiplayer session is live the effective level is at least this.
+ * Render-only there: in a session no simulation read sees the draw's machineLod (mp-vis,
+ * gdx_sim_machine_visible), so the two consoles may draw at different tiers. The dynlod controller
+ * cannot do it in a race: frameskip keeps the Old 3DS's per-render task wall (~22 ms) under its
+ * 45 ms raise line, while the rendered tick still blows the 2-tick slot. */
+extern int gdx3ds_mp_active(void) __attribute__((weak));
+static int sMpRivalFloor = -1;
+static int sMpRivalFloorShown = 0;
+
+static int MpRivalFloor(void) {
+    if (sMpRivalFloor < 0) {
+        int v = gdx3ds_perf_get_int("mp_rival_floor", 0);
+        const int maxTier = gdx3ds_dynlod_tier_max();
+        if (v < 0) {
+            v = 0;
+        } else if (v > maxTier) {
+            v = maxTier;
+        }
+        sMpRivalFloor = v;
+    }
+    if (sMpRivalFloor == 0 || &gdx3ds_mp_active == 0 || !gdx3ds_mp_active()) {
+        sMpRivalFloorShown = 0;
+        return 0;
+    }
+    if (!sMpRivalFloorShown) {
+        char line[96];
+        const int n = snprintf(line, sizeof(line), "[perf] mp_rival_floor=%d: session live, rivals drawn at >= tier %d",
+                               sMpRivalFloor, sMpRivalFloor);
+        sMpRivalFloorShown = 1;
+        if (n > 0) {
+            gdx3ds_filelog_write(line, (size_t) n < sizeof(line) ? (size_t) n : sizeof(line) - 1);
+        }
+    }
+    return sMpRivalFloor;
+}
+
 int gdx_rival_detail_level(void) {
-    return gdx3ds_dynlod_effective_level(sRivalDetail);
+    const int level = gdx3ds_dynlod_effective_level(sRivalDetail);
+    const int mpFloor = MpRivalFloor();
+    return mpFloor > level ? mpFloor : level;
 }
 
 #define MENU_LOG_LINES 25   /* rows 3..27 */
@@ -268,20 +358,33 @@ static void PaintRow(int row, const char* fmt, ...) {
     }
 }
 
+/* uipolish: through MENU_ROW_SCROLL too -- the row the page never paints kept whatever Home / the
+ * DASH last drew there (Home's footer showed under every console page). */
 static void PaintClearPage(void) {
-    for (int r = 3; r <= MENU_ROWS - 1; r++) {
+    for (int r = 3; r <= MENU_ROW_SCROLL; r++) {
         PaintRow(r, "");
     }
 }
 
-/* TAB_RACE's own label text, chosen per the SAME two mutually-exclusive cases
- * MENU_TAB_RACE_DASH_VISIBLE/MENU_TAB_RACE_IDLE_VISIBLE already distinguish -- "RACE" paints
- * exactly when the race case applies (race_live() is 1 whenever this tab is visible at all AND
- * it's not the idle case), "DASH" otherwise. Both are 4 characters, matching kTabLabels[TAB_RACE]
- * ("RACE") exactly, so the column widths MenuLayoutTabs/gdx3ds_menu_layout_tabs already computed
- * from that literal stay correct no matter which string actually gets painted here. */
+/* Row 1: the fps line in the developer console; the player settings say what they are. */
+static void PaintTopRow(void) {
+    if (sPlayerSettings && MENU_TAB_PLAYER(sTab)) {
+        PaintRow(MENU_ROW_FPS, "SETTINGS  (saved as you change them)");
+    } else {
+        /* uipolish: this called itself (fc8daae's PaintRow -> PaintTopRow replace caught its own
+         * body), so every developer-console paint recursed until the stack ran out */
+        PaintRow(MENU_ROW_FPS, "%s", gdx3ds_fps_hud_get_enabled() ? sFpsLine : "");
+    }
+}
+
+/* TAB_RACE's own label text. Its visible width must stay kTabLabels[TAB_RACE]'s ("EXIT", 4
+ * columns): MenuLayoutTabs/gdx3ds_menu_layout_tabs lay the bar out from that literal. */
 static const char* MenuTabRaceLabel(void) {
-    return gdx3ds_bottomhud_race_live() ? "RACE" : "DASH";
+    /* uipolish (hw: "make 'home' into a 'exit' label and color it yellow or green so its more
+     * obvious"): one word for every way out (back to Home, the idle view or the race DASH), black
+     * on bright yellow -- reverse video over bold yellow, so the swap gives a bright background on
+     * every libctru. Four columns, as kTabLabels[TAB_RACE] says, and always column 1. */
+    return "\x1b[1;33;7mEXIT\x1b[0m";
 }
 
 /* ---- tab bar ------------------------------------------------------------------- */
@@ -343,6 +446,14 @@ static void PaintStatus(void) {
 
 static void PaintDispAutoRow(void);
 
+/* release: [display] widescreen (experimental, default off), read once at boot -- the row shows
+ * the saved choice and says when it waits for a restart. */
+static void PaintDispWideRow(void) {
+    const int saved = gdx3ds_config_get_int("display", "widescreen", 0) != 0;
+    PaintRow(29, "WIDESCREEN: %-3s %s", saved ? "ON" : "OFF",
+             saved != gdx3ds_widescreen_lever() ? "(restart to apply)" : "(tap; experimental)");
+}
+
 static void PaintDisp(void) {
     static const char* kModes[4] = {
         "AUTHENTIC   stock borders",
@@ -365,6 +476,7 @@ static void PaintDisp(void) {
     PaintDispAutoRow();
     PaintRow(26, "auto raises the cut in crowds;");
     PaintRow(27, "your setting above is the floor.");
+    PaintDispWideRow();
 }
 
 /* DYNLOD row (live: the controller's current tier, ~1 Hz refresh). */
@@ -571,6 +683,368 @@ static void PaintMap(void) {
     PaintRow(29, "minimap 3x of sCourseMinimapTex 64x64");
 }
 
+#ifdef GDX3DS_COURSE_SHARE
+static void PaintRowText(int row, const char* text) {
+    PaintRow(row, "%s", text);
+}
+#endif
+/* ---- mp-online: the MP page (only reachable with [net] rendezvous or mp_lan set) ------------- */
+static const char* const kMpPilot[30] = {
+    "Falcon", "Stewart", "Pico", "Goroh", "Jody", "Gazelle", "Mr.EAD", "Baba", "Octoman", "Gomar",
+    "Kate", "Roger", "James", "Leon", "Antonio", "B.Shadow", "Michael", "Jack", "S.Arrow", "M.Arrow",
+    "Tanaka", "Beastman", "Zoda", "Dr.Clash", "Silver", "Bio Rex", "Draq", "Billy", "Skull", "B.Falcon",
+};
+static const char* const kMpCourse[24] = {
+    "Mute City", "Silence", "Sand Ocean", "Devil's Forest", "Big Blue", "Port Town",
+    "Sector Alpha", "Red Canyon", "Devil's Forest 2", "Mute City 2", "Big Blue 2", "White Land",
+    "Fire Field", "Silence 2", "Sector Beta", "Red Canyon 2", "White Land 2", "Mute City 3",
+    "Rainbow Road", "Devil's Forest 3", "Space Plant", "Sand Ocean 2", "Port Town 2", "Big Hand",
+};
+static char sMpCode[GDX_MPO_CODE_LEN + 1];
+static int sMpCodeLen = 0;
+/* NEARBY | ONLINE, the page's two ways into a room (-1 = not chosen yet: NEARBY when [net] mp_lan
+ * is on, else ONLINE). The lobby, once in a room, is the same for both. */
+enum { MP_TAB_NEARBY = 0, MP_TAB_ONLINE = 1 };
+static int sMpTab = -1;
+/* Rows of the page (1-based console rows). */
+#define MP_ROW_TABS 3
+#define MP_ROW_HOST 5
+#define MP_ROW_CODE 8
+#define MP_ROW_KEYS 10 /* 4 rows of 8 keys */
+#define MP_ROW_KEYCMD 15
+#define MP_ROW_NEARBY 9 /* GDX_MPO_UI_NEARBY rows */
+#define MP_ROW_SLOTS 5  /* 4 lobby slots */
+#define MP_ROW_MACHINE 10
+#define MP_ROW_READY 12
+#define MP_ROW_COURSE 14
+#define MP_ROW_LAPS 15
+#define MP_ROW_MACHINES 16 /* MP30: host, VS COM on: 4 / 8 / 16 / 30 machines */
+#define MP_ROW_START 17
+#define MP_ROW_RESULTS 20
+#define MP_ROW_REMATCH 22
+#define MP_ROW_LEAVE 24
+#define MP_ROW_MSG 27
+/* CP437 glyphs of the console font: signal bars and the READY tick. */
+#define MP_GLYPH_LOW '_'
+#define MP_GLYPH_MID '\xDC'
+#define MP_GLYPH_HIGH '\xDB'
+#define MP_GLYPH_TICK "\xFB"
+#define MP_GREY "\x1b[30;1m"
+#define MP_PLAIN "\x1b[0m"
+
+static const char* MpPhaseName(int phase) {
+    switch (phase) {
+        case GDX_MPO_IDLE: return "not in a room";
+        case GDX_MPO_CONNECTING: return "connecting...";
+        case GDX_MPO_ROOM: return "lobby";
+        case GDX_MPO_LAUNCH: return "loading the race";
+        case GDX_MPO_RACE: return "racing";
+        case GDX_MPO_LINGER: return "race over";
+        default: return "off";
+    }
+}
+
+static int MpTab(const GdxMpoUi* ui) {
+    if (sMpTab < 0) {
+        sMpTab = ui->lan ? MP_TAB_NEARBY : MP_TAB_ONLINE;
+    }
+    return sMpTab;
+}
+
+static const char* MpModelName(int model) {
+    return model == GDX_MPO_MODEL_N3DS ? "N3DS" : (model == GDX_MPO_MODEL_O3DS ? "O3DS" : "    ");
+}
+
+/* "_\xDC\xDB" with the unearned bars as dots: three columns, like a phone's bars. */
+static void MpBars(int signal, char out[4]) {
+    const char glyph[3] = { MP_GLYPH_LOW, MP_GLYPH_MID, MP_GLYPH_HIGH };
+    for (int i = 0; i < 3; i++) {
+        out[i] = (i < signal) ? glyph[i] : '.';
+    }
+    out[3] = '\0';
+}
+
+static int MpBarsFromPing(int pingMs) {
+    if (pingMs < 0) {
+        return 0;
+    }
+    return pingMs <= 30 ? 3 : (pingMs <= 90 ? 2 : 1);
+}
+
+static void PaintMpTabs(const GdxMpoUi* ui) {
+    const int tab = MpTab(ui);
+    PaintRow(MP_ROW_TABS, " %s NEARBY %s  %s ONLINE %s   %-12s %s", tab == MP_TAB_NEARBY ? "\x1b[7m" : "",
+             tab == MP_TAB_NEARBY ? "\x1b[0m" : "", tab == MP_TAB_ONLINE ? "\x1b[7m" : "",
+             tab == MP_TAB_ONLINE ? "\x1b[0m" : "", ui->myName, MpModelName(ui->model));
+}
+
+static void PaintMpNearby(const GdxMpoUi* ui) {
+    if (!ui->lan) {
+        PaintRow(MP_ROW_HOST, "  nearby play is off:");
+        PaintRow(MP_ROW_HOST + 1, "  [net] mp_lan=1 in gdiffuser.ini");
+        return;
+    }
+    gdx3ds_mpo_ui_nearby_shown(); /* the local-wireless scan runs while this list is up */
+    if (ui->nearbyError != 0) {
+        PaintRow(MP_ROW_HOST, MP_GREY "  WiFi search failed (%d)" MP_PLAIN, ui->nearbyError);
+    } else {
+        PaintRow(MP_ROW_HOST, "  [ HOST A ROOM ON THIS WIFI ]");
+    }
+    if (ui->uds) {
+        PaintRow(MP_ROW_HOST + 1, "  [ HOST LOCAL WIRELESS (no router) ]");
+        if (ui->udsError != 0) {
+            PaintRow(MP_ROW_HOST + 2, MP_GREY "  %.37s" MP_PLAIN, ui->udsWhy[0] ? ui->udsWhy : "local wireless off");
+        }
+    }
+    PaintRow(MP_ROW_NEARBY - 1, "  ROOMS NEARBY%s", ui->nearbyCount == 0 ? "  (looking...)" : "  (tap to join)");
+    for (int i = 0; i < GDX_MPO_UI_NEARBY; i++) {
+        const GdxMpoUiNearby* r = &ui->nearby[i];
+        const char* via = r->medium == GDX_NEARBY_MEDIUM_UDS ? "LOCAL" : "WiFi";
+        char room[24];
+        char bars[4];
+        if (i >= ui->nearbyCount) {
+            PaintRow(MP_ROW_NEARBY + i, "");
+            continue;
+        }
+        snprintf(room, sizeof(room), "%s's room", r->name);
+        MpBars(r->signal, bars);
+        if (r->joinable) {
+            PaintRow(MP_ROW_NEARBY + i, "%-20s %d/%d %s %s %s", room, r->players, r->maxPlayers, MpModelName(r->model),
+                     bars, via);
+        } else {
+            PaintRow(MP_ROW_NEARBY + i, MP_GREY "%-20s %d/%d %s %s" MP_PLAIN, room, r->players, r->maxPlayers,
+                     MpModelName(r->model), r->whyNot);
+        }
+    }
+}
+
+static void PaintMpOnline(const GdxMpoUi* ui) {
+    if (!ui->haveServer) {
+        PaintRow(MP_ROW_HOST, "  online play needs a server:");
+        PaintRow(MP_ROW_HOST + 1, "  [net] rendezvous=host:port");
+        return;
+    }
+    PaintRow(MP_ROW_HOST, "  [ HOST AN ONLINE ROOM ]");
+    PaintRow(MP_ROW_CODE, "  JOIN  code: %-5s%s", sMpCode, sMpCodeLen < GDX_MPO_CODE_LEN ? "_" : "");
+    for (int r = 0; r < 4; r++) {
+        char line[44];
+        int off = 0;
+        for (int c = 0; c < 8; c++) {
+            off += snprintf(line + off, sizeof(line) - (size_t) off, " [%c]", gdx_mpo_code_alphabet[r * 8 + c]);
+        }
+        PaintRow(MP_ROW_KEYS + r, "%s", line);
+    }
+    PaintRow(MP_ROW_KEYCMD, "  [DEL]   [CLEAR]        [ JOIN ]");
+}
+
+/* One lobby slot: name, machine, ping (or "you"), READY tick; a version / ROM mismatch is shown
+ * in place of the tick (that console cannot be in the START). */
+static void PaintMpSlot(const GdxMpoUi* ui, int s) {
+    const GdxMpoUiPlayer* p = &ui->player[s];
+    char link[8];
+    const char* state;
+    if (!p->present) {
+        PaintRow(MP_ROW_SLOTS + s, MP_GREY " %d  open" MP_PLAIN, s + 1);
+        return;
+    }
+    if (p->isMe) {
+        snprintf(link, sizeof(link), "you");
+    } else if (ui->isLan) {
+        char bars[4];
+        MpBars(MpBarsFromPing(p->rttMs), bars);
+        snprintf(link, sizeof(link), "%s", bars);
+    } else if (p->rttMs < 0) {
+        snprintf(link, sizeof(link), "--");
+    } else {
+        snprintf(link, sizeof(link), "%dms", p->rttMs > 999 ? 999 : p->rttMs);
+    }
+    if (!p->versionOk) {
+        state = "MISMATCH";
+    } else if (!p->live) {
+        state = "...";
+    } else {
+        state = p->ready ? "READY" MP_GLYPH_TICK : "";
+    }
+    PaintRow(MP_ROW_SLOTS + s, "%s%d %-12s %-9s %-5s %s%s", p->isMe ? "\x1b[7m" : "", s + 1, p->name,
+             kMpPilot[p->machine % 30], link, state, p->isMe ? "\x1b[0m" : "");
+}
+
+static void PaintMpResults(const GdxMpoUi* ui) {
+    char line[48];
+    int off = snprintf(line, sizeof(line), " RESULTS");
+    for (int pos = 1; pos <= GDX_MPO_MAX_SLOTS; pos++) {
+        for (int s = 0; s < GDX_MPO_MAX_SLOTS; s++) {
+            if (ui->player[s].raced && ui->player[s].resultPos == pos && off < (int) sizeof(line) - 12) {
+                off += snprintf(line + off, sizeof(line) - (size_t) off, " %d.%.6s", pos, ui->player[s].name);
+            }
+        }
+    }
+    PaintRow(MP_ROW_RESULTS, "%s", line);
+}
+
+static void PaintMpLobby(const GdxMpoUi* ui) {
+    if (ui->isLan) {
+        PaintRow(MP_ROW_TABS, "LOBBY  %.12s's room  %s", ui->player[0].name, ui->isHost ? "(you host)" : "");
+    } else {
+        PaintRow(MP_ROW_TABS, "LOBBY  room %s  %s", ui->code, ui->isHost ? "(you host)" : "");
+    }
+    for (int s = 0; s < GDX_MPO_MAX_SLOTS; s++) {
+        PaintMpSlot(ui, s);
+    }
+    PaintRow(MP_ROW_MACHINE, "  MACHINE  [<]  %-9s  [>]", kMpPilot[ui->machine % 30]);
+    PaintRow(MP_ROW_READY, "  [ %s ]", ui->ready ? "READY " MP_GLYPH_TICK " - tap to cancel" : "TAP WHEN READY");
+    if (ui->isHost) {
+        PaintRow(MP_ROW_COURSE, "  COURSE   [<]  %-16s [>]",
+                 (ui->course >= 0 && ui->course < 24) ? kMpCourse[ui->course] : "?");
+        PaintRow(MP_ROW_LAPS, "  LAPS     [<]  %d  [>]", ui->laps);
+        if (ui->vsCom && ui->racersCap < 30) {
+            PaintRow(MP_ROW_MACHINES, "  MACHINES [<]  %-2d [>]" MP_GREY " Old 3DS: max %d" MP_PLAIN, ui->racers,
+                     ui->racersCap);
+        } else if (ui->vsCom) {
+            PaintRow(MP_ROW_MACHINES, "  MACHINES [<]  %-2d [>]", ui->racers);
+        } else {
+            PaintRow(MP_ROW_MACHINES, "");
+        }
+        if (ui->startable >= 2) {
+            /* The VS COM option (game settings, stock default ON) fills a VS race with CPU machines
+             * (to 4 as offline VS, or to the MACHINES count): say so before the START. */
+            if (ui->vsCom && ui->startable < ui->racers) {
+                PaintRow(MP_ROW_START, "  [ START VS %dP +%d CPU ]  delay %d", ui->startable,
+                         ui->racers - ui->startable, ui->delayPreview);
+            } else {
+                PaintRow(MP_ROW_START, "  [ START VS %dP ]  delay %d", ui->startable, ui->delayPreview);
+            }
+            PaintRow(MP_ROW_START + 1, "");
+        } else {
+            PaintRow(MP_ROW_START, MP_GREY "  START: waiting" MP_PLAIN);
+            PaintRow(MP_ROW_START + 1, "  %.36s", ui->whyNot);
+        }
+    } else {
+        PaintRow(MP_ROW_COURSE, "  COURSE   %s",
+                 (ui->course >= 0 && ui->course < 24) ? kMpCourse[ui->course] : "the host picks");
+        PaintRow(MP_ROW_START, "  the host starts when all are ready");
+    }
+    if (ui->racesDone > 0) {
+        PaintMpResults(ui);
+        if (ui->isHost) {
+            PaintRow(MP_ROW_REMATCH, "  [ REMATCH ]     [ NEXT COURSE ]");
+        }
+    }
+    PaintRow(MP_ROW_LEAVE, "  [ LEAVE ROOM ]");
+}
+
+static void PaintMp(void) {
+    GdxMpoUi ui;
+    gdx3ds_mpo_ui(&ui);
+    PaintClearPage();
+    if (ui.phase == GDX_MPO_IDLE) {
+        PaintMpTabs(&ui);
+        if (MpTab(&ui) == MP_TAB_NEARBY) {
+            PaintMpNearby(&ui);
+        } else {
+            PaintMpOnline(&ui);
+        }
+    } else if (ui.phase == GDX_MPO_ROOM) {
+        PaintMpLobby(&ui);
+    } else if (ui.phase != GDX_MPO_CONNECTING) {
+        PaintMpLobby(&ui);
+        for (int r = MP_ROW_MACHINE; r < MP_ROW_LEAVE; r++) {
+            PaintRow(r, "");
+        }
+        PaintRow(MP_ROW_START, "  %s", ui.phase == GDX_MPO_LINGER ? "race over: back to the lobby..." : "racing");
+        PaintRow(MP_ROW_LEAVE, "  [ QUIT RACE + LEAVE ]");
+    } else {
+        PaintRow(MP_ROW_TABS, "  %s", MpPhaseName(ui.phase));
+        PaintRow(MP_ROW_LEAVE, "  [ CANCEL ]");
+    }
+    PaintRow(MP_ROW_MSG, " %.38s", ui.message);
+    PaintRow(MP_ROW_MSG + 1, " %s; sleep is off while in a room", ui.isUds ? "local wireless" : "needs WiFi");
+}
+
+static void TouchMpOnline(int row, int col) {
+    if (row == MP_ROW_HOST || row == MP_ROW_HOST + 1) {
+        MenuLog("[menu] mp host");
+        gdx3ds_mpo_ui_host();
+    } else if (row >= MP_ROW_KEYS && row < MP_ROW_KEYS + 4) {
+        const int key = (col - 1) / 4; /* " [A]" cells of 4 columns */
+        if (key >= 0 && key < 8 && sMpCodeLen < GDX_MPO_CODE_LEN) {
+            sMpCode[sMpCodeLen++] = gdx_mpo_code_alphabet[(row - MP_ROW_KEYS) * 8 + key];
+            sMpCode[sMpCodeLen] = '\0';
+        }
+    } else if (row == MP_ROW_KEYCMD || row == MP_ROW_KEYCMD + 1) {
+        if (col <= 8) {
+            if (sMpCodeLen > 0) {
+                sMpCode[--sMpCodeLen] = '\0';
+            }
+        } else if (col <= 18) {
+            sMpCodeLen = 0;
+            sMpCode[0] = '\0';
+        } else if (sMpCodeLen == GDX_MPO_CODE_LEN) {
+            MenuLog("[menu] mp join %s", sMpCode);
+            gdx3ds_mpo_ui_join(sMpCode);
+        }
+    }
+}
+
+static void TouchMpNearby(const GdxMpoUi* ui, int row) {
+    if (row == MP_ROW_HOST) {
+        MenuLog("[menu] mp lan host");
+        gdx3ds_mpo_ui_lan_host();
+    } else if (row == MP_ROW_HOST + 1 && ui->uds) {
+        MenuLog("[menu] mp uds host");
+        gdx3ds_mpo_ui_uds_host();
+    } else if (row >= MP_ROW_NEARBY && row < MP_ROW_NEARBY + ui->nearbyCount) {
+        MenuLog("[menu] mp lan join row %d", row - MP_ROW_NEARBY);
+        gdx3ds_mpo_ui_lan_join(row - MP_ROW_NEARBY);
+    }
+}
+
+static void TouchMpLobby(const GdxMpoUi* ui, int row, int col) {
+    if (row == MP_ROW_READY || row == MP_ROW_READY + 1) {
+        gdx3ds_mpo_ui_toggle_ready();
+    } else if (row == MP_ROW_MACHINE || row == MP_ROW_MACHINE + 1) {
+        gdx3ds_mpo_ui_cycle_machine(col <= 16 ? -1 : 1);
+    } else if (!ui->isHost) {
+        return;
+    } else if (row == MP_ROW_COURSE) {
+        gdx3ds_mpo_ui_cycle_course(col <= 16 ? -1 : 1);
+    } else if (row == MP_ROW_LAPS) {
+        gdx3ds_mpo_ui_cycle_laps(col <= 16 ? -1 : 1);
+    } else if (row == MP_ROW_MACHINES && ui->vsCom) {
+        gdx3ds_mpo_ui_cycle_racers(col <= 16 ? -1 : 1);
+    } else if (row == MP_ROW_START || row == MP_ROW_START + 1) {
+        MenuLog("[menu] mp start");
+        gdx3ds_mpo_ui_start();
+    } else if (ui->racesDone > 0 && (row == MP_ROW_REMATCH || row == MP_ROW_REMATCH + 1)) {
+        MenuLog("[menu] mp %s", col <= 18 ? "rematch" : "next course");
+        gdx3ds_mpo_ui_rematch(col <= 18 ? 0 : 1);
+    }
+}
+
+static void TouchMp(int row, int col) {
+    GdxMpoUi ui;
+    gdx3ds_mpo_ui(&ui);
+    sDirty = 1;
+    if (ui.phase == GDX_MPO_IDLE) {
+        if (row == MP_ROW_TABS) {
+            sMpTab = col <= 11 ? MP_TAB_NEARBY : (col <= 21 ? MP_TAB_ONLINE : sMpTab);
+        } else if (MpTab(&ui) == MP_TAB_NEARBY) {
+            TouchMpNearby(&ui, row);
+        } else {
+            TouchMpOnline(row, col);
+        }
+        return;
+    }
+    if (row == MP_ROW_LEAVE || row == MP_ROW_LEAVE + 1) {
+        MenuLog("[menu] mp leave");
+        gdx3ds_mpo_ui_leave();
+        return;
+    }
+    if (ui.phase == GDX_MPO_ROOM) {
+        TouchMpLobby(&ui, row, col);
+    }
+}
+
 static void PaintPage(void) {
     PaintClearPage();
     switch (sTab) {
@@ -582,13 +1056,17 @@ static void PaintPage(void) {
         case TAB_LOG:    PaintLog(); break;
         case TAB_DBG:    PaintDbg(); break;
         case TAB_MAP:    PaintMap(); break;
+#ifdef GDX3DS_COURSE_SHARE
+        case TAB_CRS:    gdx3ds_cshare_paint_page(PaintRowText); break;
+#endif
+        case TAB_MP:     PaintMp(); break;
         default:         PaintAbout(); break;
     }
 }
 
 static void PaintAll(void) {
     PaintBegin();
-    PaintRow(MENU_ROW_FPS, "%s", gdx3ds_fps_hud_get_enabled() ? sFpsLine : "");
+    PaintTopRow();
     PaintTabBar();
     PaintPage();
     PaintEnd();
@@ -698,6 +1176,80 @@ static void MenuLeaveOff(void) {
 }
 
 /* ---- touch handling ------------------------------------------------------------ */
+#ifdef GDX3DS_COURSE_SHARE
+static void MenuNoteTabChange(int from, int to) {
+    if (from == TAB_CRS) {
+        gdx3ds_cshare_on_tab_left();
+    }
+    if (to == TAB_CRS) {
+        gdx3ds_cshare_on_tab_entered();
+    }
+}
+
+/* 1 when MenuCourseShareTick ran this tick: the ordinary tab UI owned the lit screen. */
+static int sCrsTicked = 0;
+
+/* The CRS tab's own housekeeping, once per ordinary-UI tick: the auto lever's next action, a
+ * tab request from it, stepping off CRS if it just got hidden (MENU_TAB_CRS_HIDDEN), and the
+ * SCAN view's B button. */
+static void MenuCourseShareTick(u32 held) {
+    sCrsTicked = 1;
+    if (sTab == TAB_CRS && gdx3ds_cshare_keys(held & ~sPrevHeld)) {
+        sDirty = 1;
+    }
+    if (gdx3ds_cshare_tick()) {
+        sDirty = 1;
+    }
+    if (gdx3ds_cshare_wants_tab() && !MENU_TAB_HIDDEN(TAB_CRS) && sTab != TAB_CRS) {
+        MenuNoteTabChange(sTab, TAB_CRS);
+        sTab = TAB_CRS;
+        sDirty = 1;
+        MenuLog("[menu] tab=CRS (course_share_auto)");
+    }
+    if (sTab == TAB_CRS && MENU_TAB_HIDDEN(TAB_CRS)) {
+        MenuNoteTabChange(TAB_CRS, TAB_STATUS);
+        sTab = TAB_STATUS;
+        sDirty = 1;
+    }
+}
+#endif
+
+/* uipolish: the one way out of the console, for the EXIT tab and for B: back to whichever
+ * full-screen view it was opened from (MENU_TAB_RACE_DASH_VISIBLE / MENU_TAB_RACE_IDLE_VISIBLE,
+ * mutually exclusive). sTab is left where it was so the bar looks the same next time. The product
+ * menus repaint whole (gdx3ds_bui_invalidate), so no console text is left showing under them. */
+static void MenuExitConsole(const char* how) {
+    if (gdx3ds_bottomhud_race_live()) {
+        gdx3ds_bottomhud_resume();
+        MenuLog("[menu] %s -> DASH resumed", how);
+        return;
+    }
+    gdx3ds_bottomhud_idle_resume();
+    gdx3ds_bui_invalidate();
+    MenuLog("[menu] %s -> %s resumed (%s closed)", how, gdx3ds_bui_enabled() ? "Home" : "idle view",
+            sPlayerSettings ? "settings" : "console");
+    sPlayerSettings = 0;
+}
+
+/* B leaves too, outside a race (in one B is the game's) and when nothing on the page takes keys
+ * (the INPUT tab capturing a binding, the CRS tab's own B). gdx3ds_bui_game_key_mask hides that
+ * B from the game. */
+static int MenuBExitArmed(void) {
+    if (!gdx3ds_bui_enabled() || sScreenOff || sCaptureAction >= 0 || !MENU_TAB_RACE_IDLE_VISIBLE) {
+        return 0;
+    }
+#ifdef GDX3DS_COURSE_SHARE
+    if (sTab == TAB_CRS) {
+        return 0;
+    }
+#endif
+    return 1;
+}
+
+int gdx3ds_menu_b_exits(void) {
+    return sEnabled && sCon != NULL && MenuBExitArmed();
+}
+
 static void TouchTabBar(int col) {
     if (col >= sOffC0 && col <= sOffC1) {
         MenuEnterOff(1);
@@ -709,20 +1261,13 @@ static void TouchTabBar(int col) {
         }
         if (col >= sTabCols[t].c0 && col <= sTabCols[t].c1) {
             if (t == TAB_RACE) {
-                /* Not a real tab -- see its enum comment. Hands the screen straight back to
-                 * whichever full-screen takeover is actually dismissed right now (mutually
-                 * exclusive -- see MENU_TAB_RACE_DASH_VISIBLE/MENU_TAB_RACE_IDLE_VISIBLE); sTab
-                 * is left wherever it was so the tab bar looks the same if dismissed again. */
-                if (gdx3ds_bottomhud_race_live()) {
-                    gdx3ds_bottomhud_resume();
-                    MenuLog("[menu] tab=RACE -> DASH resumed");
-                } else {
-                    gdx3ds_bottomhud_idle_resume();
-                    MenuLog("[menu] tab=DASH -> idle view resumed");
-                }
+                MenuExitConsole("tab=EXIT"); /* not a real tab -- see its enum comment */
                 return;
             }
             if (sTab != t) {
+#ifdef GDX3DS_COURSE_SHARE
+                MenuNoteTabChange(sTab, t);
+#endif
                 sTab = t;
                 sCaptureAction = -1;
                 sLogSkip = 0;
@@ -755,6 +1300,12 @@ static void TouchDisp(int row, int col) {
         MenuSaveCfg();
         sDirty = 1;
         MenuLog("[menu] perf rival_detail=%d", sRivalDetail);
+    } else if (row == 29 || row == 30) { /* WIDESCREEN row (+1 touch slop): saved, applies on restart */
+        const int on = gdx3ds_config_get_int("display", "widescreen", 0) != 0 ? 0 : 1;
+        gdx3ds_config_set_int("display", "widescreen", on);
+        MenuSaveCfg();
+        sDirty = 1;
+        MenuLog("[menu] display widescreen=%d (applies on restart)", on);
     } else if (row == 24 || row == 25) { /* AUTO LOD row (+1 touch slop): live, no relaunch */
         const int on = gdx3ds_dynlod_auto_enabled() ? 0 : 1;
         gdx3ds_dynlod_set_auto(on);
@@ -1021,6 +1572,14 @@ static void MenuHandleTouch(int row, int col) {
         case TAB_INPUT: TouchInput(row, col); break;
         case TAB_LOG:   TouchLog(row, col); break;
         case TAB_DBG:   TouchDbg(row, col); break;
+#ifdef GDX3DS_COURSE_SHARE
+        case TAB_CRS:
+            if (gdx3ds_cshare_touch(row, col)) {
+                sDirty = 1;
+            }
+            break;
+#endif
+        case TAB_MP:    TouchMp(row, col); break;
         default: break; /* STATUS/ABOUT: nothing tappable below the tab bar */
     }
 }
@@ -1035,6 +1594,33 @@ PrintConsole* gdx3ds_menu_console(void) {
 
 int gdx3ds_menu_enabled(void) {
     return sEnabled;
+}
+
+int gdx3ds_menu_settings_available(void) {
+    return sEnabled && sCon != NULL;
+}
+
+int gdx3ds_menu_settings_open(void) {
+    return sPlayerSettings && gdx3ds_bottomhud_idle_dismissed();
+}
+
+void gdx3ds_menu_open_settings(void) {
+    if (!gdx3ds_menu_settings_available() || gdx3ds_bottomhud_race_live()) {
+        return;
+    }
+    sPlayerSettings = 1;
+    if (!MENU_TAB_PLAYER(sTab) || sTab == TAB_RACE) {
+#ifdef GDX3DS_COURSE_SHARE
+        MenuNoteTabChange(sTab, TAB_DISP);
+#endif
+        sTab = TAB_DISP;
+    }
+    sCaptureAction = -1;
+    sLogSkip = 0;
+    sDirty = 1;
+    gdx3ds_bottomhud_idle_dismiss();
+    MenuLog("[menu] SETTINGS -> %s (tab=%s)", sDevConsole ? "settings + developer tabs" : "player settings",
+            kTabLabels[sTab]);
 }
 
 /* nidle verification gap (see sPendingShot/sShotArmed's own comment): wires this file into
@@ -1123,10 +1709,15 @@ void gdx3ds_menu_init(void) {
      * is on the record in every run, including the ones with the menu UI switched off. */
     gdx3ds_racemap_init();
     sMapTabShown = gdx3ds_racemap_enabled();
+    sDevConsole = gdx3ds_config_get_bool("debug", "dev_console", 0) ? 1 : 0;
     /* nibottom Phase 2: same reasoning, same placement — [debug] bottom_race's receipt must
      * be on the record whether or not the MENU UI itself is enabled. */
     gdx3ds_bottomhud_init();
     sRaceHudEnabled = gdx3ds_bottomhud_enabled();
+    gdx3ds_bui_init(); /* after the DASH: it shares the DASH's buffers and hooks */
+#ifdef GDX3DS_COURSE_SHARE
+    gdx3ds_cshare_init(); /* same placement: the [cshare] init receipt is on every record */
+#endif
     MenuLayoutTabs();
     sEnabled = gdx3ds_config_get_bool("menu", "enabled", 1);
     if (!sEnabled) {
@@ -1158,6 +1749,9 @@ void gdx3ds_menu_init(void) {
                 }
                 if (strcasecmp(want, kTabLabels[t]) == 0) {
                     sTab = t;
+#ifdef GDX3DS_COURSE_SHARE
+                    MenuNoteTabChange(TAB_STATUS, t);
+#endif
                     break;
                 }
             }
@@ -1181,7 +1775,14 @@ void gdx3ds_menu_tick(void) {
         return;
     }
     sConPassthrough = 1; /* all menu painting happens inside this call (main thread) */
+#ifdef GDX3DS_COURSE_SHARE
+    sCrsTicked = 0;
+#endif
     gdx3ds_menu_tick_body();
+#ifdef GDX3DS_COURSE_SHARE
+    /* a scan nobody can see (another tab, a takeover, the screen off) stops its camera */
+    gdx3ds_cshare_frame_end(sCrsTicked && sTab == TAB_CRS && !sScreenOff, hidKeysHeld());
+#endif
     sConPassthrough = 0;
 }
 
@@ -1192,7 +1793,7 @@ static int RaceQuietNow(void) {
 /* race_quiet's refresh: the fps row alone (the live page waits for the race to end). */
 static void PaintFpsRowOnly(void) {
     PaintBegin();
-    PaintRow(MENU_ROW_FPS, "%s", gdx3ds_fps_hud_get_enabled() ? sFpsLine : "");
+    PaintTopRow();
     PaintEnd();
     sFpsDirty = 0;
 }
@@ -1294,9 +1895,90 @@ static void MenuEndRaceDashIfOver(void) {
     sRaceDashWasLive = 0;
 }
 
+/* [debug] bui_input: the scripted input rides every hid read the bottom screen makes. */
+static u32 MenuHeldKeys(void) {
+    return gdx3ds_bui_script_keys(hidKeysHeld());
+}
+
+static void MenuTouchRead(touchPosition* pos) {
+    int px = 0;
+    int py = 0;
+    if (gdx3ds_bui_script_touch(&px, &py)) {
+        pos->px = (u16) px;
+        pos->py = (u16) py;
+        return;
+    }
+    hidTouchRead(pos);
+}
+
+/* [ui] bottom_menus: L+R+SELECT held 1.5 s flips between the developer console and whatever the
+ * product screen would show (the DASH in a race, Home / the menus / the idle logo otherwise). */
+static void MenuDevConsoleToggle(void) {
+    gdx3ds_bottomhud_debug_button_unlock(); /* card-4: the DASH shows DEBUG from now on */
+    if (sPlayerSettings) {
+        sPlayerSettings = 0; /* the chord leaves the player settings (back to Home, below) */
+        sDirty = 1;
+    }
+    if (gdx3ds_bottomhud_race_live() && !gdx3ds_bottomhud_dismissed()) {
+        gdx3ds_bottomhud_dismiss();
+        MenuLog("[menu] L+R+SELECT -> developer console (DASH dismissed)");
+    } else if (gdx3ds_bottomhud_race_live()) {
+        gdx3ds_bottomhud_resume();
+        MenuLog("[menu] L+R+SELECT -> DASH resumed");
+    } else if (gdx3ds_bottomhud_idle_dismissed()) {
+        gdx3ds_bottomhud_idle_resume();
+        gdx3ds_bui_invalidate();
+        MenuLog("[menu] L+R+SELECT -> bottom menus resumed");
+    } else {
+        gdx3ds_bottomhud_idle_dismiss();
+        MenuLog("[menu] L+R+SELECT -> developer console");
+    }
+}
+
+/* card-4 (hw: "the debug menu tab disappeared during races, why?"): a race always started in the
+ * DASH takeover, which hides the console's tab bar, and with the product menus on the DASH has no
+ * DEBUG button unless [debug] dev_console=1, so the console looked gone for the whole race. Now
+ * the console the developer had open when a single-player race starts stays open (its RACE tab,
+ * or L+R+SELECT, brings the DASH up); while the console is up the DASH does not paint at all and
+ * [menu] race_quiet keeps the console to its ~1 Hz fps row, so the race pays less, not more. An
+ * online race still starts in its DASH: the shared pause card, STANDINGS and the stall banner
+ * live there (the console stays one L+R+SELECT away). sMenuRaceLivePrev: race_live last tick. */
+static int sMenuRaceLivePrev = 0;
+
+static void MenuFollowRaceEdges(void) {
+    const int live = gdx3ds_bottomhud_race_live();
+    if (live && !sMenuRaceLivePrev && sPlayerSettings) {
+        /* the player settings are not the developer console: a race starts in its DASH, and
+         * Home is back after it */
+        sPlayerSettings = 0;
+        gdx3ds_bottomhud_idle_resume();
+        sDirty = 1;
+        MenuLog("[menu] race start -> player settings closed (DASH)");
+    } else if (live && !sMenuRaceLivePrev && gdx3ds_bottomhud_idle_dismissed() && !gdx3ds_bottomhud_dismissed() &&
+        !gdx3ds_mpo_in_session()) {
+        gdx3ds_bottomhud_dismiss();
+        sDirty = 1; /* one full repaint: the tab bar's HOME slot reads RACE now */
+        MenuLog("[menu] race start with the developer console open -> console stays (RACE tab = DASH)");
+    } else if (!live && sMenuRaceLivePrev && !sRaceDashWasLive && gdx3ds_bottomhud_dismissed()) {
+        gdx3ds_bottomhud_on_race_ended(); /* the DASH never ran: still clear its per-race dismiss */
+        sDirty = 1;                       /* ... and RACE reads HOME again */
+    }
+    sMenuRaceLivePrev = live;
+}
+
 static void gdx3ds_menu_tick_body(void) {
-    const u32 held = hidKeysHeld();
-    const int touching = (held & KEY_TOUCH) != 0;
+    u32 held;
+    int touching;
+    gdx3ds_bui_script_step();
+    held = MenuHeldKeys();
+    touching = (held & KEY_TOUCH) != 0;
+    if (sPlayerSettings && !gdx3ds_bottomhud_idle_dismissed()) {
+        sPlayerSettings = 0; /* the screen went back to Home some other way */
+    }
+    if (gdx3ds_bui_dev_combo(held)) {
+        MenuDevConsoleToggle();
+    }
+    MenuFollowRaceEdges();
 
     /* nibottom Phase 2: the DASH takeover. See gdx3ds_bottomhud.h's "FULL-SCREEN TAKEOVER, NOT A
      * MENU TAB" note for why this is a hand-off, not a tab: the real layout uses the whole 320x240
@@ -1323,7 +2005,7 @@ static void gdx3ds_menu_tick_body(void) {
             MenuLeaveOff();
         }
         if (touching) {
-            hidTouchRead(&pos);
+            MenuTouchRead(&pos);
         }
         gdx3ds_bottomhud_tick(sCon->frameBuffer, held, sPrevHeld, touching, sPrevTouching, (int) pos.px,
                                (int) pos.py);
@@ -1354,10 +2036,14 @@ static void gdx3ds_menu_tick_body(void) {
     if (!sScreenOff && gdx3ds_bottomhud_idle_active()) {
         touchPosition pos = {0, 0};
         if (touching) {
-            hidTouchRead(&pos);
+            MenuTouchRead(&pos);
         }
-        gdx3ds_bottomhud_idle_tick(sCon->frameBuffer, held, sPrevHeld, touching, sPrevTouching, (int) pos.px,
-                                    (int) pos.py);
+        if (gdx3ds_bui_enabled()) {
+            gdx3ds_bui_tick(sCon->frameBuffer, held, sPrevHeld, touching, (int) pos.px, (int) pos.py);
+        } else {
+            gdx3ds_bottomhud_idle_tick(sCon->frameBuffer, held, sPrevHeld, touching, sPrevTouching, (int) pos.px,
+                                        (int) pos.py);
+        }
         sPrevHeld = held;
         sPrevTouching = touching;
         sRaceHudWasLive = 1;
@@ -1413,7 +2099,8 @@ static void gdx3ds_menu_tick_body(void) {
         static int sMenuSelectHoldTicks = 0;
         const int raceReachable = MENU_TAB_RACE_DASH_VISIBLE;
         const int idleReachable = MENU_TAB_RACE_IDLE_VISIBLE;
-        if ((raceReachable || idleReachable) && (held & KEY_SELECT)) {
+        /* [ui] bottom_menus: L+R+SELECT (gdx3ds_bui_dev_combo) replaces this long-press */
+        if ((raceReachable || idleReachable) && (held & KEY_SELECT) && !gdx3ds_bui_enabled()) {
             if (sMenuSelectHoldTicks <= 90) {
                 sMenuSelectHoldTicks++;
             }
@@ -1431,9 +2118,16 @@ static void gdx3ds_menu_tick_body(void) {
         }
     }
 
+    if ((held & ~sPrevHeld & KEY_B) && MenuBExitArmed()) {
+        sPrevHeld = held;
+        sPrevTouching = touching;
+        MenuExitConsole("B");
+        return;
+    }
+
     if (touching && !sPrevTouching && !sWakeSwallow) {
         touchPosition pos;
-        hidTouchRead(&pos);
+        MenuTouchRead(&pos);
         if (pos.px < 320 && pos.py < 240) {
             const int col = pos.px / 8 + 1;
             const int row = pos.py / 8 + 1;
@@ -1463,6 +2157,10 @@ static void gdx3ds_menu_tick_body(void) {
         }
     }
 
+#ifdef GDX3DS_COURSE_SHARE
+    MenuCourseShareTick(held);
+#endif
+
     /* nibottom Phase 2: the KEY_SELECT mode-cycle hotkey only matters WHILE the DASH takeover is
      * active (there is nothing for the mode to change the placement of otherwise) — handled
      * entirely inside gdx3ds_bottomhud_tick above, which already has `held`/`sPrevHeld`. */
@@ -1489,15 +2187,17 @@ static void gdx3ds_menu_tick_body(void) {
         PaintFpsRowOnly();
     } else if (periodic &&
                (sTab == TAB_STATUS || sTab == TAB_DISP || (sTab == TAB_LOG && sLogSkip == 0) ||
-                sTab == TAB_MAP || sFpsDirty)) {
+                sTab == TAB_MAP || sTab == TAB_MP || sFpsDirty)) {
         PaintBegin();
-        PaintRow(MENU_ROW_FPS, "%s", gdx3ds_fps_hud_get_enabled() ? sFpsLine : "");
+        PaintTopRow();
         if (sTab == TAB_STATUS) {
             PaintStatus();
         } else if (sTab == TAB_DISP) {
             PaintDispAutoRow(); /* DYNLOD live tier only; the rest of the page is static */
         } else if (sTab == TAB_LOG) {
             PaintLog();
+        } else if (sTab == TAB_MP) {
+            PaintMp(); /* pings, link types, who is ready: live */
         } else if (sTab == TAB_MAP) {
             /* BOTTOMHUD: the box is pixels and repaints itself every frame, but the header row
              * is console text -- without this it kept whatever lap/position it was painted with
@@ -1518,6 +2218,12 @@ static void gdx3ds_menu_tick_body(void) {
     if (sTab == TAB_MAP && !sScreenOff && sMapTabShown) {
         gdx3ds_racemap_paint(sCon->frameBuffer);
     }
+#ifdef GDX3DS_COURSE_SHARE
+    /* [ek] course_share: the QR picture over the page's blank left half, after the text paint. */
+    if (sTab == TAB_CRS && !sScreenOff) {
+        gdx3ds_cshare_paint_pixels(sCon->frameBuffer);
+    }
+#endif
 
     /* nidle verification gap: this is the plain console UI's own tick -- the one screen owner
      * gdx_request_frame_dump previously had no SHOT hook for (see sPendingShot/sShotArmed's own

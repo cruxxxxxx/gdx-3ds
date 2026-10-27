@@ -1,0 +1,36 @@
+diff --git a/src/audio/disk/lib/load.c b/src/audio/disk/lib/load.c
+index b9d9a55..1c0c356 100644
+--- a/src/audio/disk/lib/load.c
++++ b/src/audio/disk/lib/load.c
+@@ -1410,6 +1410,10 @@ void AudioLoad_RelocateFont(s32 fontId, uintptr_t fontBaseAddr, SampleBankRelocI
+ }
+ #endif /* !PORT */
+ 
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++extern int gdx3ds_ek_audio_sync_bulk(u32 devAddr, void* ramAddr, u32 size); /* ekaudio2 */
++#endif
++
+ void AudioLoad_SyncDma(uintptr_t devAddr, u8* ramAddr, size_t size, s32 medium) {
+ #ifdef PORT
+     unsigned int gdxALoad = gdx_aload_begin(); /* [audioload] */
+@@ -1417,6 +1421,20 @@ void AudioLoad_SyncDma(uintptr_t devAddr, u8* ramAddr, size_t size, s32 medium)
+ 
+     size = ALIGN16(size);
+     Audio_InvalDCache(ramAddr, size);
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    /* ekaudio2 `[debug] audio_sync_bulk_kb` (port/3ds/game/gdx3ds_ek_audio_bulk.c): a cart load
++       inside the streamed audio_table is read straight off fzerox.o2r in large requests instead
++       of the 0x400 walk below, whose every 16th DMA costs the producer one SD request -- the
++       first audio tick of a boot is mostly this. Same bytes into the same destination; the
++       walk's own no-DMA rule (AudioLoad_Dma, resetTimer > 16) is kept by not bulk-reading then.
++       Returns 0 to decline -- lever off, stream not armed, outside the window, a read that
++       failed -- and the walk then runs exactly as before, rewriting the whole range. */
++    if (medium == MEDIUM_CART && gAudioCtx.resetTimer <= 16 &&
++        gdx3ds_ek_audio_sync_bulk((u32) devAddr, ramAddr, (u32) size)) {
++        gdx_aload_end(GDX_ALOAD_DMA, gdxALoad); /* [audioload] */
++        return;
++    }
++#endif
+     while (true) {
+         if (size < 0x400) {
+             break;

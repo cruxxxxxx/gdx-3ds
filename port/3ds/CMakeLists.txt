@@ -449,11 +449,58 @@ if(NINTENDO_3DS)
     # no citro3d target, no extra draw, no top-screen change. Contract: gdx3ds_racemap.h.
     target_sources(G-Diffuser-3DS PRIVATE gdx3ds_racemap.c)
 
+    # [ek] course_share (DEFAULT OFF): share Expansion Kit custom courses as .gdxcourse files and
+    # QR codes from the menu's CRS tab. Contract: gdx3ds_course_share.h. EK builds only: the
+    # shipped (EK=OFF) build compiles none of it and gdx3ds_menu.c without the CRS tab, so its
+    # objects stay identical. The game-side MFS half is gdx3ds_course_share_game.c (game/).
+    # The codec and QR TUs are pure C and host-tested (gdx3ds_course_share_host_tests).
+    if(GDX_3DS_EXPANSION_KIT)
+        target_sources(G-Diffuser-3DS PRIVATE gdx3ds_course_share.c gdx3ds_course_share_format.c
+                                             gdx3ds_course_share_qr.c vendor/qrcodegen/qrcodegen.c
+                                             gdx3ds_course_share_scan.c gdx3ds_course_share_cam.c
+                                             vendor/quirc/quirc.c vendor/quirc/decode.c
+                                             vendor/quirc/identify.c vendor/quirc/version_db.c)
+        # SCAN (camera -> quirc on a worker thread): the vendored decoder is third-party code,
+        # built as is (port/3ds/vendor/quirc/PROVENANCE.md).
+        set_source_files_properties(vendor/quirc/quirc.c vendor/quirc/decode.c vendor/quirc/identify.c
+                                    vendor/quirc/version_db.c PROPERTIES COMPILE_OPTIONS -w)
+        set_property(SOURCE gdx3ds_menu.c APPEND PROPERTY COMPILE_DEFINITIONS GDX3DS_COURSE_SHARE=1)
+        # The course checksum recomputation must round after every float op, as the game does.
+        set_property(SOURCE gdx3ds_course_share_format.c APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
+    endif()
+
     # nibottom Phase 2: the DASH race HUD on the bottom screen (gdiffuser.ini
     # [debug] bottom_race, DEFAULT OFF, and [hud] placement). Sibling of BOTTOMHUD above —
     # same cost model, same MENU-tab wiring, independent snapshot (port/gdx_racemap.h's
     # GdxRaceHudSnapshot). Contract: gdx3ds_bottomhud.h.
     target_sources(G-Diffuser-3DS PRIVATE gdx3ds_bottomhud.c)
+    # ... whose game art (fonts, digits, portraits, chrome) is baked once at boot from the user's
+    # fzerox.o2r by gdx3ds_hudbake.c's recipes; its Pillow-exact double arithmetic must round
+    # after every operation.
+    target_sources(G-Diffuser-3DS PRIVATE gdx3ds_hudbake.c)
+    set_property(SOURCE gdx3ds_hudbake.c APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
+    # The recipe id the SD cache / PC pack is keyed on: the same hash tools/hudpack computes.
+    include(${CMAKE_CURRENT_SOURCE_DIR}/hudbake_recipe_id.cmake)
+    gdx3ds_hudbake_recipe_id(GDX3DS_HUDBAKE_RECIPE_ID ${CMAKE_CURRENT_SOURCE_DIR})
+    set_property(SOURCE gdx3ds_hudbake.c APPEND PROPERTY COMPILE_DEFINITIONS
+                 GDX3DS_HUDBAKE_RECIPE_ID=${GDX3DS_HUDBAKE_RECIPE_ID})
+    message(STATUS "G-Diffuser-3DS: HUD bake recipe id ${GDX3DS_HUDBAKE_RECIPE_ID}")
+
+    # Bottom-screen product menus (artifacts/bottom-menus-design, [ui] bottom_menus): the UI kit
+    # (pure C, a port of the design's mockup engine; host-tested by gdx3ds_bui_host_tests.c). It
+    # draws into the DASH's shadow buffer and reads the DASH's atlases through bui_glyph_table()
+    # (gdx3ds_bottomhud.c), so it adds no pixels of its own beyond the small extra-glyph/icon set.
+    target_sources(G-Diffuser-3DS PRIVATE gdx3ds_bui_kit.c)
+    # ... and the screens on top of it: pure painters + the gallery (host-tested too), the 3DS shell
+    # (state, input ownership, the MP layer) and the [debug] bui_input scripted input.
+    target_sources(G-Diffuser-3DS PRIVATE gdx3ds_bui_screens.c gdx3ds_bui_gallery.c gdx3ds_bui.c
+                                         gdx3ds_bui_script.c)
+    # ... and the multiplayer race dash (M3): pure painters (host-tested through the gallery) and
+    # the shell that drives them from the DASH (gdx3ds_bottomhud.c) and the MP layer.
+    target_sources(G-Diffuser-3DS PRIVATE gdx3ds_bui_racedash.c gdx3ds_bui_race.c)
+    if(GDX_3DS_EXPANSION_KIT)
+        set_property(SOURCE gdx3ds_bui.c APPEND PROPERTY COMPILE_DEFINITIONS GDX3DS_BUI_EK=1)
+    endif()
 
     # nibottom Phase 2, CUSTOM HUD mode: pure clamp/snap/hit-test/ini-line logic (host-testable,
     # no <3ds.h>/decomp deps -- see gdx3ds_hudcustom_layout.h). The weak stand-in stub
@@ -472,8 +519,13 @@ if(NINTENDO_3DS)
     # PERF PRESET (NEXT.md C4p): [perf] preset = auto|off|o3ds re-defaults the scene-density
     # levers per console class (auto = o3ds on an Old 3DS only); explicit [perf] keys win.
     target_sources(G-Diffuser-3DS PRIVATE gdx3ds_perf_preset.c)
+    # WIDESCREEN: [display] widescreen (DEFAULT 0) -- race frames at the top screen's 5:3 with
+    # the PC port's RemoveBorders/UltrawideMode/WidescreenUI switches. Contract: gdx3ds_widescreen.h.
+    target_sources(G-Diffuser-3DS PRIVATE gdx3ds_widescreen.c)
     # n3ds: `[perf] preset = n60`, the n60 race stack as config-layer defaults (gdx3ds_preset_n60.h).
     target_sources(G-Diffuser-3DS PRIVATE gdx3ds_preset_n60.c)
+    # preset-fix: the ni_* native levers are rows of both preset tables now (the GDX_3DS_PRESET_NI
+    # staging option is gone; tools/ci-3ds.sh gdx3ds_preset_mustship_tests guards the rows).
     # MAINPROF (NEXT.md A8): [mprof] main-thread section profiler, gdiffuser.ini
     # [debug] mainprof (DEFAULT OFF). Diagnostic only; every hook site is one int
     # load + branch when the gate is off.
@@ -482,10 +534,27 @@ if(NINTENDO_3DS)
     # bucket) and [debug] hwsite (per-call micro-timers at the hardware suspects). DEFAULT OFF;
     # diagnostic only, zero heap. Contract: gdx3ds_hwprof.h.
     target_sources(G-Diffuser-3DS PRIVATE gdx3ds_hwprof.c)
+    # GXCOST (onesubmit, docs/research/native/onesubmit-progress.md): [debug] gxcost, the CPU cost
+    # of GX / GSP dispatch per thread (main, the GSP event thread, others) and the GX interrupts per
+    # frame. DEFAULT OFF; off, each wrapper is the real call behind one load + branch. Contract:
+    # include/gdx3ds_gxcost.h.
+    target_sources(G-Diffuser-3DS PRIVATE gdx3ds_gxcost.c)
+    target_link_options(G-Diffuser-3DS PRIVATE
+        "LINKER:--wrap=GSPGPU_FlushDataCache" "LINKER:--wrap=svcFlushProcessDataCache"
+        "LINKER:--wrap=gspSubmitGxCommand" "LINKER:--wrap=GX_ProcessCommandList"
+        "LINKER:--wrap=gxCmdQueueRun" "LINKER:--wrap=gxCmdQueueWait" "LINKER:--wrap=gspWaitForEvent"
+        "LINKER:--wrap=svcWaitSynchronization" "LINKER:--wrap=C3D_FrameBegin" "LINKER:--wrap=C3D_FrameEnd")
     # C5TICK (docs/research/native/c5tick-progress.md): the per-tick DL build split
     # ([debug] dlbprof), the write-set check ([debug] dlwrite) and hollow skipped ticks
     # ([debug] dl_hollow). All DEFAULT OFF. Contract: gdx3ds_c5tick.h.
     target_sources(G-Diffuser-3DS PRIVATE gdx3ds_c5tick.c)
+    # S5b (o3dsek-plan.md section 6): the course editor's test-drive race scope
+    # ([native] nrr_testdrive) is `#ifdef EXPANSION_KIT` inside this one TU, so the define goes
+    # on this source only -- the rest of the target has never been built with it. OFF: nothing
+    # added, and the shipped .3dsx stays byte-identical.
+    if(GDX_3DS_EXPANSION_KIT)
+        set_property(SOURCE gdx3ds_c5tick.c APPEND PROPERTY COMPILE_DEFINITIONS EXPANSION_KIT=1)
+    endif()
     # HITCH: the per-frame hitch receipt ([debug] hitch, default 0); counters in gfx/gdx3ds_hitch_ev.c.
     target_sources(G-Diffuser-3DS PRIVATE gdx3ds_hitch.c)
     # n60st3: the frame-spike attribution receipt ([debug] spike_ms, default 0).
@@ -499,6 +568,14 @@ if(NINTENDO_3DS)
     target_sources(G-Diffuser-3DS PRIVATE gdx3ds_core1probe.c)
     # N60TICK4: tick-ahead on the Old 3DS ([debug] tick_ahead, default 0). Contract: gdx3ds_tickahead.h.
     target_sources(G-Diffuser-3DS PRIVATE gdx3ds_tickahead.c)
+    # mp-snapshot: game-state snapshot / restore + the synctest gate and the hardware probe
+    # ([debug] snap_test / snap_probe, both default 0). Contract: ../gdx_snapshot.h. The link's
+    # script is the installed 3dsx.ld plus two INCLUDE fragments that group the decomp simulation
+    # state into one .data and one .bss block (gdx3ds_snapshot_ld.cmake).
+    # snap-fast: the copy engine (LDM/STM line bursts, dirty-block sync), gdx3ds_snapcopy.h.
+    target_sources(G-Diffuser-3DS PRIVATE gdx_snapshot.c gdx3ds_snapcopy.c)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/gdx3ds_snapshot_ld.cmake)
+    gdx3ds_snapshot_link_setup(G-Diffuser-3DS)
     # N60LAUNCH: launch variants ([debug] launch_variants, default 0). Contract: gdx3ds_launch.h;
     # the selection rules (gdx3ds_launch_core.c) are host-tested (gdx3ds_launch_host_tests).
     target_sources(G-Diffuser-3DS PRIVATE gdx3ds_launch.c gdx3ds_launch_core.c)
@@ -508,7 +585,8 @@ if(NINTENDO_3DS)
     # [debug] frameskip = N | auto (DEFAULT 0 = off). rtMode 0 only. Contract:
     # gdx3ds_frameskip.h; the pure governor is host-tested (gdx3ds_frameskip_host_tests).
     target_sources(G-Diffuser-3DS PRIVATE gdx3ds_frameskip.c gdx3ds_frameskip_gov.c gdx3ds_frameskip_steady.c
-                                         gdx3ds_frameskip_race0.c) # n60fs: frameskip = race0
+                                         gdx3ds_frameskip_race0.c # n60fs: frameskip = race0
+                                         gdx3ds_pipe.c) # o3ds60: top triple buffer / dash_pre_frame levers
     # ORACLE: true frame capture + [fh] receipts (docs/research/native/03-oracle-plan.md).
     target_sources(G-Diffuser-3DS PRIVATE gdx3ds_oracle.c)
     # GDX3DS_BUILD_ID: gdx3ds_oracle.c #includes the generated header now (see

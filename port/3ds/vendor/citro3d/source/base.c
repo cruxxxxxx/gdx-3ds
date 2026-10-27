@@ -4,6 +4,7 @@
 #include <c3d/base.h>
 #include <c3d/effect.h>
 #include <c3d/uniforms.h>
+#include "../gdx/c3d_gdx.h" /* GDX (o3ds3d): C3Dgdx_CmdBufWords */
 
 C3D_Context __C3D_Context;
 
@@ -20,6 +21,28 @@ static aptHookCookie hookCookie;
 // log: zero cost before gdx3ds_filelog is up or on a non-3DS build of this vendored source.
 extern void gdx3ds_filelog_write(const char* msg, size_t len) __attribute__((weak));
 extern void gdx3ds_filelog_flush(void) __attribute__((weak));
+// o3ds-cpucuts ([debug] filelog_flush_defer, port/3ds/include/gdx3ds_filelog.h): the 5 s line below
+// flushed the log synchronously every time it printed -- hardware o3ds-3d@0c2668a, every one of the
+// 1P race's 13-24 KiB / 38-691 ms [hitch] sync flushes. With the lever on, only a NEW record (the
+// line an overflow diagnosis needs) flushes, and that one names itself for [hitch] src=.
+extern int gdx3ds_filelog_flush_lever(void) __attribute__((weak));
+extern void gdx3ds_filelog_flush_src(const char* src) __attribute__((weak));
+
+static void Gdx3dsCmdbufHwmFlush(bool newRecord)
+{
+	if (gdx3ds_filelog_flush_lever != NULL && gdx3ds_filelog_flush_lever()) {
+		if (!newRecord) {
+			return;
+		}
+		if (gdx3ds_filelog_flush_src != NULL) {
+			gdx3ds_filelog_flush_src("cmdbuf_hwm");
+			return;
+		}
+	}
+	if (gdx3ds_filelog_flush != NULL) {
+		gdx3ds_filelog_flush();
+	}
+}
 
 static u32 s_cmdbufHwmWords = 0;
 // The capacity the record above was measured against -- GPUCMD_Split (libctru) carves each
@@ -53,9 +76,7 @@ static void Gdx3dsCmdbufHwmNote(u32 words, u32 size) {
 	                 newRecord ? " (new record)" : "");
 	if (n > 0) {
 		gdx3ds_filelog_write(buf, (size_t)n);
-		if (gdx3ds_filelog_flush != NULL) {
-			gdx3ds_filelog_flush();
-		}
+		Gdx3dsCmdbufHwmFlush(newRecord);
 	}
 }
 
@@ -383,6 +404,11 @@ bool C3Di_SplitFrame(u32** pBuf, u32* pSize)
 float C3D_GetCmdBufUsage(void)
 {
 	return C3Di_GetContext()->cmdBufUsage;
+}
+
+/* GDX (o3ds3d [gpumem]): see gdx/c3d_gdx.h. */
+unsigned C3Dgdx_CmdBufWords(void) {
+	return (unsigned)C3Di_GetContext()->cmdBufSize;
 }
 
 void C3D_Fini(void)

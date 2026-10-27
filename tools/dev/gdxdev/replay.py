@@ -171,6 +171,16 @@ def rec_dir(sdmc_root=None):
 # get it with `--no-replay-quit` (or the equivalent `--ini debug.replay_quit=0`), which
 # this never overrides.
 REPLAY_QUIT_KEY = ("debug", "replay_quit")
+# replay_quit only acts on a .gdxrec's `[rec] end` (main_3ds.cpp oracleReplayEnded). An
+# autoinput .txt never logs one, so on its own the implied replay_quit=1 did nothing for
+# storm2/menu/boot: the guest played on to --seconds, the harness killed RetroArch, and
+# every exit-time flush (pcm_dump, ...) was lost. For autoinput the same intent is spelled
+# `[debug] quit_at_tick` = the script's last tick + AUTOINPUT_QUIT_MARGIN (the margin lets a
+# SHOT scheduled on the last tick land). It is only implied on a PRIVATE SD (the retro
+# lane): the Qt lane merges into the user's shared ini, where a leftover quit_at_tick cuts
+# every later run short (that is how `quit_at_tick = 3400` got there, retro.py).
+QUIT_AT_TICK_KEY = ("debug", "quit_at_tick")
+AUTOINPUT_QUIT_MARGIN = 120
 
 
 def implied_settings(kind=None):
@@ -182,10 +192,12 @@ def implied_settings(kind=None):
     return {REPLAY_QUIT_KEY: "1"}
 
 
-def apply_implied(settings, explicit, kind=None, out=None):
+def apply_implied(settings, explicit, kind=None, out=None, last=None, private_sd=False):
     """Merge implied_settings() into `settings`, never over a key in `explicit`.
 
-    `explicit` is the set of (section, key) the invocation named itself.
+    `explicit` is the set of (section, key) the invocation named itself. `last` is the
+    replay's last scheduled tick; with `private_sd` (an instance SD nobody else reads) an
+    autoinput replay also gets the quit_at_tick that makes replay_quit mean something.
     """
     for key, value in implied_settings(kind).items():
         if key in explicit:
@@ -199,7 +211,27 @@ def apply_implied(settings, explicit, kind=None, out=None):
             out.say("[debug] replay_quit=1 implied by --replay: the run ends at the "
                     "replay's last tick ('[rec] end'), not on --seconds. "
                     "Pass --no-replay-quit to play past it.")
+    _imply_autoinput_quit(settings, explicit, kind, out, last, private_sd)
     return settings
+
+
+def _imply_autoinput_quit(settings, explicit, kind, out, last, private_sd):
+    if kind != "autoinput" or last is None or QUIT_AT_TICK_KEY in explicit:
+        return
+    if not inifile.truthy(settings.get(REPLAY_QUIT_KEY, "0")):
+        return
+    if not private_sd:
+        if out:
+            out.warn("autoinput replays never log '[rec] end', so replay_quit cannot end "
+                     "this run; pass --ini debug.quit_at_tick=%d to stop at the script's "
+                     "end (not implied on the shared SD: it would outlive this run)"
+                     % (last + AUTOINPUT_QUIT_MARGIN))
+        return
+    settings[QUIT_AT_TICK_KEY] = str(last + AUTOINPUT_QUIT_MARGIN)
+    if out:
+        out.say("[debug] quit_at_tick=%d implied by the autoinput --replay (last tick %d + "
+                "%d): an autoinput script never logs '[rec] end', so this is what ends it"
+                % (last + AUTOINPUT_QUIT_MARGIN, last, AUTOINPUT_QUIT_MARGIN))
 
 
 def stage(ident, sdmc_root=None, gdx_dir=None, dry_run=False, out=None):

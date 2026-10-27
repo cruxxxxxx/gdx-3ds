@@ -1,12 +1,14 @@
 G-Diffuser License
 
-Unless a file or directory states otherwise, the original G-Diffuser source code and documentation
-are licensed under the MIT License below. Submodules, vendored components, fonts, and generated
-archives retain their own licenses. See THIRD_PARTY_NOTICES.md and LICENSES/.
+Unless a file or directory states otherwise, the original G-Diffuser source code and documentation,
+and the G-Diffuser 3DS port's additions to them, are licensed under the MIT License below.
+Submodules, vendored components, fonts, and generated archives retain their own licenses.
+See THIRD_PARTY_NOTICES.md and LICENSES/.
 
 MIT License
 
 Copyright (c) 2026 Vicente Mediano
+Copyright (c) 2026 G-Diffuser 3DS contributors (the Nintendo 3DS port)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -34,6 +34,9 @@ extern void gdx_dbg_logf(const char* fmt, ...) __attribute__((weak));
 extern int gdx3ds_config_get_int(const char* section, const char* key, int fallback) __attribute__((weak));
 typedef void* (*GdxDlbStubFn)(void* gfx, int sec, int view);
 extern int gdx3ds_c5tick_consume(int sec, GdxDlbStubFn stub);
+#ifdef EXPANSION_KIT
+extern int gdx3ds_c5tick_testdrive_scope(void); /* S5b: gdx3ds_c5tick.h */
+#endif
 
 extern GfxPool D_1000000;
 extern GfxPool D_8024DCE0[];
@@ -363,6 +366,11 @@ static int NrrFxNativeScope(s32 view) {
     if (!gdx3ds_nrr_view_ok(NRR_CAT_FX, view, gNumPlayers) || gdx3ds_nrr_fx_broken[1]) { /* niview: 2-4P views */
         return 0;
     }
+#ifdef EXPANSION_KIT
+    if (gGameMode == GAMEMODE_COURSE_EDIT) {
+        return gdx3ds_c5tick_testdrive_scope(); /* S5b: the editor's test drive race, nothing else */
+    }
+#endif
     return gGameMode != GAMEMODE_GP_END_CS && gGameMode != GAMEMODE_COURSE_EDIT;
 }
 

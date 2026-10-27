@@ -195,6 +195,18 @@ void C3Di_RenderQueueWaitDone(void)
 	C3Di_WaitAndClearQueue(-1);
 }
 
+/* GDX (o3ds3d [debug] ceiling_probe): see c3d_gdx.h. */
+unsigned C3Dgdx_QueueEntries(void) {
+	return (unsigned)C3Di_GetContext()->gxQueue.numEntries;
+}
+
+bool C3Dgdx_FrameQueueIdle(long long timeoutNs) {
+	if (inFrame) {
+		return false;
+	}
+	return gxCmdQueueWait(&C3Di_GetContext()->gxQueue, (s64)timeoutNs);
+}
+
 float C3D_FrameRate(float fps)
 {
 	float old = framerate;

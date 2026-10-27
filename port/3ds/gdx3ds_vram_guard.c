@@ -27,7 +27,7 @@ static void GuardLog(const char* line) {
     svcOutputDebugString(line, strlen(line));
     gdx3ds_boot_trail_file(line);
     gdx3ds_filelog_write(line, strlen(line));
-    gdx3ds_filelog_flush();
+    gdx3ds_filelog_flush_sync();
 }
 
 static void ReportClean(const char* who, const void* fb) {

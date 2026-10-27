@@ -1,0 +1,83 @@
+--- a/src/game/racer.c
++++ b/src/game/racer.c
+@@ -6281,6 +6281,13 @@
+     f32 gdxRivalNear;
+     f32 gdxRivalBias;
+     s32 gdxLod6Skip; /* O3DS-SCENE-LOD: port hook gdx_rival_lod6_skip, read once per Racer_Draw */
++    /* WIDE-CULL (decomp-3ds-widescreen-cull.patch): machines that pass the widened hor+ NDC-x
++       test but fail the stock +-1.0 one. They are drawn, then handed back to the simulation
++       exactly as the stock pass leaves a culled machine (machineLod = unk_2B2 = unk_2B3 = 0),
++       because the racer update and the CPU AI read machineLod != 0 as "on screen" (racer.c
++       spark/explosion RNG draws, cpu.c:1082/1172): a wider cull must not move the race. */
++    Racer* gdxWideOnly[TOTAL_RACER_COUNT + 4]; /* 30 racers + 3 TA ghosts, + 1 scratch slot */
++    s32 gdxWideOnlyCount = 0;
+ #endif
+ 
+     GDX_C5CAT(MACH);
+@@ -6446,6 +6453,13 @@
+ #endif
+                     continue;
+                 }
++#ifdef PORT
++                if ((temp_fs0 < -1.0f) || (temp_fs0 > 1.0f)) {
++                    gdxWideOnly[gdxWideOnlyCount] = racer; /* committed below, after the y test */
++                } else {
++                    gdxWideOnly[gdxWideOnlyCount] = NULL;
++                }
++#endif
+ 
+                 temp_fs0 = sp574 * (((sp580.m[0][1] * racer->segmentPositionInfo.pos.x) +
+                                      (sp580.m[1][1] * racer->segmentPositionInfo.pos.y) +
+@@ -6454,6 +6468,11 @@
+                 if ((temp_fs0 < -1.0f) || (temp_fs0 > 1.0f)) {
+                     continue;
+                 }
++#ifdef PORT
++                if ((gdxWideOnly[gdxWideOnlyCount] != NULL) && (gdxWideOnlyCount < TOTAL_RACER_COUNT + 3)) {
++                    gdxWideOnlyCount++;
++                }
++#endif
+ 
+ #ifdef PORT
+                 /* RIVAL-DETAIL: stretch this rival's depth beyond the near band so the
+@@ -6598,6 +6617,13 @@
+ #endif
+                     continue;
+                 }
++#ifdef PORT
++                if ((temp_fs0 < -1.0f) || (temp_fs0 > 1.0f)) {
++                    gdxWideOnly[gdxWideOnlyCount] = racer; /* WIDE-CULL, as in the main pass */
++                } else {
++                    gdxWideOnly[gdxWideOnlyCount] = NULL;
++                }
++#endif
+                 temp_fs0 = sp574 * (((sp580.m[0][1] * racer->segmentPositionInfo.pos.x) +
+                                      (sp580.m[1][1] * racer->segmentPositionInfo.pos.y) +
+                                      (sp580.m[2][1] * racer->segmentPositionInfo.pos.z)) +
+@@ -6607,6 +6633,9 @@
+                 }
+ 
+ #ifdef PORT
++                if ((gdxWideOnly[gdxWideOnlyCount] != NULL) && (gdxWideOnlyCount < TOTAL_RACER_COUNT + 3)) {
++                    gdxWideOnlyCount++;
++                }
+                 if (gdxForceMaxMachineLod) {
+                     racer->machineLod = 1;
+                 } else
+@@ -7989,6 +8018,16 @@
+ #endif
+     GDX_HUD_CAPTURE(gdxHudStart, HUD);
+     GDX_C5CAT(MISC);
++#ifdef PORT
++    /* WIDE-CULL: give the simulation back the stock visibility of every machine only the
++       widened band showed (see the declaration). Nothing after this point draws them. */
++    {
++        s32 gdxI;
++        for (gdxI = 0; gdxI < gdxWideOnlyCount; gdxI++) {
++            gdxWideOnly[gdxI]->machineLod = gdxWideOnly[gdxI]->unk_2B2 = gdxWideOnly[gdxI]->unk_2B3 = 0;
++        }
++    }
++#endif
+     return gfx;
+ }
+ #else

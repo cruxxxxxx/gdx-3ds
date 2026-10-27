@@ -227,7 +227,7 @@ until `--apply`, because this is the user's real card.
 
 ```sh
 tools/dev/gdx-dev sd stage build-3ds/port/3ds/G-Diffuser-3DS.3dsx           # dry run
-tools/dev/gdx-dev sd stage ~/Desktop/stage-dir --ini mylever=1 --wipe-log --apply
+tools/dev/gdx-dev sd stage path/to/stage-dir --ini mylever=1 --wipe-log --apply
 tools/dev/gdx-dev sd pull /tmp/devcli-art/hw-run
 ```
 
@@ -327,7 +327,7 @@ tools/dev/gdx-dev hw-run \
     --config 'native.all=0,native.interp=0' \
     --config 'native.all=1,native.interp=1' \
     --replay race-mutecity-start --repeats 3 \
-    --3dsx ~/Desktop/G-Diffuser-3DS-<track>/G-Diffuser-3DS.3dsx
+    --3dsx path/to/G-Diffuser-3DS-<track>/G-Diffuser-3DS.3dsx
 
 tools/dev/gdx-dev hw-run --config ... --gputrace      # [prof] ms (inflated, and stated)
 tools/dev/gdx-dev hw-run --config ... --dry-run       # the exact sequence, no sockets
@@ -462,6 +462,10 @@ shared ini carried `quit_at_tick = 3400` (every seeded run would have stopped at
 3400), plus `input_replay`, `trectbatch`, `tmemfast`, `trifast` and a whole `[native]`
 block: 33 inherited keys. Both lanes then set the same measurement ini explicitly.
 
+**`--bare-ini`** skips that seed altogether: the instance ini starts empty, so the run sees only
+the measurement keys and its own `--ini` -- the no-ini player's built-in defaults (preset-fix's
+empty-ini parity legs).
+
 `retro run` also sets `ApplePersistenceIgnoreState` on the RetroArch bundle before every
 launch. After an abnormal exit macOS otherwise offers to restore the previous session with
 an NSAlert that has no window to attach to, so it is invisible and the process hangs
@@ -548,8 +552,10 @@ is the host knob:
 
 `--3d` also implies `[stereo] enabled=1` and `[debug] fh_eye=both` on the guest (an
 explicit `--ini` still wins). `fh_eye=both` makes every capture emit an `eye=L` **and** an
-`eye=R` `[fh]` receipt, and every `SHOT` write `autotest/<tag>_L.bmp` *and* `_R.bmp` — the
-two-eye evidence. Modes: `side-by-side` (default; the only one where a single host frame
+`eye=R` `[fh]` receipt, and every `SHOT` write `autotest/<tag>_L.bmp` *and* `_RE.bmp` — the
+two-eye evidence. (`_RE`, not `_R`: `<tag>_R.bmp` is the bottom screen's, written a tick later by
+the touch menu / DASH, and it silently overwrote the right eye on every `--3d` run until
+menu-stereo-depth.) Modes: `side-by-side` (default; the only one where a single host frame
 visibly contains both eyes), `side-by-side-full`, `anaglyph`, `interlaced`,
 `reverse-interlaced`, `cardboard`, `off`.
 
@@ -636,9 +642,12 @@ run" rather than as a bare no-data. `--eye L` (the default) is unchanged.
 
 ## Replays
 
-`tools/dev/replays/` — see its own README for the grammar and the three rules that cost
+`tools/dev/replays/` — see its own README for the grammar and the four rules that cost
 real time (interleave `SHOT` lines among the button lines; drive SHOTs belong at tick
-4600+; keep every line under 62 bytes, comments included). `emu run --replay <id>`
+4600+; keep every line under 62 bytes, comments included; a held button is ONE press —
+menus read edges, so walk them with short taps). A `.txt` replay on `retro run` also
+implies `[debug] quit_at_tick=<last tick + 120>`, since `replay_quit` only acts on a
+`.gdxrec`'s `[rec] end`. `emu run --replay <id>`
 validates the script before staging, so a typo — or a long comment — fails immediately
 instead of producing a run that silently did nothing.
 

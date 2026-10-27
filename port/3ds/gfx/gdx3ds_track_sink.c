@@ -21,8 +21,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "gdx3ds_track_templates_raw.inc"
-
 /* n60stereo (gdx3ds_stereo_frame.cpp): 1 = the NRR may draw under the [stereo] config. */
 int gdx3ds_stereo_nrr_ok(void) __attribute__((weak));
 
@@ -205,42 +203,48 @@ static void TrkLog(const char* fmt, ...) {
     gdx_dbg_logf("%s\n", buf);
 }
 
+/* The 18 index lists come from the segment-8 carve (the user's fzerox.o2r, loaded at boot), are
+ * decoded once and installed only if they match GDXTRK_TEMPLATES_DIGEST; nothing is compiled in. */
 static void TrkInitTemplates(void) {
     unsigned char* const syms[GDXTRK_TEMPLATE_COUNT] = {
         D_80140F0, D_8014138, D_8014180, D_80141C8, D_8014210, D_8014268, D_80142C0, D_8014308, D_8014350,
         D_8014398, D_80143E0, D_8014430, D_8014480, D_80144D0, D_8014520, D_8014580, D_80145E0, D_8014640,
     };
-    int ok = 0;
+    const uint8_t* src[GDXTRK_TEMPLATE_COUNT];
     int okArr = 0;
+    int failedIndex = -1;
+    int failedRc = GDXTRK_DECODE_OK;
     int i;
     const unsigned char* seg8 = NULL;
     if (&gdx_rdram != NULL && &gSegment16C8A0VramStart != NULL && gdx_rdram != NULL && gSegment16C8A0VramStart != 0) {
         seg8 = gdx_rdram + gSegment16C8A0VramStart;
     }
     for (i = 0; i < GDXTRK_TEMPLATE_COUNT; i++) {
-        GdxTrkTemplate t;
-        int rc = -1;
         sTemplatePtr[i] = syms[i];
-        if (seg8 != NULL) {
-            rc = gdxtrk_decode_template(seg8 + kGdxTrkSegOffset[i], kGdxTrkRawTable[i].len, &t);
-            if (rc == GDXTRK_DECODE_OK && gdxtrk_template_equal(&t, &kGdxTrkGolden[i])) {
-                ok++;
-            } else {
-                const unsigned char* b = seg8 + kGdxTrkSegOffset[i];
-                TrkLog("[trk] template %s: carve decode rc=%d != golden (%02X%02X%02X%02X %02X%02X%02X%02X)",
-                       kGdxTrkTemplateNames[i], rc, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
-            }
+        src[i] = seg8 != NULL ? seg8 + kGdxTrkSegOffset[i] : NULL;
+    }
+    sTemplatesOk = seg8 != NULL && gdxtrk_templates_install(src, &failedIndex, &failedRc);
+    if (seg8 != NULL && !sTemplatesOk) {
+        if (failedIndex >= 0) {
+            const unsigned char* b = src[failedIndex];
+            TrkLog("[trk] template %s: carve decode rc=%d (%02X%02X%02X%02X %02X%02X%02X%02X)",
+                   kGdxTrkTemplateNames[failedIndex], failedRc, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
+        } else {
+            TrkLog("[trk] templates: carve decodes but its digest != 0x%08X (not the retail archive?)",
+                   (unsigned)GDXTRK_TEMPLATES_DIGEST);
         }
-        /* The bound array is normally an untouched placeholder; count it only as a receipt. */
-        if (syms[i] != NULL && gdxtrk_decode_template(syms[i], kGdxTrkRawTable[i].len, &t) == GDXTRK_DECODE_OK &&
-            gdxtrk_template_equal(&t, &kGdxTrkGolden[i])) {
+    }
+    /* The bound array is normally an untouched placeholder; count it only as a receipt. */
+    for (i = 0; i < GDXTRK_TEMPLATE_COUNT && sTemplatesOk; i++) {
+        GdxTrkTemplate t;
+        if (syms[i] != NULL && gdxtrk_decode_template(syms[i], kGdxTrkTemplateLen[i], &t) == GDXTRK_DECODE_OK &&
+            gdxtrk_template_equal(&t, &gGdxTrkTemplate[i])) {
             okArr++;
         }
     }
-    sTemplatesOk = (ok == GDXTRK_TEMPLATE_COUNT);
     TrkLog("[trk] init mode=%d census=%d templates(carve)=%d/%d templates(arrays)=%d seg8=%p ops=%u runs=%u", sMode,
-           sCensus, ok, GDXTRK_TEMPLATE_COUNT, okArr, (const void*)seg8, (unsigned)GDXTRK_MAX_OPS,
-           (unsigned)GDXTRK_MAX_RUNS);
+           sCensus, sTemplatesOk ? GDXTRK_TEMPLATE_COUNT : 0, GDXTRK_TEMPLATE_COUNT, okArr, (const void*)seg8,
+           (unsigned)GDXTRK_MAX_OPS, (unsigned)GDXTRK_MAX_RUNS);
 }
 
 /* n60 nrr_trk: the NRR core's lever (`[native] nrr=1 nrr_trk=1`; the core refuses it under
@@ -860,7 +864,7 @@ static int TrkRecordDl(void* slot, const void* dl, int advanced) {
         return gdxtrk_marker(slot) ? 2 : 0;
     }
     sC.dlOps++;
-    sC.tris += kGdxTrkGolden[t].ntris;
+    sC.tris += gGdxTrkTemplate[t].ntris;
     sPendingCensus++;
     if (sMode == 0) {
         return 0;

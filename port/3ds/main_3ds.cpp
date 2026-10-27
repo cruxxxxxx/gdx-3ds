@@ -33,6 +33,7 @@
 
 #include "gfx/gdx3ds_native_cfg.h"
 #include "gfx/gdx3ds_replay.h" // C6 [replay]: pose-replay "60 Hz motion" ([native] replay)
+#include "gfx/gdx3ds_track_resident.h" // ship6: gdx3ds_track_resident_reserve (the arena at boot)
 #include "gdx3ds_audio.h"
 #include "gdx3ds_config.h"
 #include "gdx3ds_preset_n60.h"
@@ -47,10 +48,12 @@
 #include "gdx_audio_mix_census.h" // [debug] audiomix: the mix-bus headroom census
 #include "gdx3ds_cov.h"     // COVERAGE: [cov] per-frame feature census ([debug] cov)
 #include "gdx3ds_hitch.h"   // HITCH: per-frame hitch receipt ([debug] hitch)
+#include "gdx3ds_cpucut.h"  // o3ds-cpucuts: the CPU cuts' A/B block clock
 #include "gdx3ds_spike.h"   // n60st3: frame-spike attribution ([debug] spike_ms)
 #include "gdx3ds_oracle.h"  // ORACLE: true frame capture + [fh] receipts (after EndFrame)
 #include "gdx3ds_dynlod.h"  // ORACLE: dynlod tier pin under .gdxrec replay
 #include "gdx3ds_frameskip.h" // FRAMESKIP (C4l): 60 Hz logic, skipped renders ([debug] frameskip)
+#include "gdx3ds_pipe.h"      // o3ds60: top triple buffer + dash_pre_frame levers and their A/B
 #include "gdx3ds_core1probe.h" // N60TICK: core-1 probe ([debug] core1_probe)
 #include "gdx3ds_tickahead.h"  // N60TICK4: [debug] tick_ahead (Old 3DS: host on core 1, render on core 0)
 #include "gdx3ds_launch.h"     // N60LAUNCH: launch variants ([debug] launch_variants)
@@ -58,9 +61,13 @@
 #include "gdx3ds_c5tick.h" // C5TICK: dlb split, write-set check, hollow skipped ticks ([debug] dl_hollow)
 #include "gdx_input_rec.h"  // ORACLE: .gdxrec record/replay ([debug] input_record / input_replay)
 #include "gdx_determinism.h" // ORACLE: Math_Rand seeds / boot-hold tick pin ([debug] rand_seed1 ...)
+#include "gdx_snapshot.h"   // mp-snapshot: the tick-boundary hook (snapshot / restore / synctest)
+#include "gdx3ds_bottomhud.h" // gdx3ds_bottomhud_bake_assets: the DASH art from fzerox.o2r
 #include "gdx3ds_fs.h"
 #include "gdx3ds_os.h"
 #include "gdx3ds_net.h"          // HWLINK: WiFi dev link ([net] enabled, DEFAULT OFF)
+#include "gdx3ds_mp.h"           // mp-spike: [net] mp lockstep multiplayer (DEFAULT OFF)
+#include "gdx3ds_mp_online.h"    // mp-online: NEARBY + online multiplayer (default on; nothing opens at boot)
 #include "gdx3ds_renderthread.h" // RENDER THREAD (LOCKED-60 Task H): core-2 fork/join
 
 #include <cstdint>
@@ -320,7 +327,7 @@ static void aptWatchEmit(const char* msg, int active) {
         sAptWatchFileMuted = 1;
     }
     gdx3ds_filelog_write(msg, strlen(msg));
-    gdx3ds_filelog_flush();
+    gdx3ds_filelog_flush_sync();
 }
 
 static void aptWatchTick(void) {
@@ -344,7 +351,7 @@ static void aptWatchTick(void) {
                           aptMsSince(sAptStateTick), active, gpu, close);
             svcOutputDebugString(msg, strlen(msg));
             gdx3ds_filelog_write(msg, strlen(msg));
-            gdx3ds_filelog_flush();
+            gdx3ds_filelog_flush_sync();
         }
         lastState = 0;
         lastActive = lastGpu = lastClose = -1;
@@ -441,7 +448,7 @@ static void watchdogThreadMain(void*) {
                                    (unsigned long)(beat + 1), (unsigned long)frame);
             if (hn > 0) {
                 gdx3ds_filelog_write(hz, (size_t)hn);
-                gdx3ds_filelog_flush();
+                gdx3ds_filelog_flush_sync();
             }
         }
         struct mallinfo mi = mallinfo();
@@ -451,7 +458,7 @@ static void watchdogThreadMain(void*) {
                                    (unsigned long)(beat + 1));
             if (hn > 0) {
                 gdx3ds_filelog_write(hz, (size_t)hn);
-                gdx3ds_filelog_flush();
+                gdx3ds_filelog_flush_sync();
             }
         }
         const unsigned long used = (unsigned long)mi.uordblks;
@@ -550,6 +557,7 @@ extern "C" void gdx3ds_nrr_crumb_boot_receipt(void);
 // hud_custom_active). port/3ds/gdx3ds_hudtop_custom.c is compiled as C; a linkage-specification
 // is namespace-scope only in C++, so this is declared here (file scope), not inside main().
 extern "C" void gdx3ds_hudtop_custom_init(void);
+extern "C" int gdx_title_demo_clear_stale(void); // card-4b: decomp_port.c (gdx_racemap.h)
 
 // ---------------------------------------------------------------------------------------------
 // O3DSHOME3 — ini-driven bisect variants for the Old 3DS HOME freeze (NEXT.md C4j, SOLVED:
@@ -723,7 +731,7 @@ static void aptLogReceipt(const char* msg) {
     gdx3ds_filelog_write(msg, strlen(msg));
     // Flush every receipt: suspend/sleep may be followed by a power-off that never
     // returns control, and the whole point of these lines is surviving that.
-    gdx3ds_filelog_flush();
+    gdx3ds_filelog_flush_sync();
 }
 
 // HOME-crash fix (docs/research/home-crash-audit.md, "## Fix"): everything the suspend
@@ -997,22 +1005,26 @@ static void aptLifecycleHook(APT_HookType hook, void* param) {
             gdx3ds_replay_note_apt(); // C6: never replay across a suspend (VRAM/GPU state restored)
             aptStateSet(1);
             aptLogReceipt("[apt] suspend (HOME/POWER -> HOME menu)");
+            gdx3ds_mpo_on_suspend(); // mp-online: end a race so the others are not left waiting
             aptSuspendSteps("suspend", true);
             break;
         case APTHOOK_ONRESTORE:
             aptLogReceipt("[apt] restore (resumed from HOME menu)");
             aptRestoreSteps("restore");
+            gdx3ds_mpo_on_resume(); // mp-online: the socket thread may make SOC calls again
             aptStateSet(0);
             break;
         case APTHOOK_ONSLEEP:
             gdx3ds_replay_note_apt();
             aptStateSet(2);
             aptLogReceipt("[apt] sleep (lid closed)");
+            gdx3ds_mpo_on_suspend();
             aptSuspendSteps("sleep", false);
             break;
         case APTHOOK_ONWAKEUP:
             aptLogReceipt("[apt] wakeup (lid opened)");
             aptRestoreSteps("wakeup");
+            gdx3ds_mpo_on_resume();
             aptStateSet(0);
             break;
         case APTHOOK_ONEXIT:
@@ -1125,7 +1137,7 @@ static void logFatal(const char* msg) {
     // runs — the sink fflushes per line and its buffers are static (no heap), so this
     // is safe even from the operator-new failure path.
     gdx3ds_filelog_write(msg, strlen(msg));
-    gdx3ds_filelog_flush();
+    gdx3ds_filelog_flush_sync();
 }
 
 // newlib assert(): the default __assert_func prints to stderr and aborts — both invisible.
@@ -1730,6 +1742,12 @@ int main(int argc, char** argv) {
     // screen and before audio/mainprof/core1probe latch their levers. No-op otherwise.
     gdx3ds_launch_boot_window();
     logConfigOverflow("launch variants");
+    // ship6: the resident-track arena (two course slots + bake scratch, one linearAlloc) now, while
+    // the linear heap is unfragmented; every course bake reuses it (no per-course allocation).
+    gdx3ds_track_resident_reserve();
+    // [net] mp = host|join (DEFAULT OFF: no socket, no receipt). After the launch window so a
+    // hardware card can pick mp_delay / the role per launch variant (hold a button).
+    gdx3ds_mp_init();
     gdx3ds_boot_trail("[boot] fps hud init");
     // FPS-HUD (debug.fps, default ON): owns the bottom-screen console + its reserved
     // top rows. Before the first post-window logStep so every console line scrolls in
@@ -1784,6 +1802,11 @@ int main(int argc, char** argv) {
     if (!archivesValidated) {
         logStep("WARNING: no archive mounted — copy fzerox.o2r/gdiffuser.o2r to sdmc:/3ds/gdiffuser/");
     }
+    // The bottom-screen DASH's art (fonts, digits, portraits, chrome): baked ONCE from the archive
+    // just mounted (gdx3ds_hudbake.h) -- no game pixels ship in the binary. A missing or wrong
+    // fzerox.o2r leaves those elements blank and logs [hudbake] lines; nothing else depends on it.
+    logStep("bottomhud bake");
+    gdx3ds_bottomhud_bake_assets();
 
     // 5. Window: the lus_glue Fast3dWindow (citro3d renderer + gdx3ds_os backend);
     //    Init() constructs the interpreter against Gdx3ds_GetCitro3dRenderer().
@@ -2193,7 +2216,7 @@ int main(int argc, char** argv) {
         gdx3ds_mprof_enter(GDX3DS_MPROF_APT);
         if (!gdx3ds_tickahead_apt_main_loop() || gdx3ds_oracle_quit_requested()) { // N60TICK4: aptMainLoop()
             logStep("[apt] shutdown requested — leaving frame loop");
-            gdx3ds_filelog_flush(); // receipt must survive even if teardown wedges
+            gdx3ds_filelog_flush_sync(); // receipt must survive even if teardown wedges
             break;
         }
         if (rtMode != 0) {
@@ -2223,6 +2246,8 @@ int main(int argc, char** argv) {
         // vetoes the skip) and BEFORE vi_tick (the GFX task is submitted inside it). A skip
         // iteration runs the whole logic tick; only the render + present below are dropped.
         const bool skipRender = gdx3ds_frameskip_begin_iteration((unsigned long)frameNum) != 0;
+        gdx3ds_pipe_iteration_begin(); // o3ds60: the top triple buffer this A/B block wants
+        bool menuTickedEarly = false;   // o3ds60 [ui] dash_pre_frame
         gdx3ds_replay_iteration_begin((unsigned long)frameNum, skipRender ? 1 : 0); // C6: pool snapshot
         gdx3ds_c5tick_begin_tick((unsigned long)frameNum, skipRender ? 1 : 0); // C5TICK: latch the hollow-build flag (default off)
 
@@ -2247,6 +2272,13 @@ int main(int argc, char** argv) {
         gdx_audio_thread_notify_frame();
 
         if (rtMode == 0 && !skipRender) {
+            if (gdx3ds_pipe_dash_pre_frame()) {
+                // o3ds60 [ui] dash_pre_frame: the bottom-screen tick where StartFrame would wait
+                // for the GPU to finish the previous frame (gdx3ds_pipe.h), not after EndFrame.
+                gdx3ds_mprof_enter(GDX3DS_MPROF_TAIL);
+                gdx3ds_menu_tick();
+                menuTickedEarly = true;
+            }
             GDX_HB("hb:start_frame", 4);
             gdx3ds_mprof_enter(GDX3DS_MPROF_BEG);
             w->StartFrame();
@@ -2292,6 +2324,7 @@ int main(int argc, char** argv) {
             gdx3ds_replay_before_present();    // C6: a replayed frame's swap latches first
             GDX_HB("hb:end_frame", 7);
             w->EndFrame();
+            gdx3ds_frameskip_after_present(); // o3ds60 [steadyd1] fe=: EndFrame's share of post
             // C5 STAGE 0: the oracle's SHOT/[fh] readback is harness work, not the frame's end
             // ([c5cat] fend); charge it to tail with the other telemetry.
             gdx3ds_mprof_enter(GDX3DS_MPROF_TAIL);
@@ -2473,12 +2506,23 @@ int main(int argc, char** argv) {
         // int test per frame when off, ~1 Hz repaint when on. gGameFrameCount is the
         // decomp's own logic-frame counter (same source as the [cadence] game= column).
         gdx3ds_spike_mark(GDX_SPIKE_MARK_TELE1);
+        // card-4b: an attract demo armed on the title's way out stays set on the main menu (the
+        // bottom screen then hides Home and drops the VS icon's MULTIPLAYER). decomp_port.c.
+        if (int stale = gdx_title_demo_clear_stale()) {
+            char line[96];
+            std::snprintf(line, sizeof(line), "[title] stale attract-demo state %d on the main menu cleared", stale);
+            logStep(line);
+        }
         gdx3ds_fps_hud_tick(gGameFrameCount);
         // MENU tick (same thread for the same reason): touch dispatch + repaint only
         // on change / ~1 Hz for live pages — no per-frame console traffic.
-        gdx3ds_menu_tick();
+        if (!menuTickedEarly) {
+            gdx3ds_menu_tick();
+        }
         gdx3ds_spike_mark(GDX_SPIKE_MARK_HUD1);
         gstateTick((unsigned long)frameNum); // GSTATE: [debug] gstate_every (default off)
+        gdx3ds_snapshot_frame_end((unsigned long)frameNum, rtMode); // mp-snapshot: [debug] snap_test / snap_probe (default off)
+        gdx3ds_mp_after_tick();              // mp-spike: digest exchange ([net] mp, default off)
 
         GDX_HB("hb:pacer", 8);
         gdx_frame_pacer_tick();
@@ -2492,6 +2536,7 @@ int main(int argc, char** argv) {
         // inside a game fiber, so the replay's tick order is untouched.
         gdx3ds_c5tick_end_tick((unsigned long)frameNum); // C5TICK: [c5dlb] / [c5tick] windows (default off)
         gdx3ds_mprof_frame_end((unsigned long)frameNum);
+        gdx3ds_cpucut_frame_end((unsigned long)frameNum); // o3ds-cpucuts: A/B block clock (mprof off)
         gdx3ds_hitch_after_frame((unsigned long)frameNum); // HITCH: buffered lines out, between iterations
         gdx3ds_spike_after_frame((unsigned long)frameNum); // n60st3: buffered [spike] lines out
         gdx3ds_filelog_frame_end((unsigned long)frameNum); // N60LOG: the [debug] receipt_every clock
@@ -2501,6 +2546,7 @@ int main(int argc, char** argv) {
 #undef cadenceTelemetry
 
     sWatchdogQuiet = 1; // detached 0x18 thread: no beats through (or after) teardown
+    gdx3ds_crash_note_exit(); // CRASHFIX: a teardown fault ends quietly once its report is written
     logStep("exiting");
     // Close-from-HOME hang fix (docs/research/home-crash-audit.md): every teardown step is
     // bracketed by a FLUSHED receipt (svc + filelog + flush, no printf) so a wedge names
@@ -2532,7 +2578,7 @@ int main(int argc, char** argv) {
     aptLogReceipt("[exit] audio_shutdown done");
     aptLogReceipt("[exit] render_thread_join enter");
     gdx3ds_cov_finish();  // COVERAGE: the per-key summary, before anything can wedge the join
-    gdx3ds_filelog_flush();
+    gdx3ds_filelog_flush_sync();
     gdx_input_rec_stop(); // ORACLE: close a .gdxrec recording (flush) before teardown
     gdx3ds_rt_shutdown(); // QUIT + threadJoin on its own event (no shared-event spin)
     aptLogReceipt("[exit] render_thread_join done");
@@ -2547,7 +2593,7 @@ int main(int argc, char** argv) {
     // Final flush: "exiting" and everything teardown logged must be on the SD card
     // before crt0/__appExit — a clean close then shows "[apt] exit hook ..." from the
     // ONEXIT hook inside aptExit() as the very last line.
-    gdx3ds_filelog_flush();
+    gdx3ds_filelog_flush_sync();
     // HWLINK: a RELOAD staged a new .3dsx and asked for a self-relaunch. Strictly last —
     // after socExit and the final flush — so hb:ldr sees a process that holds nothing.
     // No-op unless RELOAD ran; degrades to a plain exit when hb:ldr is absent.

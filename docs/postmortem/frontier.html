@@ -1,101 +1,221 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Frontier</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap"><style>
-:root {
-  --bg:#eef1f6; --bg2:#ffffff; --bg3:#e2e7ef; --ink:#17202e; --ink2:#48546a; --ink3:#7a8598;
-  --line:#cfd6e2; --accent:#2457ff; --accent-ink:#1a3fc4; --accent-soft:#dbe3ff; --gold:#e0a71a; --gold-soft:#fbefc9;
-  --good:#1f8f4e; --warn:#c77d0a; --bad:#c9302c; --bad-soft:#f8dcdb; --good-soft:#d9f1e3; --warn-soft:#fbe9cc;
-  --c1:#2457ff; --c2:#e0a71a; --c3:#7a3be0; --c4:#1f8f4e; --c5:#c9302c; --c6:#0e8fa3; --c7:#8a6d3b; --c8:#5c6577;
-  --shadow:0 1px 2px rgba(23,32,46,.08), 0 8px 24px -12px rgba(23,32,46,.25);
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg:#0f141d; --bg2:#161d29; --bg3:#1f2836; --ink:#e7ecf4; --ink2:#b3bccb; --ink3:#7f8a9c;
-    --line:#2b3547; --accent:#6d8dff; --accent-ink:#9fb3ff; --accent-soft:#1d2a55; --gold:#f0c04a; --gold-soft:#3a2f10;
-    --good:#4cc37c; --warn:#f0a83a; --bad:#f06a66; --bad-soft:#4a1f1e; --good-soft:#153826; --warn-soft:#3f2c0f;
-    --c1:#6d8dff; --c2:#f0c04a; --c3:#b08cff; --c4:#4cc37c; --c5:#f06a66; --c6:#3fc3d8; --c7:#c9a26b; --c8:#8f9ab0;
-    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
-  }
-}
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Frontier</title><script>(function(){var d=document.documentElement;d.classList.add('js');var t=null;try{t=localStorage.getItem('pm-theme');}catch(e){}var q=/[?&]theme=(light|dark)/.exec(location.search);if(q){t=q[1];}if(t==='light'||t==='dark'){d.setAttribute('data-theme',t);}})();</script><style>:root {
+  --bg:#ffffff; --bg2:#ffffff; --bg3:#f3f3f4; --ink:#111113; --ink2:#47474d; --ink3:#808087; --line:#dcdce0; --rule:#111113;
+  --accent:#e4002b; --accent-ink:#c8002a; --accent-soft:#fde8ec; --accent-hi:#ff8597; --accent-glow:rgba(228,0,43,.34);
+  --blue:#0047ff; --blue-ink:#0039cc; --blue-soft:#e6edff; --blue-hi:#86a8ff; --blue-glow:rgba(0,71,255,.30);
+  --gold:#f0a500; --gold-ink:#b46b00; --gold-soft:#fff3d6; --gold-hi:#ffc94d; --gold-glow:rgba(240,165,0,.40);
+  --good:#00845a; --good-soft:#dff3ea; --warn:#b46b00; --warn-soft:#fff3d6; --bad:#c8002a; --bad-soft:#fde8ec;
+  --c1:#e4002b; --c2:#f0a500; --c3:#0047ff; --c4:#00a06b; --c5:#55555c; --c6:#86a8ff; --c7:#b46b00; --c8:#b9b9bf;
+  --shadow:none;
+  --sans:"Helvetica Neue", Helvetica, Arial, sans-serif; --mono:ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg:#1c1c1e; --bg2:#232325; --bg3:#2c2c2f; --ink:#f2f2ef; --ink2:#c4c4c8; --ink3:#8e8e94; --line:#3a3a3e; --rule:#f2f2ef;
+  --accent:#ff3b4f; --accent-ink:#ff6676; --accent-soft:#3e1a21; --accent-hi:#ffb4be; --accent-glow:rgba(255,59,79,.55);
+  --blue:#4d86ff; --blue-ink:#86a8ff; --blue-soft:#1b2640; --blue-hi:#c8d8ff; --blue-glow:rgba(77,134,255,.55);
+  --gold:#ffbb2e; --gold-ink:#ffc34d; --gold-soft:#3a2e12; --gold-hi:#ffe9ad; --gold-glow:rgba(255,187,46,.50);
+  --good:#3ccf8e; --good-soft:#163527; --warn:#ffb340; --warn-soft:#3a2e12; --bad:#ff6676; --bad-soft:#3e1a21;
+  --c1:#ff3b4f; --c2:#ffbb2e; --c3:#4d86ff; --c4:#3ccf8e; --c5:#a1a1a6; --c6:#a3bfff; --c7:#d69a3a; --c8:#69696f;
+  --shadow:none;
+} }
 :root[data-theme="dark"] {
-  --bg:#0f141d; --bg2:#161d29; --bg3:#1f2836; --ink:#e7ecf4; --ink2:#b3bccb; --ink3:#7f8a9c;
-  --line:#2b3547; --accent:#6d8dff; --accent-ink:#9fb3ff; --accent-soft:#1d2a55; --gold:#f0c04a; --gold-soft:#3a2f10;
-  --good:#4cc37c; --warn:#f0a83a; --bad:#f06a66; --bad-soft:#4a1f1e; --good-soft:#153826; --warn-soft:#3f2c0f;
-  --c1:#6d8dff; --c2:#f0c04a; --c3:#b08cff; --c4:#4cc37c; --c5:#f06a66; --c6:#3fc3d8; --c7:#c9a26b; --c8:#8f9ab0;
-  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  --bg:#1c1c1e; --bg2:#232325; --bg3:#2c2c2f; --ink:#f2f2ef; --ink2:#c4c4c8; --ink3:#8e8e94; --line:#3a3a3e; --rule:#f2f2ef;
+  --accent:#ff3b4f; --accent-ink:#ff6676; --accent-soft:#3e1a21; --accent-hi:#ffb4be; --accent-glow:rgba(255,59,79,.55);
+  --blue:#4d86ff; --blue-ink:#86a8ff; --blue-soft:#1b2640; --blue-hi:#c8d8ff; --blue-glow:rgba(77,134,255,.55);
+  --gold:#ffbb2e; --gold-ink:#ffc34d; --gold-soft:#3a2e12; --gold-hi:#ffe9ad; --gold-glow:rgba(255,187,46,.50);
+  --good:#3ccf8e; --good-soft:#163527; --warn:#ffb340; --warn-soft:#3a2e12; --bad:#ff6676; --bad-soft:#3e1a21;
+  --c1:#ff3b4f; --c2:#ffbb2e; --c3:#4d86ff; --c4:#3ccf8e; --c5:#a1a1a6; --c6:#a3bfff; --c7:#d69a3a; --c8:#69696f;
+  --shadow:none;
 }
+
 * { box-sizing:border-box; }
-html { color-scheme: light dark; }
-body { margin:0; background:var(--bg); color:var(--ink); font-family:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif; font-size:16px; line-height:1.55; }
-a { color:var(--accent-ink); text-decoration:none; } a:hover { text-decoration:underline; }
-code, pre, .mono { font-family:"IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; font-size:.92em; }
-pre { background:var(--bg3); padding:12px 14px; border-radius:6px; overflow-x:auto; line-height:1.45; }
-code { background:var(--bg3); padding:1px 5px; border-radius:4px; }
+html { color-scheme:light; -webkit-text-size-adjust:100%; }
+:root[data-theme="dark"] { color-scheme:dark; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme:dark; } }
+body { margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); font-size:16.5px; line-height:1.55;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; overflow-x:hidden; }
+a { color:var(--accent-ink); text-decoration:none; } a:hover { text-decoration:underline; text-underline-offset:.15em; }
+code, pre, .mono { font-family:var(--mono); font-size:.86em; }
+pre { background:var(--bg3); padding:12px 14px; border-left:2px solid var(--rule); overflow-x:auto; line-height:1.45; }
+code { background:var(--bg3); padding:1px 4px; border-radius:2px; overflow-wrap:anywhere; }
 pre code { background:none; padding:0; }
-.shell { display:grid; grid-template-columns:230px minmax(0,1fr); min-height:100vh; }
-nav.rail { border-right:1px solid var(--line); padding:26px 18px; position:sticky; top:0; height:100vh; overflow:auto; background:var(--bg2); }
-nav.rail .brand { font-family:"Barlow Condensed", "Arial Narrow", sans-serif; font-weight:700; font-size:22px; letter-spacing:.02em; text-transform:uppercase; line-height:1.05; margin-bottom:4px; }
-nav.rail .sub { color:var(--ink3); font-size:12.5px; margin-bottom:22px; }
-nav.rail ol { list-style:none; padding:0; margin:0; counter-reset:p; }
-nav.rail li { margin:0 0 6px; }
-nav.rail li a { display:block; padding:7px 10px; border-radius:6px; color:var(--ink2); }
-nav.rail li a b { display:block; font-weight:600; color:var(--ink); font-size:14.5px; }
-nav.rail li a span { font-size:12px; color:var(--ink3); }
-nav.rail li a.on { background:var(--accent-soft); } nav.rail li a.on b { color:var(--accent-ink); }
-nav.rail li a:hover { text-decoration:none; background:var(--bg3); }
-nav.rail .foot { margin-top:26px; font-size:11.5px; color:var(--ink3); line-height:1.5; }
-main { padding:40px 56px 80px; max-width:1180px; }
-.eyebrow { font-family:"IBM Plex Mono", monospace; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent-ink); margin:0 0 8px; }
-h1 { font-family:"Barlow Condensed", "Arial Narrow", sans-serif; font-weight:700; font-size:54px; line-height:.98; letter-spacing:.005em; margin:0 0 14px; text-wrap:balance; text-transform:uppercase; }
-h2 { font-family:"Barlow Condensed", "Arial Narrow", sans-serif; font-weight:600; font-size:31px; line-height:1.05; margin:46px 0 12px; text-wrap:balance; text-transform:uppercase; letter-spacing:.01em; }
-h3 { font-size:17.5px; font-weight:600; margin:28px 0 8px; }
+b, strong { font-weight:700; }
+
+/* ---- shell: a narrow left column of small text links, content on a flush-left column ---- */
+.shell { display:grid; grid-template-columns:240px minmax(0,1fr); min-height:100vh; }
+nav.rail { border-right:1px solid var(--line); padding:28px 22px 32px; position:sticky; top:0; height:100vh; overflow:auto; background:var(--bg); }
+nav.rail .rail-top { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+nav.rail .brand { font-weight:700; font-size:22px; letter-spacing:-.025em; line-height:1.02; margin:0 0 10px; color:var(--ink); }
+nav.rail .brand a { color:inherit; }
+nav.rail .brand i { font-style:normal; color:var(--accent); }
+nav.rail .sub { color:var(--ink3); font-size:11.5px; line-height:1.45; margin-bottom:26px; }
+nav.rail .sub b { display:block; font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--ink); margin-bottom:4px; }
+nav.rail ol { list-style:none; padding:0; margin:0; counter-reset:p; border-bottom:1px solid var(--line); }
+nav.rail li { margin:0; counter-increment:p; max-width:none; }
+nav.rail li a { display:grid; grid-template-columns:24px minmax(0,1fr); padding:8px 0 9px; border-top:1px solid var(--line); color:var(--ink2); }
+nav.rail li a::before { content:counter(p, decimal-leading-zero); font-size:10.5px; font-weight:700; color:var(--ink3);
+  padding-top:2px; font-variant-numeric:tabular-nums; grid-row:span 2; }
+nav.rail li a b { display:block; font-weight:700; color:var(--ink); font-size:14px; letter-spacing:-.005em; line-height:1.25; }
+nav.rail li a span { font-size:11.5px; color:var(--ink3); line-height:1.35; }
+nav.rail li a.on { border-top:2px solid var(--accent); padding-top:7px; }
+nav.rail li a.on b, nav.rail li a.on::before { color:var(--accent); }
+nav.rail li a:hover { text-decoration:none; } nav.rail li a:hover b { color:var(--accent-ink); }
+nav.rail .foot { margin-top:24px; font-size:11px; color:var(--ink3); line-height:1.5; }
+
+/* ---- theme toggle (shown only once the head script has run) ---- */
+.theme-toggle { display:none; flex:0 0 auto; align-items:center; gap:7px; margin-top:2px; padding:5px 9px 5px 7px; cursor:pointer;
+  font:700 10.5px/1 var(--sans); letter-spacing:.1em; text-transform:uppercase; color:var(--ink); background:transparent;
+  border:1px solid var(--rule); border-radius:0; }
+html.js .theme-toggle { display:inline-flex; }
+.theme-toggle:hover { background:var(--ink); color:var(--bg); }
+.theme-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.theme-toggle .ico { width:11px; height:11px; border-radius:50%; border:1.5px solid currentColor;
+  background:linear-gradient(90deg, currentColor 50%, transparent 50%); }
+
+/* ---- type ---- */
+main { padding:56px 64px 96px; max-width:1180px; min-width:0; }
+.eyebrow { font-size:11.5px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 14px; }
+h1 { font-weight:700; font-size:clamp(36px, 5.2vw, 66px); line-height:1.0; letter-spacing:-.035em; margin:0 0 24px; text-wrap:balance; max-width:20ch; }
+h2 { font-weight:700; font-size:clamp(25px, 2.6vw, 33px); line-height:1.08; letter-spacing:-.022em; margin:64px 0 16px;
+  padding-top:14px; border-top:1px solid var(--rule); text-wrap:balance; }
+h3 { font-size:18px; font-weight:700; letter-spacing:-.01em; margin:34px 0 8px; }
+h4 { font-weight:700; }
 p, li { max-width:72ch; }
-.lede { font-size:19px; color:var(--ink2); max-width:66ch; margin:0 0 26px; }
-.tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px,1fr)); gap:12px; margin:22px 0 10px; }
-.tile { background:var(--bg2); border:1px solid var(--line); border-radius:8px; padding:14px 16px 12px; }
-.tile .n { font-family:"Barlow Condensed", sans-serif; font-weight:700; font-size:34px; overflow-wrap:anywhere; line-height:1; letter-spacing:.005em; font-variant-numeric:tabular-nums; }
-.tile .n small { font-size:19px; color:var(--ink3); font-weight:600; margin-left:2px; }
-.tile .l { font-size:12.5px; color:var(--ink2); margin-top:6px; line-height:1.35; }
-.tile.hot .n { color:var(--accent-ink); }
-figure { margin:22px 0 30px; background:var(--bg2); border:1px solid var(--line); border-radius:8px; padding:16px 18px 12px; box-shadow:var(--shadow); }
+.lede { font-size:clamp(18px, 1.6vw, 21px); line-height:1.45; letter-spacing:-.005em; color:var(--ink2); max-width:60ch; margin:0 0 34px; }
+
+/* ---- headline numbers ---- */
+.tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px,1fr)); gap:28px 28px; margin:26px 0 18px; }
+.tile { border-top:1px solid var(--rule); padding:12px 0 4px; container-type:inline-size; min-width:0; }
+.tile.hot { border-top:3px solid var(--tone, var(--accent)); padding-top:10px; }
+.tile .n { font-size:40px; font-size:clamp(30px, 21cqi, 54px); white-space:nowrap; }
+.tile .n small { font-size:.4em; color:var(--ink3); -webkit-text-fill-color:var(--ink3); font-weight:700; letter-spacing:0; margin-left:.12em; }
+.tile .l { font-size:13px; color:var(--ink2); margin-top:10px; line-height:1.4; max-width:34ch; }
+.tiles.hero { gap:40px 32px; margin:30px 0 22px; }
+.tiles.hero .tile .n { font-size:64px; font-size:clamp(46px, 25cqi, 96px); }
+.tiles.hero .tile .l { font-size:13.5px; }
+.big-num { font-weight:700; letter-spacing:-.05em; line-height:.92; font-variant-numeric:tabular-nums lining-nums; color:var(--tone, var(--ink)); }
+.t-red { --tone:var(--accent); --tone-hi:var(--accent-hi); --glow:var(--accent-glow); }
+.t-blue { --tone:var(--blue); --tone-hi:var(--blue-hi); --glow:var(--blue-glow); }
+.t-gold { --tone:var(--gold-ink); --tone-hi:var(--gold-hi); --glow:var(--gold-glow); }
+.t-ink { --tone:var(--ink); --tone-hi:var(--ink3); --glow:transparent; }
+@supports ((-webkit-background-clip:text) or (background-clip:text)) {
+  .big-num.glow { background-image:linear-gradient(100deg, var(--tone) 0%, var(--tone) 40%, var(--tone-hi) 50%, var(--tone) 60%, var(--tone) 100%);
+    background-size:300% 100%; background-position:100% 0; -webkit-background-clip:text; background-clip:text;
+    -webkit-text-fill-color:transparent; animation:pm-sheen 7s cubic-bezier(.5,0,.3,1) infinite, pm-glow 4.5s ease-in-out infinite; }
+}
+.tile:nth-child(2) .big-num.glow { animation-delay:.9s, .6s; } .tile:nth-child(3) .big-num.glow { animation-delay:1.8s, 1.2s; }
+.tile:nth-child(4) .big-num.glow { animation-delay:2.7s, 1.8s; } .tile:nth-child(5) .big-num.glow { animation-delay:3.6s, 2.4s; }
+.tile:nth-child(6) .big-num.glow { animation-delay:4.5s, 3s; }
+@keyframes pm-sheen { 0% { background-position:100% 0; } 55%, 100% { background-position:0 0; } }
+@keyframes pm-glow { 0%, 100% { filter:drop-shadow(0 0 0 transparent); } 50% { filter:drop-shadow(0 0 16px var(--glow)); } }
+
+/* ---- figures, tables, components: thin rules, no boxes or shadows ---- */
+figure { margin:28px 0 36px; background:transparent; border-top:1px solid var(--rule); padding:14px 0 0; }
 figure svg { width:100%; height:auto; display:block; }
-figcaption { font-size:13px; color:var(--ink2); margin-top:10px; max-width:none; line-height:1.45; }
+figcaption { font-size:13px; color:var(--ink2); margin-top:12px; max-width:88ch; line-height:1.5; }
 figcaption b { color:var(--ink); }
-.legend { display:flex; flex-wrap:wrap; gap:6px 16px; font-size:12.5px; color:var(--ink2); margin:0 0 8px; }
-.legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:-1px; }
-.tbl { overflow-x:auto; margin:16px 0 26px; }
-table { border-collapse:collapse; width:100%; font-size:14px; }
-th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
-th { font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink2); font-weight:600; }
-td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.legend { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:12px; color:var(--ink2); margin:0 0 10px; }
+.legend i { display:inline-block; width:10px; height:10px; border-radius:0; margin-right:6px; vertical-align:-1px; }
+.tbl { overflow-x:auto; margin:18px 0 30px; -webkit-overflow-scrolling:touch; }
+table { border-collapse:collapse; width:100%; font-size:14px; font-variant-numeric:tabular-nums; }
+th, td { text-align:left; padding:9px 12px 9px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+th { font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink); font-weight:700; border-bottom:1px solid var(--rule); padding-bottom:7px; }
+td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; padding-left:12px; }
+th.num { white-space:normal; }
 tr:hover td { background:var(--bg3); }
-.pill { display:inline-block; font-size:11.5px; font-weight:600; letter-spacing:.04em; padding:2px 8px; border-radius:999px; white-space:nowrap; }
+.pill { display:inline-block; font-size:10.5px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; padding:2px 6px; border-radius:0; white-space:nowrap; }
 .pill.good { background:var(--good-soft); color:var(--good); } .pill.bad { background:var(--bad-soft); color:var(--bad); }
 .pill.warn { background:var(--warn-soft); color:var(--warn); } .pill.neu { background:var(--bg3); color:var(--ink2); }
 .pill.acc { background:var(--accent-soft); color:var(--accent-ink); }
-.timeline { border-left:2px solid var(--line); margin:20px 0 30px 8px; padding-left:22px; }
-.ev { position:relative; margin:0 0 22px; }
-.ev::before { content:""; position:absolute; left:-29px; top:8px; width:12px; height:12px; border-radius:50%; background:var(--bg); border:2px solid var(--accent); }
+.timeline { border-left:1px solid var(--rule); margin:22px 0 32px 6px; padding-left:24px; }
+.ev { position:relative; margin:0 0 24px; }
+.ev::before { content:""; position:absolute; left:-30px; top:7px; width:11px; height:11px; border-radius:50%; background:var(--bg); border:2px solid var(--accent); }
 .ev.big::before { background:var(--accent); }
 .ev.bad::before { border-color:var(--bad); } .ev.bad.big::before { background:var(--bad); }
 .ev.gold::before { border-color:var(--gold); } .ev.gold.big::before { background:var(--gold); }
-.ev .d { font-family:"IBM Plex Mono", monospace; font-size:12px; color:var(--ink3); letter-spacing:.04em; }
-.ev .t { font-weight:600; font-size:16px; margin:1px 0 3px; }
-.ev p { margin:0 0 4px; color:var(--ink2); font-size:14.5px; }
-.q { border-left:3px solid var(--gold); padding:6px 14px; margin:14px 0; background:var(--gold-soft); border-radius:0 6px 6px 0; font-size:14.5px; max-width:72ch; }
-.q .who { font-family:"IBM Plex Mono", monospace; font-size:11.5px; color:var(--ink3); letter-spacing:.06em; text-transform:uppercase; display:block; margin-bottom:2px; }
-.author p { font-size:17px; line-height:1.65; max-width:760px; }
-.author ol { max-width:760px; font-size:17px; line-height:1.65; }
-.author hr { border:0; border-top:1px solid var(--line); margin:34px 0; max-width:760px; }
-.media { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px,1fr)); gap:14px; margin:18px 0 6px; }
-.media.four { grid-template-columns:repeat(auto-fit, minmax(200px,1fr)); }
-.media figure { margin:0; padding:10px 10px 8px; }
-.media video, .media img { width:100%; height:auto; display:block; border-radius:5px; background:#000; }
+.ev .d { font-size:11px; font-weight:700; color:var(--ink3); letter-spacing:.1em; text-transform:uppercase; font-variant-numeric:tabular-nums; }
+.ev .t { font-weight:700; font-size:16.5px; margin:2px 0 3px; letter-spacing:-.01em; }
+.ev p { margin:0 0 4px; color:var(--ink2); font-size:15px; }
+.q { border-left:2px solid var(--accent); padding:4px 0 4px 16px; margin:18px 0; font-size:16px; max-width:68ch; }
+.q .who { font-size:10.5px; font-weight:700; color:var(--ink3); letter-spacing:.12em; text-transform:uppercase; display:block; margin-bottom:3px; }
+.author p { font-size:17.5px; line-height:1.62; max-width:68ch; }
+.author ol { max-width:68ch; font-size:17.5px; line-height:1.62; }
+.author hr { border:0; border-top:1px solid var(--rule); margin:40px 0; max-width:68ch; }
+.media { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(280px,100%),1fr)); gap:24px; margin:22px 0 10px; }
+.media.four { grid-template-columns:repeat(auto-fit, minmax(min(200px,100%),1fr)); }
+.media figure { margin:0; padding:0; border-top:0; }
+.media video, .media img { width:100%; height:auto; display:block; border-radius:0; background:#000; }
 .media figcaption { margin-top:8px; }
-.media a.open { display:block; margin-top:6px; font-size:12px; font-family:"IBM Plex Mono", monospace; }
+.media a.open { display:block; margin-top:6px; font-size:10.5px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; }
 .media a:has(img) img { cursor:zoom-in; }
-.note { background:var(--bg3); border-radius:6px; padding:10px 14px; font-size:14px; color:var(--ink2); max-width:78ch; margin:14px 0; }
-.cols2 { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px,1fr)); gap:14px 28px; }
-.assume { border:1px dashed var(--line); border-radius:6px; padding:10px 14px; font-size:13.5px; color:var(--ink2); max-width:78ch; }
-.next { margin-top:56px; padding-top:18px; border-top:1px solid var(--line); display:flex; justify-content:space-between; font-size:14px; }
-@media (max-width: 860px) { .shell { grid-template-columns:1fr; } nav.rail { position:static; height:auto; border-right:0; border-bottom:1px solid var(--line); } main { padding:26px 20px 60px; } h1 { font-size:40px; } }
-@media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
-</style></head><body><div class="shell"><nav class="rail"><div class="brand">G-Diffuser<br>on 3DS</div><div class="sub">Post-mortem · F-Zero X<br>New 3DS 2026-08-11 → 09-03<br>Native fork 2026-09-07 → 10-19 (v1.0.0)</div><ol><li><a href="index.html"><b>Overview</b><span>What was built, in one screen</span></a></li><li><a href="author.html"><b>Author&#x27;s notes</b><span>The one page written by a human</span></a></li><li><a href="timeline.html"><b>Every step</b><span>The chronology, New 3DS to v1.0.0</span></a></li><li><a href="road-to-60.html"><b>Road to 60</b><span>The New 3DS performance campaign, round by round</span></a></li><li><a href="native.html"><b>The native fork</b><span>Why it exists, and what it changed</span></a></li><li><a href="old-3ds.html"><b>Old 3DS</b><span>The road to a real 60 at 268 MHz</span></a></li><li><a href="boundaries.html"><b>Pushing the boundaries</b><span>Against our New 3DS build and against the field</span></a></li><li><a href="difficulties.html"><b>Difficulties</b><span>What fought back, and how it was beaten</span></a></li><li><a href="frontier.html" class="on"><b>Frontier</b><span>What this port does that others in its position haven&#x27;t</span></a></li><li><a href="agentic.html"><b>Agentic workflow</b><span>How the fleet was run, and how the ship was steered</span></a></li><li><a href="cost.html"><b>Cost</b><span>Tokens, dollars, subagents</span></a></li></ol><div class="foot">Sources: git history, docs/research, session transcripts, hardware logs. <a href="https://github.com/cruxxxxxx/gdx-3ds">Repository</a> · <a href="G-Diffuser-3DS-postmortem.pdf">PDF</a><br>Sourcing evidence (raw, not reader-facing) — full detail through the New 3DS chapter (v0.9.0), plus a native-fork addendum: <a href="source-timeline.md">source-timeline.md</a>, <a href="source-perf-data.md">source-perf-data.md</a></div></nav><main><p class="eyebrow">09 · Frontier</p><h1>Why this is bold, and where it is new</h1><p class="lede">The user asked on 08-23 how to explain to an unimpressed friend why this port matters. The short version, still true at v1.0.0: nobody had run a libultraship game on a handheld this weak, nobody had pushed a software N64 display-list interpreter to a native 60 Hz on an ARM11, and nobody had done it with stereoscopic 3D, in three and a half weeks, with a fleet of AI agents doing the typing. A second phase then took the same approach to the Old 3DS — a console roughly a third the New 3DS's clock speed, with no second core — and shipped a 64DD expansion alongside it.</p><h2>The field before this project</h2><p>Two deep-research passes (08-14, 09-01) and a targeted literature check (09-02) mapped the state of the art. The findings framed every architectural decision:</p><div class="tbl"><table><thead><tr><th class="">Precedent</th><th class="">What it did</th><th class="">What it means here</th></tr></thead><tbody><tr><td class="">sm64_3ds (the well-known Mario 64 3DS port)</td><td class="">Native decomp with a hand-written 3DS renderer, plain <code>switch</code> dispatch, audio on a second core. Its README describes a naive frame skip below 30 fps and lists a separate 60 FPS patch.</td><td class="">The proven fallback in this field is some form of 30 Hz, interpolated or not. This project refused that and targeted native 60.</td></tr><tr><td class="">libultraship ports (Ship of Harkinian, 2Ship, Starship, and this game's own PC port)</td><td class="">Desktop-only. x86-64 and ARM64 with OpenGL, Metal or DirectX. Never compiled for devkitARM.</td><td class="">The LUS carve-out spike (08-12) proved LUS builds on devkitARM with a 13-line newlib patch. First time.</td></tr><tr><td class="">Every N64 port ever shipped</td><td class="">Walks the display list on the CPU every frame and re-emits it to the GPU.</td><td class="">The 09-01 research verdict: nobody has shipped beyond the per-frame walk. GPU vertex transform was the field's number-one untried idea, listed as a TODO by the sm64 port's author.</td></tr><tr><td class="">Cross-core render pipelining on 3DS</td><td class="">No precedent found in any homebrew title. Core 2 needs a Luma kernel grant; core 3 is the OS's.</td><td class="">The render thread (09-02 → 09-03) is, as far as the research could find, the first game-logic-ahead render pipeline on the console.</td></tr></tbody></table></div><div class="note">An earlier draft of this table described the sm64_3ds port as 30 Hz logic interpolated to 60; that was not accurate. See <a href="boundaries.html">Pushing the boundaries</a> for the correction.</div><h2>Seven things this project did first, or did differently</h2><div class="cols2"><div><h3>1. libultraship on a 3DS</h3><p>The whole runtime, including its Fast3D interpreter, resource manager and archive loader, compiled and running on ARM11 under devkitARM. The port lives as a stack of pure-delta patches (48 files as of the first phase; 93 files at v1.0.0 — 52 decomp patches plus 41 lus patches, the set <code>tools/ci-3ds.sh</code> applies and vendors) over two untouched upstream submodules, so the upstream projects could take any of it.</p></div><div><h3>2. Native 60 on a software display-list interpreter</h3><p>The measured position at the end of the project on a full Grand Prix, trace off: median 59.6 fps, tenth percentile 51.4, 53% of frames at the 60 cap. Menus at 60. Achieved without dropping the logic rate or interpolating.</p></div><div><h3>3. Exact stereoscopy inside the projection fixup</h3><p>Stereo 3D is implemented as an asymmetric-frustum shift folded into the projection fixup uniform, in exact clip-space form: <code>shift(d) = ±sep·(d−dc)/(1−dc)</code>. The right eye is a replay of the packed vertex buffers with a different matrix, no second interpreter walk. The user's hardware verdict on 08-27: "3D works great, doesnt seem to affect performance much at all." The final touch (09-03) anchors the race position markers, which are 2D rectangles, at the depth of the ship they label by reading the game's own prim-depth register.</p></div><div><h3>4. GPU vertex transform, working, then shelved on evidence</h3><p>The "moonshot" of 08-28 moved the unlit vertex transform onto the PICA vertex shader: 220,000 draws with zero fallbacks, 62% less vertex time in the emulator. On hardware it was imperceptible (the unlit slice was too small) and it broke texture mapping on the venue floor because the PICA's 24-bit uniforms cannot hold ±32000-unit coordinates. It was preserved on its branch, documented, and shelved. Nobody in the lineage had built it before.</p></div><div><h3>5. A render thread inside the game's own frame protocol</h3><p>Rather than a mailbox, the fork happens where the N64 would have started the RSP task (<code>osSpTaskStartGo</code>) and the join is the game's own DP-done wait. Mode 2 acknowledges DP-done when the game parks, giving a true one-frame-ahead pipeline with two-deep backpressure. The bridge pre-pass moved to the main core to balance the load. Hardware round 4: median 59.6 fps.</p></div><div><h3>6. Fixed-function combiner totality</h3><p>Every N64 colour-combiner mode the game uses maps to three or fewer TexEnv stages; fog is a per-vertex factor blended in a TexEnv stage because the PICA's depth LUT cannot resolve the game's depth range; the decal-clamp, environment-colour-flush and CCMUX-11 fixes made the translation total with zero unsupported modes.</p></div><div><h3>7. Skipping the display-list walk, for real, on the hardest target</h3><p>Item 4 of this list shelved a GPU vertex-transform shader because it could not fix what actually limited the frame. A second phase (2026-09-07 to 10-19) found a different way to the same goal: for the geometry a race actually spends its frame on — the track, the machines, the sky, the HUD, the effects — an owned interpreter precomputes and writes the GPU's own command words directly, skipping the per-frame CPU walk entirely for those categories, with menus and the long tail of one-off screens left on the original interpreter. It shipped first on, and matters most for, the Old 3DS. No other N64 decompilation, recompilation or emulator project this project found claims a sustained 60 fps on an Old 3DS: a third of the New 3DS's clock, no second core, and a cache the original interpreter's code did not fit in. See <a href="boundaries.html">Pushing the boundaries</a> for the comparison, on our own New 3DS build and against the field.</p></div></div><h2>Why bold</h2><p>The conservative plan was available from day one and was declined at every fork:</p><ul><li><b>Native 60 Hz instead of 30 Hz + interpolation.</b> The deep-research report on 08-21 said the proven path was the sm64 way. The user's instruction on 08-14: "only list options that work towards this running acceptably in 3D at 60fps."</li><li><b>Stereo before the frame budget was safe.</b> The stereo foundation was merged flag-off on 08-20 and armed on 08-27 while crowd frames still dipped to 30 fps, on the argument that it costs CPU submit time, not GPU time, and had to be designed in.</li><li><b>Multi-core on a console that hides its cores.</b> Core 2 is only reachable with a kernel capability that Luma grants to homebrew; the choice to depend on it was made after the 09-02 research and a hardware confirmation that the grant holds for a .3dsx and a .cia.</li><li><b>Patch stack, not a fork.</b> Keeping upstream pristine cost real pain (every patch a pure delta, regenerated by three-way merge) and kept the door open to upstreaming. One leak fix in libultraship was identified as an upstream bug on 08-28.</li><li><b>Shelving on evidence, not on effort.</b> GPU transform, the bridge output cache, the DSP batch-break fold, the double-height stereo target and the machine texture atlas were each built to the point of measurement and then declined. The project's default-off branches are its most expensive documents.</li></ul><h2>Innovation in method</h2><p>The technical results rest on a way of working that is itself new. Every performance change shipped with a killswitch and a receipt line, so hardware could A/B it without a rebuild. Every hypothesis got a probe before a fix (the magenta padding flood, the fog probe line, the CRC tripwires that pinned the HUD bug). Every hardware round had a test plan written for a human and a log format written for a machine. The <a href="agentic.html">agentic workflow</a> page covers how that discipline was enforced across a fleet of agents that could not see the console.</p><div class="next"><a href="difficulties.html">← Difficulties</a><a href="agentic.html">Agentic workflow →</a></div></main></div></body></html>
+.note { border-top:1px solid var(--rule); border-bottom:1px solid var(--line); padding:12px 0; font-size:14.5px; color:var(--ink2); max-width:78ch; margin:20px 0; }
+.cols2 { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(300px,100%),1fr)); gap:14px 36px; }
+.assume { border-left:2px solid var(--line); padding:6px 0 6px 14px; font-size:13.5px; color:var(--ink2); max-width:78ch; }
+.next { margin-top:72px; padding-top:16px; border-top:1px solid var(--rule); display:flex; justify-content:space-between; gap:16px;
+  font-size:13px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+
+/* ---- phones ---- */
+@media (max-width: 860px) {
+  .shell { grid-template-columns:minmax(0,1fr); }
+  nav.rail { position:static; height:auto; border-right:0; border-bottom:1px solid var(--rule); padding:18px 16px 14px; }
+  nav.rail .sub { margin-bottom:14px; }
+  nav.rail ol { display:flex; flex-wrap:wrap; gap:2px 16px; border-bottom:0; }
+  nav.rail li a { display:block; border-top:0; padding:3px 0; }
+  nav.rail li a.on { border-top:0; padding-top:3px; box-shadow:inset 0 -2px 0 var(--accent); }
+  nav.rail li a::before, nav.rail li a span { display:none; }
+  nav.rail li a b { font-size:13.5px; }
+  nav.rail .foot { margin-top:12px; }
+  main { padding:30px 16px 64px; }
+  h2 { margin-top:48px; }
+}
+@media (max-width: 520px) { .tiles { gap:22px 18px; } .tiles.hero { gap:28px 18px; } }
+
+/* ---- motion and print ---- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition:none !important; animation:none !important; }
+  .big-num.glow { filter:none !important; }
+}
+@media print {
+  *, *::before, *::after { animation:none !important; transition:none !important; }
+  .big-num, .big-num.glow { background:none !important; -webkit-text-fill-color:currentColor !important; filter:none !important;
+    -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .theme-toggle { display:none !important; }
+}
+</style></head><body><div class="shell"><nav class="rail"><div class="rail-top"><div class="brand">G-Diffuser<br>on 3DS</div><button class="theme-toggle" type="button" aria-pressed="false" title="Switch colour theme"><span class="ico" aria-hidden="true"></span><span class="lbl">Theme</span></button></div><div class="sub">Post-mortem · F-Zero X<br>New 3DS 2026-08-11 → 09-03<br>Native fork 2026-09-07 → 10-19 (v1.0.0)<br>After v1.0.0 10-20 → 10-26 (v1.1.0)</div><ol><li><a href="index.html"><b>Overview</b><span>What was built, in one screen</span></a></li><li><a href="author.html"><b>Author&#x27;s notes</b><span>The one page written by a human</span></a></li><li><a href="timeline.html"><b>Every step</b><span>The chronology, New 3DS to v1.1.0</span></a></li><li><a href="road-to-60.html"><b>Road to 60</b><span>The New 3DS performance campaign, round by round</span></a></li><li><a href="native.html"><b>Road to 60, again</b><span>The Old 3DS needed a new renderer: how it works, and what shipped</span></a></li><li><a href="boundaries.html"><b>Pushing the boundaries</b><span>How it compares to the field</span></a></li><li><a href="difficulties.html"><b>Difficulties</b><span>The fights worth retelling</span></a></li><li><a href="frontier.html" class="on"><b>Frontier</b><span>What this port does that others in its position haven&#x27;t</span></a></li><li><a href="agentic.html"><b>Agentic workflow</b><span>How the fleet was run, and how the ship was steered</span></a></li><li><a href="cost.html"><b>Cost</b><span>Tokens, dollars, subagents</span></a></li></ol><div class="foot">Sources: git history, docs/research, session transcripts, hardware logs. <a href="https://github.com/cruxxxxxx/gdx-3ds">Repository</a> · <a href="G-Diffuser-3DS-postmortem.pdf">PDF</a><br>Sourcing evidence (raw, not reader-facing) — full detail through the New 3DS chapter (v0.9.0), plus a native-fork addendum: <a href="source-timeline.md">source-timeline.md</a>, <a href="source-perf-data.md">source-perf-data.md</a></div></nav><main><style>
+.pc-dual .pc-n { display:none; }
+@media (max-width: 640px) { .pc-dual .pc-w { display:none; } .pc-dual .pc-n { display:block; } figure.pc-fig { padding:10px 8px 10px; } }
+@media print { .pc-dual .pc-w { display:block !important; } .pc-dual .pc-n { display:none !important; } }
+.pc-dual svg text { font-family:var(--sans); }
+.pc-dual svg .mono { font-family:var(--mono); }
+.pc-steps { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px 20px; margin:10px 0 4px; }
+.pc-steps > div { background:transparent; border-top:2px solid var(--line); border-radius:0; padding:8px 0 4px; font-size:13.5px; line-height:1.45; color:var(--ink2); }
+.pc-steps b { display:block; font-family:var(--sans); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent-ink); font-weight:700; margin-bottom:2px; }
+.pc-steps > div.now { border-top-color:var(--accent); }
+@media (max-width: 640px) { .pc-steps { grid-template-columns:1fr; } }
+.pc-case td:first-child { font-weight:600; min-width:9em; }
+.pc-case td { font-size:13.5px; }
+@media (max-width: 640px) {
+  .pc-case thead { display:none; }
+  .pc-case table, .pc-case tbody, .pc-case tr, .pc-case td { display:block; width:auto; }
+  .pc-case tr { border-bottom:1px solid var(--line); padding:8px 0; }
+  .pc-case td { border:0; padding:3px 0; text-align:left !important; white-space:normal !important; }
+  .pc-case td:first-child { font-size:15px; min-width:0; }
+  .pc-case td:empty { display:none; }
+  .pc-case td:not(:first-child)::before { content:attr(data-l); display:block; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink3); }
+}
+@media print { .pc-steps > div { break-inside:avoid; } }
+</style><p class="eyebrow">08 · Frontier</p><h1>Why this is bold, and where it is new</h1><p class="lede">The user asked on 08-23 how to explain to an unimpressed friend why this port matters. The short version: when it started, no libultraship game was known to run on a handheld this weak, and no N64 port on 3DS was known to hold a native 60 Hz without interpolating, let alone in stereoscopic 3D; this one did both in three and a half weeks, with a fleet of AI agents doing the typing. A second phase then replaced the interpreter for race frames and took the game to the Old 3DS, a console with a third of the clock, and a third added online multiplayer and one-submission stereo. Others have moved since; the items below say where each claim stands now.</p><h2>The field before this project</h2><p>Two deep-research passes (08-14, 09-01) and a targeted literature check (09-02) mapped the state of the art. The findings framed every architectural decision:</p><div class="tbl"><table><thead><tr><th class="">Precedent</th><th class="">What it did</th><th class="">What it means here</th></tr></thead><tbody><tr><td class="">sm64_3ds (the well-known Mario 64 3DS port)</td><td class="">Native decomp with a hand-written 3DS renderer, plain <code>switch</code> dispatch, audio on a second core. Its README describes a naive frame skip below 30 fps and lists a separate 60 FPS patch.</td><td class="">The proven fallback in this field is some form of 30 Hz, interpolated or not. This project refused that and targeted native 60.</td></tr><tr><td class="">libultraship ports (Ship of Harkinian, 2Ship, Starship, and this game's own PC port)</td><td class="">Desktop-only. x86-64 and ARM64 with OpenGL, Metal or DirectX. Never compiled for devkitARM.</td><td class="">The LUS carve-out spike (08-12) proved LUS builds on devkitARM with a 13-line newlib patch, the first such build the research knew of (two other libultraship 3DS projects had appeared by 10-08; item 1).</td></tr><tr><td class="">Every N64 port ever shipped</td><td class="">Walks the display list on the CPU every frame and re-emits it to the GPU.</td><td class="">The 09-01 research verdict: nobody has shipped beyond the per-frame walk. GPU vertex transform was the field's number-one untried idea, listed as a TODO by the sm64 port's author.</td></tr><tr><td class="">Cross-core render pipelining on 3DS</td><td class="">No precedent found in any homebrew title. Core 2 needs a Luma kernel grant; core 3 is the OS's.</td><td class="">The render thread (09-02 → 09-03) was, as far as that research could find, the first game-logic-ahead render pipeline on the console. The 10-08 field search later found Smash 64 for New 3DS rendering on another core too (item 5).</td></tr></tbody></table></div><div class="note">An earlier draft of this table described the sm64_3ds port as 30 Hz logic interpolated to 60; that was not accurate. See <a href="boundaries.html">Pushing the boundaries</a> for the correction.</div><h2>Nine things this project did first, or did differently</h2><p>Each item carries its journey: where it started, what changed, and where it stands in the v1.1.0 work. A <span class="pill acc">first</span> label is used only where a research pass looked for precedent and found none, and says when; everything else is labelled as a difference.</p><style>.pc-item { margin:26px 0 30px; } .pc-item h3 { margin:0 0 4px; } .pc-item .pill { margin:0 0 6px; } .pc-item p { margin:6px 0; } @media print { .pc-item { break-inside:avoid; } }</style><div class="pc-item"><h3>1. libultraship on a 3DS</h3><span class="pill acc">first, as far as our research found</span><p>The whole runtime, its Fast3D interpreter, resource manager and archive loader, compiled for the ARM11 under devkitARM. When this started, the research passes (08-14, 09-01) found libultraship only on desktops. By the 10-08 field search two other libultraship-based 3DS projects had appeared (a SpaghettiKart-based Mario Kart 64 and a Ship of Harkinian port); their start dates are not in our record, so the claim is dated: no libultraship 3DS build was known on 08-12.</p><div class="pc-steps"><div><b>08-12</b>A carve-out spike builds libultraship under devkitARM with a 13-line newlib patch.</div><div><b>First phase</b>Kept as pure-delta patches over two untouched submodules (48 files).</div><div class="now"><b>Now</b>82 decomp patches; the 41 libultraship patches are folded into a vendored carve that is the source of truth, and its interpreter runs only under <code>preset = off</code>.</div></div></div><div class="pc-item"><h3>2. Native 60 on a software display-list interpreter</h3><span class="pill neu">did differently</span><p>The first phase's position on the New 3DS, full Grand Prix, trace off: median 59.6 fps, tenth percentile 51.4, 53% of frames at the cap, without dropping the logic rate or interpolating. When it landed, the 09-01 research had found no N64 port on 3DS holding 60 this way. The 10-08 field search found others reaching 60 by interpolating over 30 Hz logic, and Smash 64 for New 3DS aiming at 60 without promising it, so this is listed as a difference, not a first.</p><div class="pc-steps"><div><b>08-14</b>12–20 fps in the emulator; 08-21, 48–50 on hardware.</div><div><b>09-03</b>With the render thread on core 2, the last hardware rounds reach a 59.6 median.</div><div class="now"><b>Now</b>History: the shipped default is the native renderer below. This path stays reachable with <code>preset = off</code>.</div></div></div><div class="pc-item"><h3>3. Exact stereoscopy, then both eyes in one GPU submission</h3><span class="pill neu">did differently</span><p>Stereo is an asymmetric-frustum shift folded exactly into the projection, <code>x′ = x ± k·(z − dc·w)</code>, so depth, fog and the combiner are bit-identical per eye and the 2D race markers can sit at their ship's depth. The second eye has been produced three ways. Other 3DS N64 ports also replay per eye (rt64-3ds, the SM64 lineage); what is different here is how little the right eye costs, and that the last step came from a suggestion by a 3DS homebrew developer.</p><div class="pc-steps"><div><b>08-27</b>Armed on hardware: each draw re-issued for the right eye from the same packed vertices. "3D works great."</div><div><b>Native fork</b>Frame replay: the body is emitted once; the right eye resubmits the same command lists with one uniform changed.</div><div class="now"><b>v1.1.0</b>One submission: the GPU runs the body, jumps to a right-eye prologue, runs it again. Old 3DS 3D menu 40.2 → 44.6 fps. Still not a locked 60 in 3D on either console (item 7).</div></div></div><div class="pc-item"><h3>4. GPU vertex transform: shelved, then shipped</h3><span class="pill neu">did differently</span><p>The 08-28 moonshot moved the unlit vertex transform onto the PICA vertex shader: 220,000 draws with zero fallbacks, 62% less vertex time in the emulator, imperceptible on hardware, and broken on the venue floor because 24-bit floats cannot hold ±32000-unit coordinates. It was shelved on that evidence. The native fork brought it back for the meshes it retains, with the precision problem solved: the shader adds an integer eye offset first, which float24 represents exactly.</p><div class="pc-steps"><div><b>08-28</b>Built, measured, shelved: too small a slice, and a precision bug.</div><div><b>Native fork</b>Revived as <code>gpuxf</code> for retained track and machine meshes, with lighting and texgen.</div><div class="now"><b>Now</b>On by default on both consoles.</div></div></div><div class="pc-item"><h3>5. A render thread inside the game's own frame protocol</h3><span class="pill neu">did differently</span><p>Rather than a mailbox, the fork happens where the N64 would have started the RSP task (<code>osSpTaskStartGo</code>) and the join is the game's own DP-done wait: a true one-frame-ahead pipeline with two-deep backpressure. The 09-02 research found no precedent; the 10-08 field search found Smash 64 for New 3DS also rendering on another core, so this is a different design, not the only multi-core renderer.</p><div class="pc-steps"><div><b>09-02</b>Brief and first build; core 2 reached through a Luma kernel grant.</div><div><b>09-03</b>Hardware round 4: median 59.6 fps.</div><div class="now"><b>Now</b>Off at release on both consoles: the native renderer needs a sequential frame, and core 2 runs audio instead.</div></div></div><div class="pc-item"><h3>6. Fixed-function combiner totality</h3><span class="pill neu">did differently</span><p>Every N64 colour-combiner mode the game uses maps to three or fewer PICA TexEnv stages; fog is a per-vertex factor blended in a TexEnv stage because the PICA's depth LUT cannot resolve the game's depth range. Zero unsupported modes.</p><div class="pc-steps"><div><b>First phase</b>A census of every mode; worst case three stages.</div><div><b>Fixes</b>Decal clamp, environment-colour flush and CCMUX-11 made the translation total.</div><div class="now"><b>Now</b>Our own walker reuses the same combiner keys verbatim, and the native race renderer blends fog in the same kind of stage.</div></div></div><div class="pc-item"><h3>7. Skipping the display-list walk, on the hardest target</h3><span class="pill acc">first, as far as our research found</span><p>For what a race spends its frame on, the native renderer writes the GPU's own command words from recorded and baked data instead of walking the display list (see <a href="native.html">The road to 60, all over again</a>). It shipped first on, and matters most for, the Old 3DS: a third of the clock, no L2 cache, no second application core. No other N64 decompilation, recompilation or emulator project the 10-08 search found claims a sustained 60 on an Old 3DS, and that was still the case at release.</p><div class="pc-steps"><div><b>09-07</b>The fork begins; the Old 3DS, ruled out on 08-11, is revisited from 09-24.</div><div><b>10-08</b>An internal card holds 59–60 fps in Grand Prix races on Old 3DS hardware.</div><div class="now"><b>Now</b>Shipped binary, Old 3DS, full 30-racer Grand Prix in 2D: 57.3 fps mean (log stalls excluded). Since v1.1.0, menus too. 3D: 59.7–59.8 in a short one-submission sample, but some courses step down to 30; the CPU is the limit.</div></div></div><div class="pc-item"><h3>8. Online lockstep multiplayer across Old and New 3DS</h3><span class="pill neu">did differently</span><p>Two to four consoles race over the internet, the same Wi-Fi or local wireless, sending only inputs: about 130 bytes per tick per peer, every console simulating the same race in deterministic lockstep. A small rendezvous server (one standard-library Python file, UDP 27200) exchanges endpoints from a five-character room code, punches through NATs and relays when it cannot; agents deployed and operated it on AWS. Old and New 3DS can share a room. No precedent search was done, so this is not claimed as a first.</p><div class="pc-steps"><div><b>v1.0.0</b>Split-screen 2–4 players on one console.</div><div><b>10-21</b>Lockstep spike, then online, local-wireless and full-screen-per-console play merged the same day.</div><div class="now"><b>v1.1.0</b>Frame-advantage pacing, drop-outs handed to a CPU driver, desync reports. Old 3DS: 2D aims for 60, 3D locked to 30.</div></div></div><div class="pc-item"><h3>9. The 64DD Expansion Kit on a handheld</h3><span class="pill neu">did differently</span><p>The course editor, machine creator and 64DD content run as their own New 3DS build, streaming the player's own retail Japanese disk image from the SD card instead of holding 62 MB in RAM. We did not search for earlier 64DD efforts on a handheld, so no first is claimed.</p><div class="pc-steps"><div><b>Native fork</b>Expansion Kit builds fit both consoles' memory; the editor's black screen fixed.</div><div><b>v1.0.0</b>Released for New 3DS only: on Old 3DS the editors crawl and disk music breaks up.</div><div class="now"><b>Now</b>Mostly emulator-verified; a 10-26 New 3DS hardware card ran an Expansion Kit build and held 60 in a short 3D race log.</div></div></div><h2>Why bold</h2><p>The conservative plan was available from day one and was declined at every fork:</p><ul><li><b>Native 60 Hz instead of 30 Hz + interpolation.</b> The deep-research report on 08-21 said the proven path was the sm64 way. The user's instruction on 08-14: "only list options that work towards this running acceptably in 3D at 60fps."</li><li><b>Stereo before the frame budget was safe.</b> The stereo foundation was merged flag-off on 08-20 and armed on 08-27 while crowd frames still dipped to 30 fps, on the argument that it costs CPU submit time, not GPU time, and had to be designed in.</li><li><b>Multi-core on a console that hides its cores.</b> Core 2 is only reachable with a kernel capability that Luma grants to homebrew; the choice to depend on it was made after the 09-02 research and a hardware confirmation that the grant holds for a .3dsx and a .cia.</li><li><b>Patch stack, not a fork.</b> Keeping upstream pristine cost real pain (every patch a pure delta, regenerated by three-way merge) and kept the door open to upstreaming. One leak fix in libultraship was identified as an upstream bug on 08-28. The decomp side still works this way; libultraship was later frozen into a vendored carve (item 1).</li><li><b>Shelving on evidence, not on effort.</b> GPU transform, the bridge output cache, the DSP batch-break fold, the double-height stereo target and the machine texture atlas were each built to the point of measurement and then declined. The project's default-off branches are its most expensive documents, and one of them came back: GPU transform now ships on by default, once the native renderer gave it meshes worth transforming (item 4).</li></ul><h2>Innovation in method</h2><p>The technical results rest on a way of working that is itself new. Every performance change shipped with a killswitch and a receipt line, so hardware could A/B it without a rebuild. Every hypothesis got a probe before a fix (the magenta padding flood, the fog probe line, the CRC tripwires that pinned the HUD bug). Every hardware round had a test plan written for a human and a log format written for a machine. The <a href="agentic.html">agentic workflow</a> page covers how that discipline was enforced across a fleet of agents that could not see the console.</p><div class="next"><a href="difficulties.html">← Difficulties</a><a href="agentic.html">Agentic workflow →</a></div></main></div><script>(function(){
+var d=document.documentElement,b=document.querySelector('.theme-toggle');
+function cur(){var a=d.getAttribute('data-theme');if(a){return a;}return window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}
+function label(){if(!b){return;}var dark=cur()==='dark';b.setAttribute('aria-pressed',dark?'true':'false');b.querySelector('.lbl').textContent=dark?'Light':'Dark';b.title=dark?'Switch to light mode':'Switch to dark mode';}
+if(b){label();b.addEventListener('click',function(){var n=cur()==='dark'?'light':'dark';d.setAttribute('data-theme',n);try{localStorage.setItem('pm-theme',n);}catch(e){}label();});}
+if(window.matchMedia){try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',label);}catch(e){}}
+var still=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+if(still||!('IntersectionObserver' in window)){return;}
+var re=/^([~$]?)(\d[\d,]*(?:\.\d+)?)(\s?[A-Za-z]{0,2})$/;
+function run(el){var tn=el.firstChild,fin=tn.nodeValue,m=re.exec(fin);if(!m){return;}
+ var raw=m[2].replace(/,/g,''),to=parseFloat(raw),dec=(raw.split('.')[1]||'').length,comma=m[2].indexOf(',')>=0,t0=null,dur=1300;
+ function fmt(v){var s=v.toFixed(dec);if(comma){var p=s.split('.');p[0]=p[0].replace(/\B(?=(\d{3})+(?!\d))/g,',');s=p.join('.');}return m[1]+s+m[3];}
+ function step(ts){if(t0===null){t0=ts;}var k=Math.min(1,(ts-t0)/dur),e=1-Math.pow(1-k,3);tn.nodeValue=k<1?fmt(to*e):fin;if(k<1){requestAnimationFrame(step);}}
+ requestAnimationFrame(step);setTimeout(function(){tn.nodeValue=fin;},dur+400);}
+var io=new IntersectionObserver(function(es){es.forEach(function(en){if(en.isIntersecting){io.unobserve(en.target);run(en.target);}});},{threshold:.4});
+document.querySelectorAll('.big-num').forEach(function(el){var tn=el.firstChild;if(tn&&tn.nodeType===3&&re.test(tn.nodeValue)&&parseFloat(tn.nodeValue.replace(/[~$,]/g,''))>0){io.observe(el);}});
+})();</script></body></html>

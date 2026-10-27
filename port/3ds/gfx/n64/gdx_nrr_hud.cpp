@@ -10,6 +10,7 @@
 #include "gdx_interp.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "gdx3ds_hud_record.h"
@@ -21,6 +22,7 @@
 #include "../nrr/gdx3ds_nrr_internal.h" /* n60hud3: gdx3ds_nrr_bk_tex (verify: what a state binds), as nrr_fx */
 extern "C" int gdx3ds_stereo_replay_frame; /* n60stereo (gdx3ds_stereo_frame.cpp) */
 #include "../nrr/gdx3ds_nrr_crumb.h" /* n60hwdiag */
+#include "gdx3ds_cpucut.h"
 
 /* The NRR core lives in 3DS-only objects. The interpreter's host harness compiles this TU without
  * them: there the core entry points are inert stubs (the lever never acts on the host; macOS ld
@@ -48,6 +50,10 @@ void* NrrRingAlloc(NrrCtx*, uint32_t) {
 }
 void NrrDraw2D(NrrCtx*, const float*, uint32_t) {}
 void NrrStereoAnchor(NrrCtx*, float) {}
+void NrrStereoMenuRow(NrrCtx*, float**, uint32_t*) {}
+int gdx3ds_stereo_menu_frame(void) {
+    return 0;
+}
 int gdx3ds_stereo_replay_frame = 0;
 int gdx3ds_nrr_bk_tex(uint32_t, NrrBkTex*) {
     return 0;
@@ -389,6 +395,13 @@ namespace {
 
 constexpr uint32_t kBlocks = 256; /* state-block memo (open addressed, power of two) */
 constexpr uint32_t kProbe = 8;
+/* menus-s2 [native] ni_menu: the memo's probe length on a 2D screen. A menu frame captures 100-150
+ * blocks (one per glyph texture); at that load a linear probe of 8 meets a full chain every ~16
+ * frames on the main menu, and the clear it falls back to (every block, so every program) turned the
+ * whole screen into per-word decodes with the interpreter's batch open -- no program could be
+ * recorded, every run tripped to the stock replay (`vol=`), ~50 texture imports a frame. A longer
+ * probe only changes which slot a block sits in (the lookups are cold): the output is the same. */
+constexpr uint32_t kProbeMenu = 32;
 constexpr uint32_t kScVars = 128; /* [native] nrr_hud_late bit 1: scissor variants kept (64 sets of 2) */
 constexpr uint32_t kScStates = 48; /* their core states (a ring; a reused one retires its variant) */
 constexpr uint32_t kScSibs = 256;  /* blocks indexed by their key without the scissor (direct-mapped) */
@@ -580,7 +593,9 @@ enum : uint32_t {
     kOpCol = 6, /* | why << 9 | word << 16; the colour word, the lod-fraction word (or 0), its shift */
     kOpSl = 7,  /* n60hudx nrr_hud_kept | word << 16; a G_DL to a static setup list: the list's ref and words,
                  * then its register words' stores (NrrSlCompile's payload) */
-    kOpArm = 1u << 8
+    kOpArm = 1u << 8,
+    kOpColPd = 1u << 14 /* o3ds-cpucuts nrr_hud_pd: a COL op of a SETPRIMDEPTH -- payload {the prim
+                         * depth's register word, 0, its shift}; the depth is w1's (z & 0x7FFF) */
 };
 
 /* n60hudx: an SL payload's verbatim list words (nCmd commands of its stride) */
@@ -797,6 +812,7 @@ struct Interp::NrrHud {
     uint16_t recMiss[kRecMiss]; /* per run hash: programs that did not fit its entry state */
     /* the program being recorded (NrrDecRun) */
     bool recOk;
+    uint8_t recWhy; /* menus-s2 [debug] nimenu_voldiag: why recOk went false (diagnostic) */
     bool decFast; /* the per-word decoder drew a rectangle from a block (NrrProgEx) */
     bool recFull; /* an opaque word: the program depends on every snapshot word */
     uint32_t recN, recEpoch;
@@ -890,6 +906,13 @@ static bool NrrRegDirties(uint8_t op) {
  * Anything a program cannot carry on with (an open interpreter batch, a memo clear) hands the rest
  * of the run to the per-word decoder. */
 
+/* mstereo [stereo] menu_depth: the NRR HUD's open batch, for the cold stereo hook (NrrHudStereoAnchor) (which the hot
+ * NrrHudHotDraw calls with the context only: a wider call would grow the hot loop). Set once, where the
+ * NrrHud is allocated (NrrEnsure; it is never freed). */
+static NrrCtx* sStereoHudCtx = nullptr;
+static float** sStereoHudBatchStart = nullptr; /* the hook may advance them past runs it drew itself */
+static uint32_t* sStereoHudBatchVerts = nullptr;
+
 GDX_COLD bool Interp::NrrEnsure() {
     if (mNrr != nullptr) {
         return true;
@@ -902,6 +925,9 @@ GDX_COLD bool Interp::NrrEnsure() {
         return false;
     }
     memset(static_cast<void*>(mNrr), 0, sizeof(NrrHud));
+    sStereoHudCtx = &mNrr->ctx; /* mstereo: NrrHudStereoAnchor's view of the open batch */
+    sStereoHudBatchStart = &mNrr->batchStart;
+    sStereoHudBatchVerts = &mNrr->batchVerts;
     mNrr->clock = mNrrClock;
     mNrr->envSeq = 0xFFFFFFFFu;
     mNrr->batchCls = kNoClass;
@@ -987,6 +1013,22 @@ inline __attribute__((always_inline)) void Interp::NrrHudHotBody(const GdxHudWor
     }
 }
 
+/* o3ds-cpucuts [native] nrr_hud_pd (0 off, 1 on, 2 A/B on [cpucut] bit 0; default 1): a SETPRIMDEPTH
+ * is a COL op -- any depth, out of the skeleton hash -- instead of a compiled word. The race's
+ * opponent markers set a new prim depth every frame, so each frame was a new skeleton (no program:
+ * decoded word by word, its depth word a first sight that refused the recording, the stores that did
+ * land filled the pool and cleared every program). The depth's handler effect (the 15-bit z into
+ * prim_depth, the empty flush counted on a change) is fixed by its code, as a colour's is; latched
+ * per task (NrrHudTaskEnd), so a run's hash and its recording agree. */
+static int sNrrHudPd = 1;
+static bool sNrrHudPdOn = true;
+
+extern "C" void gdx3ds_nrr_hud_pd_set(int value) {
+    sNrrHudPd = gdx3ds_cpucut_clamp(value, 1);
+    sNrrHudPdOn = gdx3ds_cpucut_on(sNrrHudPd, GDX3DS_CPUCUT_BIT_HUDPD) != 0;
+    gdx3ds_cpucut_lever("hudpd", &sNrrHudPd, GDX3DS_CPUCUT_BIT_HUDPD);
+}
+
 /* The run's skeleton hash: every word but a rectangle's geometry (a TEXRECT with its trailers is
  * its opcode and tile, a FILLRECT its opcode) and a colour word's colour. Only a lookup key: every
  * op checks its own word. */
@@ -1006,6 +1048,8 @@ __attribute__((noinline)) uint32_t NrrHudHotHash(const GdxHudWord* w, uint32_t n
             b = 0;
         } else if (op == OP_SETPRIMCOLOR || op == OP_SETENVCOLOR) {
             b = 0; /* a COL op takes any colour */
+        } else if (op == OP_SETPRIMDEPTH && sNrrHudPdOn) {
+            b = 0; /* nrr_hud_pd: a COL op takes any prim depth */
         }
         h = ((h << 5) | (h >> 27)) ^ a;
         h = ((h << 5) | (h >> 27)) ^ b;
@@ -1141,6 +1185,15 @@ inline __attribute__((always_inline)) const uint32_t* Interp::NrrHudHotStores(ui
  * stores were found to be (NrrRecRegWord); a change counts the handler's empty flush. */
 inline __attribute__((always_inline)) void Interp::NrrHudHotColour(uint32_t hdr, const uint32_t* op, const Cmd& c) {
     NrrWord32* col = reinterpret_cast<NrrWord32*>(op[0]);
+    if (GDX_UNLIKELY((hdr & kOpColPd) != 0)) {
+        const uint32_t o = *col; /* == DpSetPrimDepth((w1 >> 16) & 0x7FFF) */
+        const uint32_t nv = (o & ~(0xFFFFu << op[2])) | (((c.w1 >> 16) & 0x7FFFu) << op[2]);
+        *col = nv;
+        if (o != nv) {
+            mStats.flush[(hdr >> 9) & 31u]++;
+        }
+        return;
+    }
     const uint32_t v = __builtin_bswap32(c.w1);
     uint32_t changed = *col ^ v;
     *col = v;
@@ -1430,10 +1483,14 @@ inline __attribute__((always_inline)) bool Interp::NrrHudHotIdent(const uint32_t
 /* ---- rectangles -------------------------------------------------------------------------- */
 
 /* n60stereo, stereo frame replay only: a batch of prim-depth rectangles (the race position markers)
- * takes the [anchor] class -- the depth of the machine it labels -- as the per-draw loop gives it. */
+ * takes the [anchor] class -- the depth of the machine it labels -- as the per-draw loop gives it.
+ * mstereo: in a menu frame ([stereo] menu_depth) any other batch takes its coverage layer's row, the
+ * per-draw loop's MenuUiClass. */
 GDX_COLD static void NrrHudStereoAnchor(NrrCtx* ctx, const Combiner* comb, uint16_t primDepth) {
     if (comb != nullptr && (comb->shader_id1 & SHOPT_PRIM_DEPTH) != 0) {
         NrrStereoAnchor(ctx, static_cast<float>(primDepth) / 32767.0f);
+    } else if (gdx3ds_stereo_menu_frame() && ctx == sStereoHudCtx) {
+        NrrStereoMenuRow(ctx, sStereoHudBatchStart, sStereoHudBatchVerts);
     }
 }
 
@@ -1828,6 +1885,11 @@ GDX_COLD void Interp::NrrDecRun(const GdxHudWord* w, uint32_t n) {
         NrrProgStore(w, n);
     } else {
         N.w.recFails++;
+        if (GDX_UNLIKELY(mNiVolDiag > 0) && mNiMenuRun) {
+            mNiVolDiag--;
+            GDXN_LOG("[nivol] recfail ord=%u n=%u why=%u epoch=%d", mNiMenuOrd - 1u, n,
+                     static_cast<unsigned>(N.recOk ? 6u : N.recWhy), N.progEpoch != N.recEpoch ? 1 : 0);
+        }
     }
 }
 
@@ -1852,7 +1914,37 @@ GDX_COLD bool Interp::NrrNoteNoProg(const GdxHudWord* w, uint32_t n) {
         }
     }
     N.w.progNoHash++;
+    if (GDX_UNLIKELY(mNrrDepDiag > 0)) {
+        NrrNoHashDiag(w, n);
+    }
     return true;
+}
+
+/* [debug] nrr_hud_depdiag (o3ds-cpucuts): a run with no program under its hash, against the last
+ * such run of the same length: which words differ (the ones that move the skeleton hash). */
+static GdxHudWord sNoHashLast[64];
+static uint32_t sNoHashLastN, sNoHashLines;
+GDX_COLD void Interp::NrrNoHashDiag(const GdxHudWord* w, uint32_t n) {
+    if (n > 64u || sNoHashLines >= 4000u) {
+        return;
+    }
+    if (n == sNoHashLastN) {
+        char line[256];
+        int len = snprintf(line, sizeof(line), "[nrrnohash] task=%lu n=%u diff:", static_cast<unsigned long>(mNrr->seq), n);
+        uint32_t shown = 0;
+        for (uint32_t i = 0; i < n && shown < 6u && len > 0 && static_cast<size_t>(len) < sizeof(line); i++) {
+            if (w[i].w0 != sNoHashLast[i].w0 || w[i].w1 != sNoHashLast[i].w1) {
+                len += snprintf(line + len, sizeof(line) - static_cast<size_t>(len), " %u:%08lx_%08lx/%08lx", i,
+                                static_cast<unsigned long>(w[i].w0), static_cast<unsigned long>(w[i].w1),
+                                static_cast<unsigned long>(sNoHashLast[i].w1));
+                shown++;
+            }
+        }
+        sNoHashLines++;
+        GDXN_LOG("%s", line);
+    }
+    memcpy(sNoHashLast, w, n * sizeof(GdxHudWord));
+    sNoHashLastN = n;
 }
 
 /* [debug] nrr_hud_depdiag=N (n60intro): per task with dependency misses (N lines at most), how many
@@ -1946,6 +2038,7 @@ GDX_COLD void Interp::NrrRec(uint32_t hdr, const Cmd& c, const uint32_t* payload
     NrrHud& N = *mNrr;
     if (N.recN + 4u + words > kRecWords) {
         N.recOk = false;
+        N.recWhy = 1;
         return;
     }
     N.rec[N.recN++] = hdr;
@@ -1981,6 +2074,7 @@ GDX_COLD void Interp::NrrRecBegin(bool ok) {
     NrrHud& N = *mNrr;
     N.recN = 0;
     N.recOk = ok;
+    N.recWhy = ok ? 0 : 7;
     N.recFull = false;
     N.recEpoch = N.progEpoch;
     if (ok) {
@@ -2177,6 +2271,7 @@ GDX_COLD uint32_t Interp::NrrDecDl(const GdxHudWord* w, uint32_t n, uint32_t i, 
             }
             if (rec) {
                 N.recOk = false;
+                N.recWhy = 2;
                 NrrRecEx(i);
             }
             return i + 1;
@@ -2240,6 +2335,7 @@ GDX_COLD uint32_t Interp::NrrDecDl(const GdxHudWord* w, uint32_t n, uint32_t i, 
     }
     if (rec) {
         N.recOk = false;
+        N.recWhy = static_cast<uint8_t>(r == 0 ? 3 : 8); /* 3 a walked (impure) list, 8 another refusal */
         NrrRecEx(i);
     }
     return i + 1;
@@ -2376,9 +2472,8 @@ GDX_COLD uint32_t Interp::NrrDecReg(const Cmd& c, uint32_t i, bool rec) {
     uint32_t col[3];
     if (mBufNumTris == 0 && mTexOv == nullptr && NrrColourOp(c, col)) {
         /* a colour word: its fixed effect (a COL op), never compiled -- the finish screen's text
-         * field alone sets ~200 distinct prim colours a frame */
-        const uint32_t why = Opcode(c.w0) == OP_SETPRIMCOLOR ? FLUSH_PRIM : FLUSH_ENV;
-        const uint32_t hdr = kOpCol | (why << 9) | (i << 16);
+         * field alone sets ~200 distinct prim colours a frame (nrr_hud_pd: a prim depth too) */
+        const uint32_t hdr = NrrColourHdr(Opcode(c.w0)) | (i << 16);
         NrrHudHotColour(hdr, col, c);
         if (rec) {
             NrrRec(hdr, Cmd{ c.w0, 0, c.w1hi }, col, 3);
@@ -2435,6 +2530,9 @@ GDX_COLD bool Interp::NrrRegFirstSight(const Cmd& c) const {
  * nrr_hud=2 checks every COL op against the handler. false: the registers are not word aligned. */
 GDX_COLD bool Interp::NrrColourOp(const Cmd& c, uint32_t col[3]) const {
     const uint8_t op = Opcode(c.w0);
+    if (op == OP_SETPRIMDEPTH && sNrrHudPdOn) {
+        return NrrPrimDepthOp(col);
+    }
     if (op != OP_SETPRIMCOLOR && op != OP_SETENVCOLOR) {
         return false;
     }
@@ -2449,14 +2547,35 @@ GDX_COLD bool Interp::NrrColourOp(const Cmd& c, uint32_t col[3]) const {
     return true;
 }
 
+/* nrr_hud_pd: a SETPRIMDEPTH's COL payload {prim_depth's register word, 0, its shift}. false: the
+ * 16-bit register straddles a word (it cannot: it is 2-aligned). */
+GDX_COLD bool Interp::NrrPrimDepthOp(uint32_t col[3]) const {
+    const uintptr_t at = reinterpret_cast<uintptr_t>(&mRdp.prim_depth);
+    if ((at & 1u) != 0) {
+        return false;
+    }
+    col[0] = static_cast<uint32_t>(at & ~static_cast<uintptr_t>(3));
+    col[1] = 0;
+    col[2] = static_cast<uint32_t>((at & 3u) * 8u);
+    return true;
+}
+
+/* A COL op's header (no word index): its flush reason, the prim-depth form's flag. */
+uint32_t Interp::NrrColourHdr(uint8_t op) {
+    if (op == OP_SETPRIMDEPTH) {
+        return kOpCol | kOpColPd | (static_cast<uint32_t>(FLUSH_PRIMDEPTH) << 9);
+    }
+    const uint32_t why = op == OP_SETPRIMCOLOR ? FLUSH_PRIM : FLUSH_ENV;
+    return kOpCol | (why << 9);
+}
+
 /* What a register word records: ST (compiled stores), TL (a TLUT), EX (a triangle, extra geometry,
  * a pure word that ran with an interpreter batch open), or an opaque word. */
 GDX_COLD void Interp::NrrRecRegWord(const Cmd& c, uint32_t i, const NrrRegFx* fx, bool plain) {
     const uint8_t op = Opcode(c.w0);
     uint32_t col[3];
     if (plain && NrrColourOp(c, col)) {
-        const uint32_t why = op == OP_SETPRIMCOLOR ? FLUSH_PRIM : FLUSH_ENV;
-        NrrRec(kOpCol | (why << 9) | (i << 16), Cmd{ c.w0, 0, c.w1hi }, col, 3);
+        NrrRec(NrrColourHdr(op) | (i << 16), Cmd{ c.w0, 0, c.w1hi }, col, 3);
         return;
     }
     if (fx != nullptr && plain) {
@@ -2465,11 +2584,13 @@ GDX_COLD void Interp::NrrRecRegWord(const Cmd& c, uint32_t i, const NrrRegFx* fx
         NrrRecSt(i, c, hdr, st);
     } else if (NrrRegCompilable(op) && plain && NrrRegFirstSight(c)) { /* (colours took COL above) */
         mNrr->recOk = false; /* not compiled yet (first sight): the program is recorded on a later run */
+        mNrr->recWhy = 4;
         NrrRecEx(i);
     } else if (op == OP_LOADTLUT) {
         NrrRecTl(i, c);
     } else if (NrrRegCompilable(op) && !plain) {
         mNrr->recOk = false; /* an interpreter batch is open: a program needs none (it never runs then) */
+        mNrr->recWhy = 5;
         NrrRecEx(i);
     } else if (op == OP_TRI1 || op == OP_TRI2 || op == OP_QUAD || op == OP_EXTRAGEOMETRYMODE) {
         NrrRecEx(i);
@@ -2662,7 +2783,8 @@ GDX_COLD uint32_t Interp::NrrKeyHash(const NrrKey& k) {
 GDX_COLD Interp::NrrBlock* Interp::NrrDecFind(const NrrKey& k, uint32_t* hashOut) {
     const uint32_t h = NrrKeyHash(k);
     *hashOut = h;
-    for (uint32_t p = 0; p < kProbe; p++) {
+    const uint32_t probe = mNiMenu != 0 ? kProbeMenu : kProbe;
+    for (uint32_t p = 0; p < probe; p++) {
         NrrBlock& b = mNrr->blocks[(h + p) & (kBlocks - 1u)];
         if (b.used == 0) {
             return nullptr;
@@ -2729,6 +2851,10 @@ GDX_COLD void Interp::NrrRunEpochs() {
     NrrHud& N = *mNrr;
     const unsigned long atlas = *N.atlasPtr;
     if (N.atlasEpoch != atlas) {
+        if (GDX_UNLIKELY(mNiVolDiag > 0)) {
+            mNiVolDiag--;
+            GDXN_LOG("[nivol] memoclear why=atlas epoch=%lu->%lu seq=%u", N.atlasEpoch, atlas, N.seq);
+        }
         NrrMemoClear(); /* an atlas view a block names may have moved (a retired slot: NrrBlockMiss) */
         N.atlasEpoch = atlas;
     }
@@ -2736,6 +2862,10 @@ GDX_COLD void Interp::NrrRunEpochs() {
         uint32_t env[8];
         NrrRegEnv(env);
         if (memcmp(env, N.env, sizeof(env)) != 0) {
+            if (GDX_UNLIKELY(mNiVolDiag > 0)) {
+                mNiVolDiag--;
+                GDXN_LOG("[nivol] progclear why=env seq=%u", N.seq);
+            }
             memcpy(N.env, env, sizeof(env));
             NrrRegClear();
             NrrProgClear(); /* their ST ops carry the old config's stores */
@@ -3096,7 +3226,8 @@ GDX_COLD Interp::NrrBlock* Interp::NrrScPromote(uint32_t var, uint32_t h) {
         return nullptr;
     }
     NrrBlock* slot = nullptr;
-    for (uint32_t p = 0; p < kProbe && slot == nullptr; p++) {
+    const uint32_t probe = mNiMenu != 0 ? kProbeMenu : kProbe;
+    for (uint32_t p = 0; p < probe && slot == nullptr; p++) {
         NrrBlock& b = N.blocks[(h + p) & (kBlocks - 1u)];
         if (b.used == 0) {
             slot = &b;
@@ -3603,7 +3734,8 @@ GDX_COLD void Interp::NrrCaptureAfter(const NrrKey& key, uint32_t hash, uint8_t 
     const NrrKey* k = &key;
     /* the slot: the key's own (a refresh) or the first free one on its probe path */
     NrrBlock* slot = nullptr;
-    for (uint32_t p = 0; p < kProbe && slot == nullptr; p++) {
+    const uint32_t probe = mNiMenu != 0 ? kProbeMenu : kProbe;
+    for (uint32_t p = 0; p < probe && slot == nullptr; p++) {
         NrrBlock& b = N.blocks[(hash + p) & (kBlocks - 1u)];
         if (b.used == 0 || memcmp(&b.key, k, sizeof(NrrKey)) == 0) {
             slot = &b;
@@ -3611,6 +3743,14 @@ GDX_COLD void Interp::NrrCaptureAfter(const NrrKey& key, uint32_t hash, uint8_t 
     }
     N.w.builds++;
     if (slot == nullptr || N.nBlocks + 1u >= kBlocks) {
+        if (mNiMenuKeep && NrrMenuKeepRefuse()) {
+            mNiSplitWin.keepMemo++;
+            return; /* menus-s2b ni_menu_keep: the stock rectangle stands, every block stays */
+        }
+        if (GDX_UNLIKELY(mNiVolDiag > 0)) {
+            mNiVolDiag--;
+            GDXN_LOG("[nivol] memoclear why=%s blocks=%u seq=%u", slot == nullptr ? "probe" : "count", N.nBlocks, N.seq);
+        }
         NrrMemoClear(); /* full: start over (rare; the next rectangle rebuilds) */
         return;
     }
@@ -4251,8 +4391,12 @@ GDX_COLD void Interp::NrrVerifyProg(const NrrProg& p, const GdxHudWord* w, uint3
             op += 3u * ((hdr >> 4) & 15u);
         } else if (kind == kOpCol) {
             /* the COL op as the stores it makes for this word, through the ST check */
-            const uint32_t st[6] = { op[0], 0xFFFFFFFFu, __builtin_bswap32(c.w1), op[1], 0xFFu << op[2],
-                                     (c.w0 & 0xFFu) << op[2] };
+            uint32_t st[6] = { op[0], 0xFFFFFFFFu, __builtin_bswap32(c.w1), op[1], 0xFFu << op[2],
+                               (c.w0 & 0xFFu) << op[2] };
+            if ((hdr & kOpColPd) != 0) {
+                st[1] = 0xFFFFu << op[2];
+                st[2] = ((c.w1 >> 16) & 0x7FFFu) << op[2];
+            }
             const uint32_t nst = op[1] != 0 ? 2u : 1u;
             i = NrrVerifyReg(c, i, st, kOpSt | (nst << 4) | (hdr & (31u << 9)), false);
             op += 3;
@@ -4734,6 +4878,14 @@ GDX_COLD void Interp::NrrProgStore(const GdxHudWord* w, uint32_t n) {
         return;
     }
     if (N.poolUsed + need > kPoolWords || N.nProgs + 1u >= kProgs) {
+        if (mNiMenuKeep && !mNiInSplit && NrrMenuKeepRefuse()) {
+            mNiSplitWin.keepPool++;
+            return; /* menus-s2b ni_menu_keep: not stored, every stored program stays */
+        }
+        if (GDX_UNLIKELY(mNiVolDiag > 0)) {
+            mNiVolDiag--;
+            GDXN_LOG("[nivol] progclear why=pool used=%u need=%u progs=%u seq=%u", N.poolUsed, need, N.nProgs, N.seq);
+        }
         NrrProgClear();
     }
     const uint32_t h = NrrHudHotHash(w, n);
@@ -4973,8 +5125,13 @@ GDX_COLD bool Interp::NrrRrBuild(const NrrProg& p, const GdxHudWord* w, uint32_t
             }
             op = pay + 3 * cnt;
         } else if (kind == kOpCol) {
-            /* the colour register = the word's w1 in memory order; prim's lod fraction its w0's low byte */
-            if (!store(pay[0], 0xFFFFFFFFu, __builtin_bswap32(w[i].w1))) {
+            /* the colour register = the word's w1 in memory order; prim's lod fraction its w0's low byte
+             * (nrr_hud_pd: the prim depth = w1's 15-bit z) */
+            if ((hdr & kOpColPd) != 0) {
+                if (!store(pay[0], 0xFFFFu << pay[2], ((w[i].w1 >> 16) & 0x7FFFu) << pay[2])) {
+                    return false;
+                }
+            } else if (!store(pay[0], 0xFFFFFFFFu, __builtin_bswap32(w[i].w1))) {
                 return false;
             }
             if (pay[1] != 0 && !store(pay[1], 0xFFu << pay[2], (w[i].w0 & 0xFFu) << pay[2])) {
@@ -5134,6 +5291,10 @@ GDX_COLD void Interp::NrrHudClear() {
         return;
     }
     NrrHud& N = *mNrr;
+    if (GDX_UNLIKELY(mNiVolDiag > 0)) {
+        mNiVolDiag--;
+        GDXN_LOG("[nivol] memoclear why=modereset seq=%u", N.seq);
+    }
     NrrMemoClear();
     N.nPend = 0;
     memset(N.slots, 0, sizeof(N.slots));
@@ -5159,6 +5320,7 @@ void Interp::NrrHudTaskEnd() {
         if (GDX_UNLIKELY(mNrrDepDiag > 0)) {
             NrrDepDiagTask();
         }
+        sNrrHudPdOn = gdx3ds_cpucut_on(sNrrHudPd, GDX3DS_CPUCUT_BIT_HUDPD) != 0; /* o3ds-cpucuts nrr_hud_pd */
         mNrr->seq++;
     }
 }

@@ -1,0 +1,19 @@
+diff --git a/src/overlays/ovl_i3/menus.c b/src/overlays/ovl_i3/menus.c
+--- a/src/overlays/ovl_i3/menus.c
++++ b/src/overlays/ovl_i3/menus.c
+@@ -5746,6 +5746,15 @@
+ #ifdef PORT
+                 if (!gdxHudTopSuppressed) {
+                     gfx = Hud_DrawHud(gfx);
++                } else if (GDX_FV_K() >= 0) {
++                    /* o3ds60 ([ui] mp_hud_placement, decomp-3ds-o3ds60-mp-hud.patch): the MP
++                     * fullview view follows the [hud] placement the way the 1P race does. Every
++                     * player's HUD logic still runs -- lap announcements, interval bookkeeping and
++                     * the reverse warning's SE live in Hud_GdxFullviewDrawHud's per-player calls,
++                     * not just player 0's announcer -- and only the picture is rewound. */
++                    Gfx* gdxFvHudMark = gfx;
++                    gfx = Hud_DrawHud(gfx);
++                    gfx = gdxFvHudMark;
+                 } else {
+                     /* COORDINATOR FIX (hw bug n60-3d7, item 3): the top HUD's drawing is
+                      * suppressed here, but Hud_DrawHud's own Hud_UpdatePlayerHudInfo call is

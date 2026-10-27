@@ -1,0 +1,791 @@
+diff --git a/src/audio/disk/lib/thread.c b/src/audio/disk/lib/thread.c
+--- a/src/audio/disk/lib/thread.c
++++ b/src/audio/disk/lib/thread.c
+@@ -452,6 +452,15 @@
+ }
+ 
+ void AudioThread_QueueCmd(u32 opArgs, void** data) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    /* MP phase 3 (decomp-3ds-mp-fullview.patch): a fullview console mixes for its own player --
++       that player's channels centred, the other humans' quieter. Rewrites a copy of the payload
++       only; the game's own volume / pan bookkeeping and the command count are untouched. */
++    extern void gdx_fv_audio_cmd(u32 opArgs, void** data);
++    void* gdxFvData = *data;
++    gdx_fv_audio_cmd(opArgs, &gdxFvData);
++    data = &gdxFvData;
++#endif
+ #ifdef PORT
+     /* The game thread writes this ring while the dedicated audio thread drains it inside
+        gdx_audio_thread.cpp's mutexed tick. Take that same mutex here -- this is the single
+diff --git a/src/audio/rom/lib/thread.c b/src/audio/rom/lib/thread.c
+--- a/src/audio/rom/lib/thread.c
++++ b/src/audio/rom/lib/thread.c
+@@ -324,6 +324,15 @@
+ }
+ 
+ void AudioThread_QueueCmd(u32 opArgs, void** data) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    /* MP phase 3 (decomp-3ds-mp-fullview.patch): a fullview console mixes for its own player --
++       that player's channels centred, the other humans' quieter. Rewrites a copy of the payload
++       only; the game's own volume / pan bookkeeping and the command count are untouched. */
++    extern void gdx_fv_audio_cmd(u32 opArgs, void** data);
++    void* gdxFvData = *data;
++    gdx_fv_audio_cmd(opArgs, &gdxFvData);
++    data = &gdxFvData;
++#endif
+ #ifdef PORT
+     /* The game thread writes this ring while the dedicated audio thread drains it inside
+        gdx_audio_thread.cpp's mutexed tick. Take that same mutex here -- the single
+diff --git a/src/game/camera.c b/src/game/camera.c
+--- a/src/game/camera.c
++++ b/src/game/camera.c
+@@ -1414,9 +1414,18 @@
+ extern GfxPool D_1000000;
+ extern Camera gCameras[];
+ 
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++/* MP phase 3 (decomp-3ds-mp-fullview.patch): the local view of a fullview build draws with the
++   1P viewport and scissor; its camera (frustum, mirrors) is untouched. */
++#include "gdx3ds_fullview_shim.h"
++#endif
++
+ Gfx* Camera_Draw(Gfx* gfx, s32 scissorBoxType, s32 cameraIndex) {
+     Camera* camera = &gCameras[cameraIndex];
+ 
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    scissorBoxType = gdx_fv_scissor(scissorBoxType, cameraIndex);
++#endif
+     switch (camera->vpTransitionState) {
+         case CAMERA_VP_TRANSITION_ACTIVE:
+             gSPViewport(gfx++, &D_1000000.unk_2C2C8[cameraIndex]);
+@@ -1425,7 +1434,12 @@
+             break;
+         default:
+             gfx = func_8006A00C(gfx, scissorBoxType);
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++            if (((gNumPlayers == 1) || GDX_FV_LOCAL(cameraIndex)) && (gGameMode != GAMEMODE_RECORDS) &&
++                (gGameMode != GAMEMODE_GP_END_CS)) {
++#else
+             if ((gNumPlayers == 1) && (gGameMode != GAMEMODE_RECORDS) && (gGameMode != GAMEMODE_GP_END_CS)) {
++#endif
+                 gDPSetScissor(gfx++, G_SC_NON_INTERLACE, 12, 16, 308, 224);
+             }
+             break;
+diff --git a/src/game/racer.c b/src/game/racer.c
+--- a/src/game/racer.c
++++ b/src/game/racer.c
+@@ -5741,6 +5741,16 @@
+ #define GDX_DLB(sec)
+ #define GDX_DL_SKIP(sec, view) 0
+ #define GDX_DL_SKIP_LABEL(label) label:;
++#endif
++
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++/* MP phase 3 (decomp-3ds-mp-fullview.patch): the race HUD tail of every view runs (countdown
++   sounds, BGM start, approach-warning flags); another view's output is rewound, the local view's
++   markers project through the full-screen viewport and take the 1P textures. */
++#include "gdx3ds_fullview_shim.h"
++#define GDX_FV_1P_MARKERS(view) ((gNumPlayers < 2) || GDX_FV_LOCAL(view))
++#else
++#define GDX_FV_1P_MARKERS(view) (gNumPlayers < 2)
+ #endif
+ 
+ #if defined(PORT) && defined(GDX_PLATFORM_3DS)
+@@ -7605,6 +7615,10 @@
+ 
+     GDX_C5CAT(HUD);
+     GDX_DLB(RHUD);
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    Gfx* gdxFvRhudMark = gfx;
++    gdx_fv_rhud_begin(playerIndex);
++#endif
+     GDX_HUD_REGION_BEGIN(gdxHudStart);
+ #ifndef EXPANSION_KIT
+     if (gRaceIntroTimer != 0) {
+@@ -7783,7 +7797,7 @@
+                 gDPPipeSync(gfx++);
+                 gDPSetPrimDepth(gfx++, (s32) ((sp564 * 16352.0f) + 16352.0f), 0);
+ 
+-                if (gNumPlayers < 2) {
++                if (GDX_FV_1P_MARKERS(playerIndex)) {
+                     gDPLoadTextureBlock(gfx++, sPosition1PMarkerTexs[var_s3], G_IM_FMT_RGBA, G_IM_SIZ_16b, 24, 30, 0,
+                                         G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK,
+                                         G_TX_NOLOD, G_TX_NOLOD);
+@@ -7893,7 +7907,7 @@
+                 gDPSetPrimColor(gfx++, 0, 0, 255, var_s7, 0,
+                                 (255 - (s32) (playerRacer->distanceFromRacerBehind * 0.085f)));
+ 
+-                if (gNumPlayers < 2) {
++                if (GDX_FV_1P_MARKERS(playerIndex)) {
+                     gDPLoadTextureBlock_4b(gfx++, aCheckMarker1PTex, G_IM_FMT_IA, 32, 23, 0, G_TX_NOMIRROR | G_TX_WRAP,
+                                            G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
+ 
+@@ -7940,6 +7954,12 @@
+         }
+     }
+ 
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    gdx_fv_rhud_end(playerIndex);
++    if (GDX_FV_DROP(playerIndex)) {
++        gfx = gdxFvRhudMark;
++    }
++#endif
+     GDX_HUD_CAPTURE(gdxHudStart, HUD);
+     GDX_C5CAT(MISC);
+     return gfx;
+diff --git a/src/overlays/ovl_i2/race.c b/src/overlays/ovl_i2/race.c
+--- a/src/overlays/ovl_i2/race.c
++++ b/src/overlays/ovl_i2/race.c
+@@ -228,8 +228,20 @@
+ #define GDX_DL_SKIP(sec, view) 0
+ #endif
+ 
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++/* MP phase 3: one local view full screen (decomp-3ds-mp-fullview.patch). The latch covers the
++   whole build: the views below, Racer_Draw's HUD tail and Menus_Draw read it. */
++#include "gdx3ds_fullview_shim.h"
++#define GDX_FV_BEGIN() gdx_fv_race_draw_begin()
++#define GDX_FV_END() gdx_fv_race_draw_end()
++#else
++#define GDX_FV_BEGIN()
++#define GDX_FV_END()
++#endif
++
+ Gfx* Race_Draw(Gfx* gfx) {
+ 
++    GDX_FV_BEGIN();
+     GDX_DLB(RHEAD);
+     if (D_i2_80106F10 != 0) {
+         D_i2_80106F10--;
+@@ -536,6 +548,7 @@
+         GDX_HUD_CAPTURE(gdxHudStart, HUD);
+     }
+     GDX_C5CAT(MISC);
++    GDX_FV_END();
+     return gfx;
+ #else
+     return Menus_Draw(gfx);
+diff --git a/src/overlays/ovl_i3/background.c b/src/overlays/ovl_i3/background.c
+--- a/src/overlays/ovl_i3/background.c
++++ b/src/overlays/ovl_i3/background.c
+@@ -1651,10 +1651,26 @@
+         gDPPipeSync(gfx++);
+         gDPSetPrimColor(gfx++, 0, 0, star->red, star->green, star->blue, star->alpha);
+ 
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++        {
++            /* MP phase 3 (decomp-3ds-mp-fullview.patch): the star was projected through this
++               view's split-screen mirrors (Background_UpdateStars, sim side, untouched); the
++               local view of a fullview build draws it where the full-screen viewport puts it. */
++            extern void gdx_fv_map_point(int view, f32* x, f32* y);
++            f32 gdxStarLeft = screenPosition->left;
++            f32 gdxStarTop = screenPosition->top;
++            gdx_fv_map_point(cameraIndex, &gdxStarLeft, &gdxStarTop);
++            xl = (gdxStarLeft) * 4.0f;
++            yl = (gdxStarTop) * 4.0f;
++            xh = (gdxStarLeft + 8.0f) * 4.0f;
++            yh = (gdxStarTop + 8.0f) * 4.0f;
++        }
++#else
+         xl = (screenPosition->left) * 4.0f;
+         yl = (screenPosition->top) * 4.0f;
+         xh = (screenPosition->left + 8.0f) * 4.0f;
+         yh = (screenPosition->top + 8.0f) * 4.0f;
++#endif
+ 
+         gSPTextureRectangle(gfx++, xl, yl, xh, yh, 0, 0, 0, 1 << 10, 1 << 10);
+     }
+diff --git a/src/overlays/ovl_i3/hud.c b/src/overlays/ovl_i3/hud.c
+--- a/src/overlays/ovl_i3/hud.c
++++ b/src/overlays/ovl_i3/hud.c
+@@ -12,6 +12,12 @@
+ #include ASSET_HEADER(super_textures.h)
+ #include ASSET_HEADER(common_assets_compressed.h)
+ #include "segment_symbols.h"
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++#include "gdx3ds_fullview_shim.h" /* MP phase 3: Hud_DrawPosition and the fullview HUD below */
++/* Fullview's VS rank sits 12 px left of the 1P slot. The 1P slot is sized for a two-digit place
++ * and "/30", but VS has one digit and "/4", so the stock x leaves the "/4" against the TIME label. */
++#define GDX_FV_RANK_SHIFT_X 12
++#endif
+ 
+ /* Anchor Set/Clear for the split-screen HUD; expands to nothing in a non-PORT build. Macros
+  * rather than open-coded #ifdef blocks so the stock draw order stays readable across cases
+@@ -934,6 +940,11 @@
+ 
+     left = sPositionPositions[numPlayersIndex][playerIndex][0];
+     top = sPositionPositions[numPlayersIndex][playerIndex][1];
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    if (GDX_FV_LOCAL(playerIndex)) {
++        left -= GDX_FV_RANK_SHIFT_X;
++    }
++#endif
+ 
+     digitMask = 10;
+ 
+@@ -1110,6 +1121,128 @@
+ }
+ 
+ extern s32 gNumPlayers;
++
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++/* MP phase 3 (decomp-3ds-mp-fullview.patch, gdx3ds_fullview_shim.h): a fullview build draws only
++ * the local player's HUD, in the 1P layout; every other player's HUD functions still run, in the
++ * stock order of cases 2-4 below (lap announcements, interval bookkeeping, the reverse warning's
++ * level SE all live in them), with their display-list output rewound.
++ *
++ * The local player is drawn with numPlayersIndex 0, so its rows [0][k] of the position tables must
++ * hold the 1P positions. Stock only ever reads [0][0] (1P is player 0), so filling [0][1..3] with
++ * it is invisible to every other path. */
++
++static void Hud_GdxFullviewLayout(s32 k) {
++    s32(*tables[])[4][2] = {
++        sPlayerTimerPositions, sPlayerTimePositions, sEnergyOutlinePositions, sEnergyBarPositions,
++        sSpeedPositions,       sPositionPositions,   sLapPositions,           sIntervalPositions,
++        sReversePositions,     sLivesPositions,
++    };
++    s32 i;
++
++    for (i = 0; i < ARRAY_COUNT(tables); i++) {
++        tables[i][0][k][0] = tables[i][0][0][0];
++        tables[i][0][k][1] = tables[i][0][0][1];
++    }
++}
++
++/* The 1P race portrait for VS fullview (menus.c calls it for the local player only). The stock
++ * Hud_DrawRacePortraits is not reused, for two reasons. In a non-GP mode it draws
++ * gRacersByPosition[0], the race leader, not the player. It also advances the portrait update
++ * state (Hud_UpdateCharacterPortraits / Hud_UpdatePortraitScales), which a stock VS race never
++ * touches. This function only draws: player k's portrait at the 1P slot and its place label
++ * under it, the way GP labels the player's portrait. The GP highlight flash is left out, since it
++ * picks the player among six portraits and there is only one here. */
++Gfx* Hud_GdxFullviewDrawPortrait(Gfx* gfx, s32 k) {
++    Racer* racer = &gRacers[k];
++    s32 place = racer->position - 1;
++
++    gSPDisplayList(gfx++, D_8014940);
++    gDPPipeSync(gfx++);
++    gDPLoadTextureBlock(gfx++, gCharacterPortraitTextures[racer->character], G_IM_FMT_RGBA, G_IM_SIZ_16b, 32, 32, 0,
++                        G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD,
++                        G_TX_NOLOD);
++    gSPTextureRectangle(gfx++, 24 << 2, sPortraitYPosOffsets[0] << 2, (24 + 32) << 2,
++                        (sPortraitYPosOffsets[0] + 32) << 2, 0, 0, 0, 1 << 10, 1 << 10);
++    if ((place >= 0) && (place < ARRAY_COUNT(sPositionTextures))) {
++        gDPPipeSync(gfx++);
++        gDPLoadTextureBlock(gfx++, sPositionTextures[place], G_IM_FMT_RGBA, G_IM_SIZ_16b, 16, 6, 0,
++                            G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD,
++                            G_TX_NOLOD);
++        gSPTextureRectangle(gfx++, 24 << 2, sPortraitPositionYPos[0] << 2, (24 + 16) << 2,
++                            (sPortraitPositionYPos[0] + 6) << 2, 0, 0, 0, 1 << 10, 1 << 10);
++    }
++    return gfx;
++}
++
++/* Run `call` for player j; keep its output only for the local player k. */
++#define GDX_FV_HUD_CALL(j, k, call)   \
++    do {                              \
++        Gfx* gdxFvMark = gfx;         \
++        gfx = (call);                 \
++        if ((j) != (k)) {             \
++            gfx = gdxFvMark;          \
++        }                             \
++    } while (0)
++
++static Gfx* Hud_GdxFullviewDrawHud(Gfx* gfx, s32 k) {
++    s32 npi = gNumPlayers - 1;
++    s32 j;
++
++    Hud_GdxFullviewLayout(k);
++
++    // Time (the 1P label; pure drawing)
++    gDPPipeSync(gfx++);
++    gDPLoadTextureBlock(gfx++, aHudTimeTex, G_IM_FMT_RGBA, G_IM_SIZ_16b, 24, 16, 0, G_TX_NOMIRROR | G_TX_WRAP,
++                        G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
++    gfx = Hud_DrawTimeRectangle(gfx, 0, k);
++
++    // Timer
++    gDPPipeSync(gfx++);
++    gDPSetTextureFilter(gfx++, G_TF_POINT);
++    gDPLoadTextureBlock(gfx++, aTimerSymbolsTex, G_IM_FMT_RGBA, G_IM_SIZ_16b, 8, 224, 0, G_TX_NOMIRROR | G_TX_WRAP,
++                        G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
++    for (j = 0; j < gNumPlayers; j++) {
++        GDX_FV_HUD_CALL(j, k, Hud_UpdatePlayerHudInfo(gfx, (j == k) ? 0 : npi, j));
++    }
++    for (j = 0; j < gNumPlayers; j++) {
++        GDX_FV_HUD_CALL(j, k,
++                        Hud_UpdateRaceIntervalInfo(gfx, (j == k) ? 0 : npi, j, ((j == k) || (npi < 2)) ? 1.0f : 0.75f));
++    }
++
++    // Energy Bar
++    gDPPipeSync(gfx++);
++    gDPLoadTextureBlock(gfx++, aHudEnergyTex, G_IM_FMT_RGBA, G_IM_SIZ_16b, 72, 16, 0, G_TX_NOMIRROR | G_TX_WRAP,
++                        G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
++    for (j = 0; j < gNumPlayers; j++) {
++        GDX_FV_HUD_CALL(j, k, Hud_DrawEnergyOutlineRectangle(gfx, (j == k) ? 0 : npi, j));
++    }
++
++    // Lap
++    gDPPipeSync(gfx++);
++    gDPLoadTextureBlock(gfx++, aLapTex, G_IM_FMT_RGBA, G_IM_SIZ_16b, 16, 12, 0, G_TX_NOMIRROR | G_TX_WRAP,
++                        G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
++    for (j = 0; j < gNumPlayers; j++) {
++        GDX_FV_HUD_CALL(j, k, Hud_DrawLapRectangle(gfx, (j == k) ? 0 : npi, j));
++    }
++
++    // Lap Counter
++    gDPPipeSync(gfx++);
++    gDPLoadTextureBlock(gfx++, aLapCounterSymbolsTex, G_IM_FMT_RGBA, G_IM_SIZ_16b, 8, 72, 0, G_TX_NOMIRROR | G_TX_WRAP,
++                        G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
++    for (j = 0; j < gNumPlayers; j++) {
++        GDX_FV_HUD_CALL(j, k, Hud_DrawLapCounter(gfx, (j == k) ? 0 : npi, j));
++    }
++
++    for (j = 0; j < gNumPlayers; j++) {
++        GDX_FV_HUD_CALL(j, k, Hud_DrawEnergyBar(gfx, (j == k) ? 0 : npi, j));
++    }
++    for (j = 0; j < gNumPlayers; j++) {
++        GDX_FV_HUD_CALL(j, k, Hud_DrawReverse(gfx, (j == k) ? 0 : npi, j));
++    }
++    return gfx;
++}
++#endif
+ 
+ Gfx* Hud_DrawHud(Gfx* gfx) {
+ #ifdef PORT
+@@ -1156,6 +1289,15 @@
+ #endif
+ 
+     gSPDisplayList(gfx++, D_8014940);
++
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    if (GDX_FV_K() >= 0) {
++        gfx = Hud_GdxFullviewDrawHud(gfx, GDX_FV_K());
++        gDPPipeSync(gfx++);
++        gDPSetCycleType(gfx++, G_CYC_1CYCLE);
++        return gfx;
++    }
++#endif
+ 
+     switch (gNumPlayers) {
+         case 1:
+diff --git a/src/overlays/ovl_i3/menus.c b/src/overlays/ovl_i3/menus.c
+--- a/src/overlays/ovl_i3/menus.c
++++ b/src/overlays/ovl_i3/menus.c
+@@ -16,6 +16,19 @@
+ #include ASSET_HEADER(machine_custom_gfx.h)
+ #include ASSET_HEADER(hud_gfx.h)
+ #include ASSET_HEADER(common_assets_compressed.h)
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++/* MP phase 3 (decomp-3ds-mp-fullview.patch): in a fullview build only the local player's race
++   messages and HUD are drawn, in the 1P layout; every per-player call still runs (its logic is
++   part of the game) and another player's output is rewound. GDX_FV_NP only ever replaces
++   gNumPlayers in a switch that picks screen positions. */
++#include "gdx3ds_fullview_shim.h"
++#else
++#define GDX_FV_K() (-1)
++#define GDX_FV_DROP(j) 0
++#define GDX_FV_LOCAL(j) 0
++#define GDX_FV_NPI(npi, j) (npi)
++#define GDX_FV_NP(j) gNumPlayers
++#endif
+ 
+ s16 sRaceFinishSaveTriggered;
+ s16 sMenuIsBusy;
+@@ -551,6 +564,9 @@
+ extern u32 gGameFrameCount;
+ extern s8 gTitleDemoState;
+ 
++/* fullview: the local player's slot takes the 2P top view's place (centred, full width). */
++#define GDX_FV_SLOT_NP (GDX_FV_LOCAL(playerIndex) ? 2 : gNumPlayers)
++#define GDX_FV_SLOT_P (GDX_FV_LOCAL(playerIndex) ? 0 : playerIndex)
+ Gfx* Menus_DrawVsSlot(Gfx* gfx, s32 playerIndex) {
+     s32 i;
+     s32 slotCharacterMatchCount;
+@@ -720,15 +736,15 @@
+         gDPLoadTextureBlock(gfx++, aStartStopGuideTex, G_IM_FMT_RGBA, G_IM_SIZ_16b, 64, 12, 0,
+                             G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD,
+                             G_TX_NOLOD);
+-        gSPTextureRectangle(gfx++, sPlayersVsSlotPositions[gNumPlayers][playerIndex][0] << 2,
+-                            (sPlayersVsSlotPositions[gNumPlayers][playerIndex][1] - 12) << 2,
+-                            (sPlayersVsSlotPositions[gNumPlayers][playerIndex][0] + 63) << 2,
+-                            (sPlayersVsSlotPositions[gNumPlayers][playerIndex][1] - 1) << 2, 0, 0, 0, 1 << 12, 1 << 10);
++        gSPTextureRectangle(gfx++, sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][0] << 2,
++                            (sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1] - 12) << 2,
++                            (sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][0] + 63) << 2,
++                            (sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1] - 1) << 2, 0, 0, 0, 1 << 12, 1 << 10);
+         gDPPipeSync(gfx++);
+-        gDPSetScissor(gfx++, G_SC_NON_INTERLACE, sPlayersVsSlotPositions[gNumPlayers][playerIndex][0],
+-                      sPlayersVsSlotPositions[gNumPlayers][playerIndex][1],
+-                      sPlayersVsSlotPositions[gNumPlayers][playerIndex][0] + 127,
+-                      sPlayersVsSlotPositions[gNumPlayers][playerIndex][1] + 32);
++        gDPSetScissor(gfx++, G_SC_NON_INTERLACE, sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][0],
++                      sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1],
++                      sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][0] + 127,
++                      sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1] + 32);
+         for (i = 0; i < 3; i++) {
+             upcomingSlotResultIndex = sVsSlotResultIndex[playerIndex][i] - 1;
+             if (upcomingSlotResultIndex < 0) {
+@@ -739,25 +755,25 @@
+                                 32, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK,
+                                 G_TX_NOLOD, G_TX_NOLOD);
+             scrollAmount = sVsSlotScrollPosition[playerIndex][i];
+-            left = sPlayersVsSlotPositions[gNumPlayers][playerIndex][0] + (i * 32);
+-            top = sPlayersVsSlotPositions[gNumPlayers][playerIndex][1] + scrollAmount + 32;
+-            right = sPlayersVsSlotPositions[gNumPlayers][playerIndex][0] + (i * 32) + 31;
+-            bottom = sPlayersVsSlotPositions[gNumPlayers][playerIndex][1] + scrollAmount + 63;
++            left = sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][0] + (i * 32);
++            top = sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1] + scrollAmount + 32;
++            right = sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][0] + (i * 32) + 31;
++            bottom = sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1] + scrollAmount + 63;
+             gSPScisTextureRectangle(gfx++, left << 2, top << 2, right << 2, bottom << 2, 0, 0, 0, 1 << 12, 1 << 10);
+             gDPPipeSync(gfx++);
+             gDPLoadTextureBlock(gfx++, sVsSlotPortraits[sVsSlotResultIndex[playerIndex][i]][i], G_IM_FMT_RGBA,
+                                 G_IM_SIZ_16b, 32, 32, 0, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP,
+                                 G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
+-            top = sPlayersVsSlotPositions[gNumPlayers][playerIndex][1] + scrollAmount;
+-            bottom = sPlayersVsSlotPositions[gNumPlayers][playerIndex][1] + scrollAmount + 31;
++            top = sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1] + scrollAmount;
++            bottom = sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1] + scrollAmount + 31;
+             gSPScisTextureRectangle(gfx++, left << 2, top << 2, right << 2, bottom << 2, 0, 0, 0, 1 << 12, 1 << 10);
+         }
+ 
+-        left = sPlayersVsSlotPositions[gNumPlayers][playerIndex][0];
+-        right = sPlayersVsSlotPositions[gNumPlayers][playerIndex][0] + 96;
+-        top = bottom = sPlayersVsSlotPositions[gNumPlayers][playerIndex][1];
++        left = sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][0];
++        right = sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][0] + 96;
++        top = bottom = sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1];
+         gfx = Menus_DrawBeveledBox(gfx, left, top, right, bottom, 255, 255, 255, 255);
+-        top = bottom = sPlayersVsSlotPositions[gNumPlayers][playerIndex][1] + 32;
++        top = bottom = sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1] + 32;
+         gfx = Menus_DrawBeveledBox(gfx, left, top, right, bottom, 255, 255, 255, 255);
+         gSPDisplayList(gfx++, D_80149D0);
+         if ((sVsSlotSpeed[playerIndex][VS_SLOT_0] + sVsSlotSpeed[playerIndex][VS_SLOT_1]) == 0.0f) {
+@@ -772,10 +788,10 @@
+                 gDPLoadTextureBlock(gfx++, aCharacterPortraitHighlightBorderTex, G_IM_FMT_RGBA, G_IM_SIZ_16b, 32, 32, 0,
+                                     G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK,
+                                     G_TX_NOLOD, G_TX_NOLOD);
+-                gSPTextureRectangle(gfx++, (sPlayersVsSlotPositions[gNumPlayers][playerIndex][0] + 64) << 2,
+-                                    sPlayersVsSlotPositions[gNumPlayers][playerIndex][1] << 2,
+-                                    (sPlayersVsSlotPositions[gNumPlayers][playerIndex][0] + 95) << 2,
+-                                    (sPlayersVsSlotPositions[gNumPlayers][playerIndex][1] + 31) << 2, 0, 0, 0, 1 << 12,
++                gSPTextureRectangle(gfx++, (sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][0] + 64) << 2,
++                                    sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1] << 2,
++                                    (sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][0] + 95) << 2,
++                                    (sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1] + 31) << 2, 0, 0, 0, 1 << 12,
+                                     1 << 10);
+             }
+         }
+@@ -791,16 +807,16 @@
+                 gDPLoadTextureBlock(gfx++, aCharacterPortraitHighlightBorderTex, G_IM_FMT_RGBA, G_IM_SIZ_16b, 32, 32, 0,
+                                     G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK,
+                                     G_TX_NOLOD, G_TX_NOLOD);
+-                gSPTextureRectangle(gfx++, (sPlayersVsSlotPositions[gNumPlayers][playerIndex][0] + 64) << 2,
+-                                    sPlayersVsSlotPositions[gNumPlayers][playerIndex][1] << 2,
+-                                    (sPlayersVsSlotPositions[gNumPlayers][playerIndex][0] + 95) << 2,
+-                                    (sPlayersVsSlotPositions[gNumPlayers][playerIndex][1] + 31) << 2, 0, 0, 0, 1 << 12,
++                gSPTextureRectangle(gfx++, (sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][0] + 64) << 2,
++                                    sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1] << 2,
++                                    (sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][0] + 95) << 2,
++                                    (sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1] + 31) << 2, 0, 0, 0, 1 << 12,
+                                     1 << 10);
+                 for (i = 0; i < 3; i++) {
+-                    gSPTextureRectangle(gfx++, (sPlayersVsSlotPositions[gNumPlayers][playerIndex][0] + (i * 32)) << 2,
+-                                        sPlayersVsSlotPositions[gNumPlayers][playerIndex][1] << 2,
+-                                        ((sPlayersVsSlotPositions[gNumPlayers][playerIndex][0] + (i * 32)) + 31) << 2,
+-                                        (sPlayersVsSlotPositions[gNumPlayers][playerIndex][1] + 31) << 2, 0, 0, 0,
++                    gSPTextureRectangle(gfx++, (sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][0] + (i * 32)) << 2,
++                                        sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1] << 2,
++                                        ((sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][0] + (i * 32)) + 31) << 2,
++                                        (sPlayersVsSlotPositions[GDX_FV_SLOT_NP][GDX_FV_SLOT_P][1] + 31) << 2, 0, 0, 0,
+                                         1 << 12, 1 << 10);
+                 }
+             }
+@@ -811,6 +827,8 @@
+     }
+     return gfx;
+ }
++#undef GDX_FV_SLOT_NP
++#undef GDX_FV_SLOT_P
+ 
+ Gfx* Menus_DrawBlankTimeHundredths(Gfx* gfx, s32 left, s32 top) {
+ 
+@@ -1197,7 +1215,7 @@
+         isWinner = 0;
+     }
+ 
+-    switch (gNumPlayers) {
++    switch (GDX_FV_NP(playerIndex)) {
+         case 1:
+             endLeft = 100;
+             startLeft = 100;
+@@ -1527,7 +1545,7 @@
+     s32 pad;
+     f32 scale;
+ 
+-    switch (gNumPlayers) {
++    switch (GDX_FV_NP(playerIndex)) {
+         case 1:
+             left = 100;
+             top = 88;
+@@ -1610,7 +1628,7 @@
+     s32 pad;
+     f32 scale;
+ 
+-    switch (gNumPlayers) {
++    switch (GDX_FV_NP(playerIndex)) {
+         case 1:
+             left = 120;
+             top = 90;
+@@ -1992,6 +2010,14 @@
+     s32 left;
+     s32 top;
+ 
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    if (GDX_FV_LOCAL(playerIndex)) {
++        /* The 1P race timer's place (hud.c sPlayerTimerPositions[0][0]): in every split layout the
++           finish time sits on its quadrant's timer. */
++        left = 230;
++        top = 38;
++    } else
++#endif
+     if (gNumPlayers < 3) {
+         switch (playerIndex) {
+             case 0:
+@@ -3792,7 +3818,7 @@
+     s32 digit;
+     s32 digitMask;
+ 
+-    switch (gNumPlayers) {
++    switch (GDX_FV_NP(playerIndex)) {
+         case 1:
+             if (gGameMode == GAMEMODE_TIME_ATTACK) {
+                 left = 130;
+@@ -3841,7 +3867,7 @@
+ 
+     gDPPipeSync(gfx++);
+ 
+-    if (gNumPlayers == 1) {
++    if (GDX_FV_NP(playerIndex) == 1) {
+         gDPSetScissor(gfx++, G_SC_NON_INTERLACE, 12, 16, 308, 224);
+     } else {
+         gDPSetScissor(gfx++, G_SC_NON_INTERLACE, 12, 8, 308, 232);
+@@ -4325,7 +4351,7 @@
+ #endif
+     }
+ 
+-    switch (gNumPlayers) {
++    switch (GDX_FV_NP(playerIndex)) {
+         case 1:
+             scale = 1.0f;
+             left = 100;
+@@ -4378,7 +4404,7 @@
+     }
+     sPlayerRetireHorizontalSpeed[playerIndex] -= 2.0f;
+     sPlayerRetireHorizontalSpeed[playerIndex] *= 0.9f;
+-    switch (gNumPlayers) {
++    switch (GDX_FV_NP(playerIndex)) {
+         case 1:
+             ulx = 12;
+             uly = 8;
+@@ -5656,6 +5682,9 @@
+     if (!D_80141D6C) {
+ #endif
+         if (gNumPlayers == 3) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++            Gfx* gdxFvBoxMark = gfx; /* fullview: 3P's empty quadrant is not on screen */
++#endif
+             gfx = Menus_DrawBeveledBox(gfx, 160, 120, 305, 232, 0, 0, 0, 255);
+             gDPPipeSync(gfx++);
+             gDPSetPrimColor(gfx++, 0, 0, 0, 0, 250, 255);
+@@ -5667,6 +5696,11 @@
+             gfx = Font_DrawScaledString(gfx,
+                                         (232.0f - ((Font_GetStringWidth(gCurrentTrackName, FONT_SET_3, 1) * 0.7f) / 2)),
+                                         146, gCurrentTrackName, 1, FONT_SET_3, 0, 0.7f, 0.7f);
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++            if (GDX_FV_K() >= 0) {
++                gfx = gdxFvBoxMark;
++            }
++#endif
+         }
+ 
+         gDPPipeSync(gfx++);
+@@ -5710,6 +5744,9 @@
+ #endif
+             }
+             for (i = 0; i < gNumPlayers; i++) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++                Gfx* gdxFvPlayerMark = gfx; /* fullview: another player's HUD output is rewound below */
++#endif
+                 if (!((gNumPlayers == 1) && ((sPlayerFinishState[i] == PLAYER_FINISH_SUCCESS_COMPLETE) ||
+                                              ((gCameras[playerIndex].mode == CAMERA_MODE_FINISHED_LOSER) &&
+                                               (sPlayerLoserFinishTimer[0] >= 300))))) {
+@@ -5730,6 +5767,13 @@
+                         }
+ #endif
+                     }
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++                    if (GDX_FV_LOCAL(i) && gdxHudPortraitsOnTop) {
++                        /* fullview: the local player's portrait + place at the 1P slot (hud.c) */
++                        extern Gfx* Hud_GdxFullviewDrawPortrait(Gfx* gfx, s32 k);
++                        gfx = Hud_GdxFullviewDrawPortrait(gfx, i);
++                    }
++#endif
+                     if ((gGameMode != GAMEMODE_DEATH_RACE) && (sPlayerGameoverState[i] == PLAYER_GAMEOVER_NONE) &&
+                         !(gRacers[i].stateFlags & RACER_STATE_FINISHED)
+ #ifdef PORT
+@@ -5758,7 +5802,15 @@
+                            (sPlayerMinimapPositions[2][3] = {210,152}), mid-column rather than on
+                            an edge and with no 3D view to align against. Left on the stock centred
+                            path: anchoring it would only move it away from the other three. */
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++                        Gfx* gdxFvMapMark = gfx; /* fullview: that quadrant is not on screen */
++#endif
+                         gfx = Minimap_DrawCourseMinimap(gfx, gNumPlayers - 1, 3);
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++                        if (GDX_FV_K() >= 0) {
++                            gfx = gdxFvMapMark;
++                        }
++#endif
+                     }
+                     /* COORDINATOR FIX (hw bug n60-3d7, item 4): "the race-position '2/30
+                      * racers' counter... stayed on the top screen" in hidden-HUD (ALL_BOTTOM)
+@@ -5778,7 +5830,7 @@
+                         gSPSetExtraGeometryMode(gfx++, gdxRaceAnchor);
+                     }
+ #endif
+-                    gfx = Hud_DrawPosition(gfx, gNumPlayers - 1, i);
++                    gfx = Hud_DrawPosition(gfx, GDX_FV_NPI(gNumPlayers - 1, i), i);
+ #ifdef PORT
+                     if (gdxRaceAnchor != 0) {
+                         gSPClearExtraGeometryMode(gfx++, gdxRaceAnchor);
+@@ -5800,13 +5852,18 @@
+                         gSPSetExtraGeometryMode(gfx++, gdxRaceAnchor);
+                     }
+ #endif
+-                    gfx = Hud_DrawPlayerSpeed(gfx, gNumPlayers - 1, i);
++                    gfx = Hud_DrawPlayerSpeed(gfx, GDX_FV_NPI(gNumPlayers - 1, i), i);
+ #ifdef PORT
+                     if (gdxRaceAnchor != 0) {
+                         gSPClearExtraGeometryMode(gfx++, gdxRaceAnchor);
+                     }
+ #endif
+                 }
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++                if (GDX_FV_DROP(i)) {
++                    gfx = gdxFvPlayerMark;
++                }
++#endif
+             }
+         }
+     }
+@@ -6188,6 +6245,9 @@
+     } else { // VS MODE
+         if (!D_80141D6C) {
+             for (i = 0; i < gTotalRacers; i++) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++                Gfx* gdxFvRacerMark = gfx; /* fullview: only the local player's messages stay */
++#endif
+                 racer = &gRacers[i];
+                 if (i < gNumPlayers) {
+                     if (racer->lap == gTotalLapCount) {
+@@ -6244,7 +6304,12 @@
+                     if ((D_800E5FBC != 1) || (racer->position != 1)) {
+                         gfx = Menus_DrawPlayerRetire(gfx, i);
+                     }
++                }
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++                if (GDX_FV_DROP(i)) {
++                    gfx = gdxFvRacerMark;
+                 }
++#endif
+             }
+         }
+         if ((D_800E5FBC == 1) && (gTitleDemoState == TITLE_DEMO_INACTIVE)) {
+@@ -6268,7 +6333,15 @@
+     if ((gSettingVsSlot != 0) && (D_800E5FBC != 1) && (gNumPlayers >= 2)) {
+         for (i = 0; i < gNumPlayers; i++) {
+             if ((gRacers[i].stateFlags & RACER_STATE_CRASHED) && !(gRacers[i].stateFlags & RACER_STATE_FINISHED)) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++                Gfx* gdxFvSlotMark = gfx;
++#endif
+                 gfx = Menus_DrawVsSlot(gfx, i);
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++                if (GDX_FV_DROP(i)) {
++                    gfx = gdxFvSlotMark; /* the slot runs (it is VS logic); only its picture goes */
++                }
++#endif
+             }
+         }
+     }
+diff --git a/src/overlays/ovl_i3/minimap.c b/src/overlays/ovl_i3/minimap.c
+--- a/src/overlays/ovl_i3/minimap.c
++++ b/src/overlays/ovl_i3/minimap.c
+@@ -3,6 +3,16 @@
+ #include "fzx_game.h"
+ #include "fzx_racer.h"
+ #include ASSET_HEADER(course_track_gfx.h)
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++/* MP phase 3 (decomp-3ds-mp-fullview.patch): the local player of a fullview build always shows
++   its minimap, at the 1P minimap's place and size. The course texture stays rasterised at the
++   split-screen 0.75 (Minimap_InitCourseMinimap keys it on gNumPlayers, and the bottom-screen race
++   map reports that scale), so the local view draws it magnified to the 1P 1.0 size and places the
++   markers with the 1P formula. The C-left toggle above it is untouched. */
++#include "gdx3ds_fullview_shim.h"
++#else
++#define GDX_FV_LOCAL(j) 0
++#endif
+ 
+ #ifndef EXPANSION_KIT
+ u8 sCourseMinimapTex[0x1000] = { 0 };
+@@ -223,6 +233,7 @@
+     s32 left;
+     s32 top;
+     f32 minimapScale;
++    f32 rasterScale;
+     s32 playerMarkerX;
+     s32 playerMarkerY;
+ 
+@@ -232,7 +243,7 @@
+         }
+     }
+     if (((numPlayersIndex != 2) || (playerIndex != 3)) && (gPlayerMinimapLapCounterToggle[playerIndex] == 0) &&
+-        (numPlayersIndex >= 2)) {
++        (numPlayersIndex >= 2) && !GDX_FV_LOCAL(playerIndex)) {
+         return gfx;
+     }
+ 
+@@ -249,8 +260,14 @@
+             break;
+     }
+ 
++    rasterScale = minimapScale;
+     left = sPlayerMinimapPositions[numPlayersIndex][playerIndex][0];
+     top = sPlayerMinimapPositions[numPlayersIndex][playerIndex][1];
++    if (GDX_FV_LOCAL(playerIndex)) {
++        left = sPlayerMinimapPositions[0][0][0];
++        top = sPlayerMinimapPositions[0][0][1];
++        minimapScale = 1.0f;
++    }
+ 
+     gSPDisplayList(gfx++, D_8014940);
+     gDPLoadTLUT_pal256(gfx++, sCourseMinimapPalette);
+@@ -259,14 +276,15 @@
+     for (i = 0; i < 2; i++) {
+         gDPPipeSync(gfx++);
+         gDPLoadTextureBlock(
+-            gfx++, (sCourseMinimapTex + (i * MINIMAP_MAX_DIMENSION * (s32) (MINIMAP_MAX_DIMENSION * minimapScale)) / 2),
+-            G_IM_FMT_CI, G_IM_SIZ_8b, MINIMAP_MAX_DIMENSION, (s32) (MINIMAP_MAX_DIMENSION * minimapScale) / 2, 0,
++            gfx++, (sCourseMinimapTex + (i * MINIMAP_MAX_DIMENSION * (s32) (MINIMAP_MAX_DIMENSION * rasterScale)) / 2),
++            G_IM_FMT_CI, G_IM_SIZ_8b, MINIMAP_MAX_DIMENSION, (s32) (MINIMAP_MAX_DIMENSION * rasterScale) / 2, 0,
+             G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
+         gSPTextureRectangle(gfx++, left << 2, (s32) (top + (((i * MINIMAP_MAX_DIMENSION) / 2) * minimapScale)) << 2,
+                             (s32) (left + MINIMAP_MAX_DIMENSION * minimapScale) << 2,
+                             (s32) (top + ((i * MINIMAP_MAX_DIMENSION) / 2 + (MINIMAP_MAX_DIMENSION / 2)) * minimapScale)
+                                 << 2,
+-                            0, 0, 0, 1 << 10, 1 << 10);
++                            0, 0, 0, (s32) ((1 << 10) * rasterScale / minimapScale),
++                            (s32) ((1 << 10) * rasterScale / minimapScale));
+     }
+ 
+     gSPDisplayList(gfx++, D_80149A0);

@@ -75,6 +75,8 @@ sdmc:/
 │       ├── fzerox.o2r                    (from §3 — REQUIRED; without it the game won't boot)
 │       ├── gdiffuser.o2r                 (from §3 — always generate both together; without it
 │       │                                  the game still boots but engine/UI assets are missing)
+│       ├── hudbake.cache                 (from §3, optional — the pre-baked bottom-screen HUD; the
+│       │                                  game bakes and writes it itself on first boot if absent)
 │       ├── gdiffuser.ini                 (optional settings — §9-§10; the game writes this itself)
 │       ├── media/
 │       │   └── baserom.jp.ek.ndd         (Expansion Kit builds only — §6)
@@ -213,28 +215,35 @@ two faces:
 In 2–4 player races the HUD always stays on the top screen (the bottom screen doesn't have room
 to share four players' worth of readouts).
 
-**Outside a race — the idle view.** A checkerboard backdrop with the G-Diffuser logo, so the
-bottom screen doesn't sit blank at menus.
+In Grand Prix, your spare machines show under ENERGY on the DASH. The frame rate shows as small
+text (`60 FPS`) in the top-right corner of the DASH's course map; `[debug] bottom_fps = 0` hides
+it (§10).
 
-Either view has a **DEBUG** button in the bottom-left corner that hands the bottom screen over to
-the settings console described below (one of that console's own tabs happens to also be named
-**DBG** — don't confuse the two). Tapping the tab bar's **DASH**/**RACE** entry (or holding
-**SELECT**) brings DASH/the idle view back.
+**At the title and main menu — Home.** The G-Diffuser logo, your pilot and console model along
+the bottom, and a **SETTINGS** button at the bottom right. Picking **VS** on the main menu opens
+the bottom screen's **MULTIPLAYER** menu (see [`MULTIPLAYER.md`](MULTIPLAYER.md)). Elsewhere in
+the menus the bottom screen shows the logo on its own.
 
-**The settings console.** A row of tabs across the top:
+**SETTINGS** (tap it, or press **SELECT** on Home) opens the player settings, with these tabs
+across the top:
 
 | Tab | What it's for |
 |---|---|
-| **STA** | A quick status readout (memory headroom, build id) — nothing to change here. |
-| **DSP** | Display (display settings — not to be confused with the dspfirm.cdc DSP firmware from §7): border mode and rival detail — see §9.1. |
+| **EXIT** | Back to Home. Always the first tab, black on yellow. **B** does the same outside races. |
+| **DSP** | Display (display settings — not to be confused with the dspfirm.cdc DSP firmware from §7): border mode, rival detail, and true widescreen — see §9.1. |
 | **3D** | Stereoscopic 3D depth, if you use the 3D slider — see §9.1. |
 | **AUD** | Master volume. |
 | **IN** | Steering feel, D-Pad steering, and button remapping — see §9.1. |
-| **LG** | A scrollable copy of the on-device log, handy without pulling the SD card. |
-| **AB** | Build / version information. |
 
-(A **DBG** tab with low-level renderer toggles also exists, for diagnosing problems rather than
-everyday play — see `DIAGNOSTICS.md` if you're asked to use it.)
+Everything you change there is saved to `gdiffuser.ini` as you go.
+
+**The developer console.** Holding **L+R+SELECT for 1.5 seconds** opens the full console instead:
+the tabs above plus status (**STA**), the on-device log (**LG**), low-level renderer toggles
+(**DBG**), the multiplayer state (**MP**) and build information (**AB**). It's meant for
+diagnosing problems rather than everyday play — see `DIAGNOSTICS.md` if you're asked to use it.
+The same chord closes it. With `[debug] dev_console = 1`, SETTINGS itself carries the developer
+tabs after the player ones (there is no DEBUG button on Home), and the race DASH shows a
+**SETTINGS** button that opens the same pages.
 
 ### 9.1 Settings worth knowing about
 
@@ -243,16 +252,27 @@ everyday play — see `DIAGNOSTICS.md` if you're asked to use it.)
   Full-bleed and hybrid can show a sliver of empty sky at the very edges in some scenes, since
   the original backdrops were painted for the narrower 4:3 view — authentic mode doesn't have
   this, at the cost of the black bars it was always drawn with.
+- **True widescreen in races (DSP tab or ini, experimental, default off):** the DSP tab's
+  WIDESCREEN row (or `[display] widescreen = 1`) takes effect the next time you start the game. It
+  makes every race fill the top screen at its real 5:3 shape with nothing stretched — you see
+  more of the course to the left and right, the field of view top to bottom is the original's,
+  and the race HUD moves out to the screen edges. Menus keep their usual layout and your border
+  mode. In VS split screen each view widens the same way. It draws more of the course and field
+  (about a fifth more geometry per race frame, measured on the emulator), so on the Old 3DS
+  expect a lower frame rate in crowded races. Ported from the G-Diffuser PC port's
+  widescreen options; see §10.
 - **Rival detail (DSP tab):** NATIVE / REDUCED / MINIMAL / LOW — simplifies distant rival
   machines for more fps in big fields. Default is REDUCED on Old 3DS, NATIVE on New 3DS (part of
   the `[perf] preset = auto` bundle, §10). An AUTO toggle on the same tab raises the cut
   automatically in a crowded race and relaxes it when the field thins out; whatever you pick by
   hand is treated as the floor it won't go below.
 - **Stereoscopic 3D (3D tab):** on by default on both consoles, as part of the `[perf] preset =
-  auto` bundle (§10) — there's no console-UI toggle for it, only the ini key (`[stereo] enabled`,
-  §10). Set `enabled = 0` in `gdiffuser.ini` and relaunch if you'd rather play in 2D. On New 3DS,
-  depth (IOD) and convergence are live steppers on the 3D tab while the 3D slider is up. Slider
-  down (or `enabled = 0`) renders identically to 2D.
+  auto` bundle (§10) — there's no settings toggle for it, only the ini key (`[stereo] enabled`,
+  §10); the 3D slider turns it down. Set `enabled = 0` in `gdiffuser.ini` and relaunch if you'd
+  rather play in 2D. Depth (IOD) and convergence are live steppers on the 3D tab while the 3D
+  slider is up. Slider down (or `enabled = 0`) renders identically to 2D. On New 3DS the menus
+  also get layered 3D depth by default (`[stereo] menu_depth`, §10). On Old 3DS, multiplayer
+  races are 2D by default (`[stereo] mp_3d = 1` for 3D, locked at 30 fps there).
 - **Steering feel (IN tab):** circle-pad deadzone, range, and response curve, plus whether the
   D-Pad can steer (off / full / ramps up while held) — all four are live steppers with a pad
   readout so you can see the effect immediately.
@@ -260,8 +280,8 @@ everyday play — see `DIAGNOSTICS.md` if you're asked to use it.)
   it bound to; a RESET DEFAULTS option is on the same tab.
 
 Everything above except `[stereo] enabled` is saved back to `gdiffuser.ini` automatically — you
-never have to hand-edit the file unless you want to set something before first boot, or turn on
-3D. See §10 for the ini keys directly.
+never have to hand-edit the file unless you want to set something before first boot, or turn
+3D off. See §10 for the ini keys directly.
 
 ## 10. `gdiffuser.ini` — the keys worth setting by hand
 
@@ -280,6 +300,13 @@ y_maps_to_b = 1      ; 3DS Y also boosts, alongside B (so A+Y accelerate+boost i
 
 [display]
 border_mode = 1     ; 0 authentic, 1 full-bleed (default), 2 zoom, 3 hybrid
+widescreen = 0      ; 1 = races render at the top screen's real 5:3: wider view (Hor+), HUD at
+                    ; the screen edges, no stretch (overrides border_mode in 1P races; VS keeps
+                    ; border_mode's scene scale). Menus unchanged. Default 0 -- experimental,
+                    ; not yet tried on hardware. Restart to apply.
+widescreen_cull_pct = 115 ; with widescreen = 1, 1P races: how far past the screen edge the
+                    ; course keeps drawing (100..200). 100 = the old exact-edge cull, which let
+                    ; trackside buildings/walls vanish in the outer side bands. Display only.
 
 [audio]
 master_volume = 100 ; 0-100
@@ -289,6 +316,18 @@ enabled = 1          ; ON by default on both consoles (bundled with [perf] prese
                      ; set to 0 and reboot to force 2D — not a console-UI toggle
 iod = 12             ; depth, 0-40 px; default 12; live on the 3D tab while enabled
 convergence = 0.25   ; 0.00-0.90; default 0.25; live on the 3D tab while enabled
+menu_depth = 1       ; layered 3D depth in the menus (backgrounds behind, text in front).
+                     ; Default 1 on New 3DS (part of the auto preset), 0 on Old 3DS; set
+                     ; either way. Races aren't affected
+mp_3d = 0            ; Old 3DS only: 1 = 3D in multiplayer races (locked at 30 fps there);
+                     ; default 0 = multiplayer races in 2D (New 3DS: 3D as usual)
+
+[net]
+mp_lan = 1           ; PLAY NEARBY (local wireless + the same Wi-Fi). Default 1; 0 turns it off
+rendezvous = 3.149.138.4:27200 ; PLAY ONLINE's server. Leave it out to use the project's hosted
+                     ; server (the default in this release; temporary), set your own server's
+                     ; dotted IPv4[:port], or `off` (or empty) to turn online rooms off
+mp_name = PLAYER     ; your name in rooms (default: your 3DS profile name)
 
 [perf]
 preset = auto        ; auto (default, tuned per console model) | off | o3ds | n60 — see note below
@@ -302,6 +341,7 @@ filelog = 0           ; 1 = mirror the boot/warning/crash log to sdmc:/3ds/gdiff
 filelog_max_kb = 1024 ; log size cap (1-8192); logging stops at the cap with a marker
 crashdump = 0        ; 1 = write a crash dump (crash.txt / crash-EK.txt) if the game faults;
                      ; default off — see §13 for bug reports
+bottom_fps = 1       ; 0 = hide the FPS counter in the DASH map's top-right corner (default on)
 ```
 
 **A note on `[perf] preset`.** `auto` (the default) needs no ini at all: at boot it detects your
@@ -348,7 +388,8 @@ to set one.
 | EK disk image rejected as truncated | the `.ndd` is incomplete (under 60 MB) | Re-dump/re-download it; it should be about 64.9 MB. |
 | Freeze at boot with an EK disk mounted | a fan-translated disk image — not supported in this release | Use the retail Japanese `baserom.jp.ek.ndd` instead — §6. |
 | Crashes / black screen right after launch | wrong build for the console (ran the New 3DS build on an Old 3DS) | Use the O3DS build instead — its memory layout assumes more RAM than an Old 3DS has — §2. |
-| No 3D even with the slider up | 3D is off by default and needs an ini edit | Set `[stereo] enabled = 1` in `gdiffuser.ini` (§10) and relaunch — there's no in-game toggle for this one. |
+| No 3D even with the slider up | 3D is on by default, so something in `gdiffuser.ini` turned it off: `[stereo] enabled = 0`, or `[perf] preset = off` (the plain settings have stereo off). On Old 3DS, multiplayer races are 2D unless `[stereo] mp_3d = 1` | Remove the key (or set `[stereo] enabled = 1`) and relaunch (§10). |
+| Multiplayer problems (CAN'T JOIN, UPDATE REQUIRED, NO SERVER ...) | — | See [`MULTIPLAYER.md`](MULTIPLAYER.md) "Troubleshooting". |
 | Blank/frozen screen, or a hang | — | Set `[debug] filelog = 1`, reproduce, then pull `log.txt` (or `log-EK.txt`) — §13. |
 | Luma shows its red/pink exception screen | a crash in the game or port code | Photograph the screen (it shows the PC/LR registers), then follow §13 for a bug report. |
 

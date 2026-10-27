@@ -1,0 +1,34 @@
+diff --git a/src/game/racer.c b/src/game/racer.c
+--- a/src/game/racer.c
++++ b/src/game/racer.c
+@@ -5021,6 +5021,7 @@
+ 
+ #if defined(PORT) && defined(__3DS__)
+ extern int gdx_autodrive_racer(int racerId); /* port/3ds/gdx3ds_autodrive.c, [debug] autodrive */
++extern int gdx_autodrive_mix(int racerId);   /* mp-online test bots: 1 = blend the player's pad in */
+ #endif
+ 
+ void Racer_UpdateMovement(Racer* racer) {
+@@ -5053,6 +5054,22 @@
+         dummyController.buttonCurrent &= BTN_A;
+         dummyController.buttonPressed &= BTN_A;
+         dummyController.buttonReleased &= BTN_A;
++        if (gdx_autodrive_mix(racer->id)) {
++            /* mp-online [net] mp_bot: the exchanged pad still steers a little and leans, so every
++               console's race depends on every console's pad (a lockstep test that proves the
++               pads, not just the CPU driver, are identical everywhere). */
++            const Controller* pad = &gControllers[gPlayerControlPorts[racer->id]];
++            s32 sx = dummyController.stickX + pad->stickX / 4;
++            if (sx > 80) {
++                sx = 80;
++            } else if (sx < -80) {
++                sx = -80;
++            }
++            dummyController.stickX = (s8) sx;
++            dummyController.buttonCurrent |= pad->buttonCurrent & (BTN_R | BTN_Z);
++            dummyController.buttonPressed |= pad->buttonPressed & (BTN_R | BTN_Z);
++            dummyController.buttonReleased |= pad->buttonReleased & (BTN_R | BTN_Z);
++        }
+         racer->energy = racer->maxEnergy;
+         GDX_LSPLIT(PHYS);
+         Racer_UpdateFromControls(racer, &dummyController);

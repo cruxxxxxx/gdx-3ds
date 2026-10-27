@@ -214,3 +214,207 @@ def build(D, C):
              'de-duplication and pricing rules, is how to extend it. Until then, every dollar and token figure on this page is first-phase '
              'only, and should be read that way.</div>')
     return page("cost.html", "What It Cost", "".join(b))
+
+
+# ---------- Revision A (2026-10-26): the whole project, every phase, from pa_census.json ----------
+
+PA_STYLE = """<style>
+.pa-head { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(300px,100%),1fr)); gap:28px 36px; margin:28px 0 14px; }
+.pa-head > div { border-top:1px solid var(--rule); padding:12px 0 4px; container-type:inline-size; min-width:0; }
+.pa-head > div.here { border-top:3px solid var(--tone); padding-top:10px; }
+.pa-head .k { font-family:var(--sans); font-size:10.5px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--ink); }
+.pa-head .v { font-family:var(--sans); font-size:32px; font-size:clamp(26px, 7.4cqi, 42px); line-height:1.02; margin:12px 0 12px; text-wrap:balance; }
+.pa-head .s { max-width:52ch; }
+.pa-head .s { font-size:13.5px; color:var(--ink2); line-height:1.45; }
+</style>"""
+
+PA_MODELS = [
+    ("claude-opus-5-5", "Opus 5.5", "--c1"), ("claude-fable-5", "Fable 5", "--c2"), ("claude-opus-5", "Opus 5", "--c3"),
+    ("claude-fable-5-1", "Fable 5.1", "--c6"), ("claude-sonnet-5", "Sonnet 5", "--c4"), ("claude-opus-4-8", "Opus 4.8", "--c7"),
+    ("claude-haiku-4-5-20251001", "Haiku 4.5", "--c8"),
+]
+PA_PHASES = [
+    ("first", "New 3DS, to v0.9.0", "2026-08-11 → 09-03"),
+    ("second", "Native fork, to v1.0.0", "2026-09-07 → 10-19"),
+    ("after_v1", "v1.1.0 work", "2026-10-20 → 10-26"),
+    ("gap", "Between phases", "2026-09-04 → 09-06"),
+]
+
+
+def build_current(D):
+    import pa_facts as F
+    C, T, PH = F.C, F.TOT, F.PH
+    ppm = C["per_phase_model"]
+    b = [PA_STYLE]
+    b.append('<p class="eyebrow">11 · Cost</p><h1>What it cost to build</h1>')
+    b.append('<div class="pa-head">'
+             '<div><div class="k">A human team (estimate)</div>'
+             f'<div class="v big-num">{F.HEADLINE_HUMAN.replace("~", "")}</div>'
+             f'<div class="s">About {F.HUMAN_MONTHS[0]:.0f}–{F.HUMAN_MONTHS[1]:.0f} months with a team of {F.TEAM} senior engineers. '
+             'Method and inputs are under "The human estimate" below.</div></div>'
+             '<div class="here t-gold"><div class="k">What it took here</div>'
+             f'<div class="v big-num glow">{F.musd(F.COST_LOGGED)}–{F.musd(F.COST_1H)} API · ~{F.AUTHOR_H[0]}–{F.AUTHOR_H[1]} h</div>'
+             f'<div class="s">Claude at published API list prices, plus one person directing, testing on hardware and copying SD cards, '
+             f'over {F.CAL_WEEKS} calendar weeks (2026-08-11 → 10-26). The hours are the author\'s own figure, checked against the transcripts; see "The author\'s time".</div></div>'
+             '</div>')
+    b.append(f'<p class="lede">Priced the same way, the human route costs roughly {F.HUMAN_USD[0] / F.HERE_USD[1]:.0f}–{F.HUMAN_USD[1] / F.HERE_USD[0]:.0f}× '
+             f'more, even after billing the author\'s hours at a senior engineer\'s rate (${F.AUTHOR_RATE}/h, which puts this project at '
+             f'{F.musd(F.HERE_USD[0])}–{F.musd(F.HERE_USD[1])}). The token and API figures are counted exactly from the session transcripts; '
+             'the human figures are estimates and the author\'s hours come from the transcripts and the author, and the page says how each was made.</p>')
+    b.append(f'<div class="note"><b>Updated 2026-10-26.</b> The first version of this page priced only the first phase (08-11 to 09-03): '
+             f'3.17 B tokens and {F.money(F.FIRST_PUBLISHED)}. This version counts every phase through 2026-10-26 (census run '
+             f'{F.CENSUS_AT}; the last day is still open): <b>{F.big(F.tokens(T))} tokens and {F.money(F.COST_1H)}</b> by the same method, '
+             f'or <b>{F.money(F.COST_LOGGED)}</b> billing each cache write at the duration it actually logged (see "Prices used").</div>')
+    b.append(tiles([
+        (F.big(F.tokens(T)), "tokens processed, all sessions, subagents and workflow agents, 08-11 to 10-26", "blue"),
+        (F.money(F.COST_1H), "at API list prices, every cache write at the 1-hour rate (the first-phase page's method)", "gold"),
+        (F.money(F.COST_LOGGED), "at API list prices, each cache write at the duration it logged (5 minutes for most)", "gold"),
+        (f"{T['turns']:,}", "API calls (assistant turns) after de-duplication", False),
+        (big(T["output"]), "output tokens: the text and code the models actually wrote", False),
+        (f"{F.PROMPTS}", "human prompts typed into the project's sessions", False),
+        (f"{F.SUBAGENTS}", "background subagents launched with the Agent tool", False),
+        (f"{F.WORKFLOW_AGENTS:,}", "short-lived agents inside deep-research workflows", False),
+    ]))
+
+    b.append('<h2>By phase</h2>')
+    rows = []
+    for k, name, dates in PA_PHASES:
+        p = PH.get(k)
+        if not p:
+            continue
+        ag = f"{F.AGENTS.get('subagent|' + k, 0)} / {F.AGENTS.get('workflow|' + k, 0):,}"
+        rows.append([f"<b>{esc(name)}</b>", f'<span style="white-space:nowrap">{dates[5:]}</span>', f"{p['turns']:,}", big(F.tokens(p)), big(p["output"]), ag,
+                     money(p["cost_B"]), money(p["cost_logged"])])
+    rows.append(["<b>Total</b>", '<span style="white-space:nowrap">08-11 → 10-26</span>', f"<b>{T['turns']:,}</b>", f"<b>{F.big(F.tokens(T))}</b>", f"<b>{big(T['output'])}</b>",
+                 f"<b>{F.SUBAGENTS} / {F.WORKFLOW_AGENTS:,}</b>", f"<b>{money(F.COST_1H)}</b>", f"<b>{money(F.COST_LOGGED)}</b>"])
+    b.append(table(["Phase", "Dates", "API calls", "Tokens", "Output", "Subagents / workflow agents", "Cost, 1 h writes", "Cost, as logged"],
+                   rows, num_cols=(2, 3, 4, 5, 6, 7)))
+    cats = [n.replace(", ", "|") for k, n, _ in PA_PHASES if k in PH and k != "gap"]
+    keys = [k for k, _, _ in PA_PHASES if k in PH and k != "gap"]
+    series = [(lab, col, [ppm.get(k + "|" + m, {}).get("cost_B", 0) / 1e3 for k in keys]) for m, lab, col in PA_MODELS]
+    b.append(figure(stacked_bars(cats, series, ylabel="thousands of USD, 1-hour cache writes", dec=1),
+                    f"<b>The second phase cost about two and a half times the first.</b> It ran {43} calendar days against 24, on more "
+                    "agents in parallel, with larger contexts. Opus 5.5 carried more than half of the second phase's spend and nearly all of "
+                    "the work since v1.0.0; Fable 5 carried most of the first phase.",
+                    legend([(lab, col) for _, lab, col in PA_MODELS])))
+
+    b.append('<h2>Prices used</h2>')
+    b.append('<p>Published Claude API list prices in dollars per million tokens: the same table the first version of this page used, '
+             'with the two models that arrived since (Opus 5.5 and Sonnet 5) added at their published rates. Cache reads are 0.1× input '
+             'except where listed.</p>')
+    b.append(table(["Model", "Input", "Output", "Cache write (1 h)", "Cache write (5 min)", "Cache read"], [
+        ["Claude Fable 5.1", "$10", "$50", "$20", "$12.50", "$0.25"],
+        ["Claude Fable 5", "$10", "$50", "$20", "$12.50", "$1.00"],
+        ["Claude Opus 5 / Opus 4.8", "$5", "$25", "$10", "$6.25", "$0.50"],
+        ["Claude Opus 5.5", "$4", "$20", "$8", "$5.00", "$0.20"],
+        ["Claude Sonnet 5", "$2", "$10", "$4", "$2.50", "$0.20"],
+        ["Claude Haiku 4.5", "$1", "$5", "$2", "$1.25", "$0.10"],
+    ], num_cols=(1, 2, 3, 4, 5)))
+    cw = T["cw_1h"] + T["cw_5m"]
+    b.append(f'<div class="assume"><b>A correction to the first version.</b> It billed every cache write at the 1-hour rate, on the belief that '
+             f'1 hour was the TTL these sessions used. The usage records say otherwise: of {big(cw)} cache-write tokens that carry a '
+             f'duration, {100 * T["cw_5m"] / cw:.0f}% were 5-minute writes. Billed as logged, the first phase comes to '
+             f'{money(PH["first"]["cost_logged"])}, not {money(PH["first"]["cost_B"])}, and the whole project to {money(F.COST_LOGGED)}. '
+             'Both figures are shown because the first is the like-for-like update of the number this page used to print and the second '
+             'is the better estimate. The user\'s Claude plan is not billed per token; these are what the same usage would have cost on '
+             'the API. Web searches and context compactions are not in the transcripts and are not counted (in the first phase they '
+             'came to about $13).</div>')
+
+    b.append('<h2>By model</h2>')
+    rows = []
+    for m, lab, col in PA_MODELS:
+        v = C["per_model"].get(m)
+        if not v:
+            continue
+        rows.append([f"<code>{esc(m)}</code>", f"{v['turns']:,}", f"{v['output']:,}", f"{v['cache_read']:,}",
+                     money(v["cost_B"]), money(v["cost_logged"])])
+    b.append(table(["Model", "API calls", "Output tokens", "Cache-read tokens", "Cost, 1 h writes", "Cost, as logged"], rows, num_cols=(1, 2, 3, 4, 5)))
+
+    b.append('<h2>Spend by day</h2>')
+    import datetime
+    d0, d1 = (datetime.date.fromisoformat(x) for x in C["date_range"])
+    days = [(d0 + datetime.timedelta(n)).isoformat() for n in range((d1 - d0).days + 1)]
+    svg = day_bars(days, [C["per_day"].get(d, {}).get("cost_B", 0) for d in days], ylabel="USD per day, 1-hour cache writes", fmt=lambda v: f"${v:,.0f}",
+                   marks={"2026-08-14": "first race", "2026-09-29": "Old 3DS boots", "2026-10-19": "v1.0.0"})
+    b.append(figure(svg, f"<b>{F.API_DAYS} days with API calls in {len(days)} calendar days.</b> The first phase spent in a few large bursts between "
+                    "plan-allowance pauses. The second phase's heaviest days were 09-23 (fitting the Old 3DS build into its memory), "
+                    "09-29 to 10-02 (the first Old 3DS hardware session through the first native-renderer race) and 10-08, the end of "
+                    f"the 3D-at-60 push and the most expensive day of the project at {money(C['per_day']['2026-10-08']['cost_B'])}. "
+                    "Hover a bar for its value."))
+
+    b.append('<h2>The human estimate</h2>')
+    b.append('<p>A rough comparison, not a quote. The scope a team would face is what shipped: a citro3d rendering backend, a 32-bit sweep, '
+             'audio on the DSP, stereo, lifecycle, an owned native renderer sized to the Old 3DS\'s instruction cache, the 64DD Expansion Kit, '
+             'a bottom-screen dashboard and menus, and 2–4 player multiplayer over local wireless and the internet, on two consoles.</p>')
+    b.append(table(["Input", "Value", "Basis"], [
+        ["Code written for the port", f"{F.LOC_PORT:,} lines", "<code>port/3ds</code> at <code>ac33c30</code>, excluding the vendored "
+         "libultraship subset, third-party libraries, generated asset headers and docs; includes the patch stack and "
+         f"{F.LOC_PORT_TESTS:,} lines of tests, probes and harness. Build and dev tools add another {F.LOC_TOOLS:,}, not counted below"],
+        ["Lines a human team would need", f"{F.HUMAN_LINES[0] / 1e3:.0f}k–{F.HUMAN_LINES[1] / 1e3:.0f}k",
+         "Half to all of the production code. The agents wrote heavily instrumented code (receipts, A/B arms, levers); "
+         "a team would write less of it for the same result"],
+        ["Rate", f"{F.HUMAN_RATE[1]}–{F.HUMAN_RATE[0]} lines per engineer-day", "The rate the first version of this page used for low-level "
+         f"port work once debugging and hardware loops are counted; {F.DAYS_PER_YEAR} working days a year"],
+        ["Effort", f"{F.HUMAN_EY[0]:.1f}–{F.HUMAN_EY[1]:.1f} engineer-years", "Lines ÷ rate"],
+        ["Cost", f"{F.musd(F.HUMAN_USD[0])}–{F.musd(F.HUMAN_USD[1])}", f"${F.LOADED[0] // 1000}k–${F.LOADED[1] // 1000}k loaded per senior "
+         "engineer-year (US; $20–25k a month, as before)"],
+        ["Calendar", f"about {F.HUMAN_MONTHS[0]:.0f}–{F.HUMAN_MONTHS[1]:.0f} months", f"A team of {F.TEAM}, ignoring hiring and ramp-up"],
+    ]))
+    b.append('<p>A check against people who have done comparable work: Ship of Harkinian, the Ocarina of Time PC port, was built by a '
+             'volunteer team from November 2021, when the decompilation was finished, to its first release in March 2022; 2 Ship 2 '
+             'Harkinian, the Majora\'s Mask port on the same libultraship base, shipped in May 2024, six months after its decompilation '
+             'was finished (<a href="https://en.wikipedia.org/wiki/Ship_of_Harkinian">Wikipedia</a>). Those are PC ports with no memory '
+             'or frame budget to speak of. The N64-on-3DS projects listed on <a href="boundaries.html">Pushing the boundaries</a> are '
+             'hobby efforts that, by their own READMEs, mostly target the New 3DS at 30 fps or with interpolation. Nothing here '
+             'contradicts the range above; nothing narrows it much either.</p>')
+
+    b.append('<h2>The author\'s time</h2>')
+    b.append(f'<p>The transcripts hold {F.PROMPTS} prompts typed into this project\'s sessions on 49 days between 08-10 and 10-26 '
+             f'(US Eastern time). Grouping prompts less than 20–45 minutes apart into sittings, and adding 15 minutes to each, gives '
+             f'{F.AUTHOR_KEYBOARD_H[0]}–{F.AUTHOR_KEYBOARD_H[1]} hours at the keyboard. The author confirms the total was about '
+             f'{F.AUTHOR_H[0]}–{F.AUTHOR_H[1]} hours: hardware testing, SD-card copies, photographing screens and reading the docs '
+             'leave no trace in the transcripts, but they largely overlapped with sittings or were short, so the total is close to '
+             'the keyboard time. Prompts fall on every day of the week and at every hour from '
+             '8 am to 3 am, so this was not only evenings.</p>')
+    b.append('<p>No code was written by hand. The author\'s work was direction (what to build next, what to drop), judgement on '
+             'evidence (which experiments were real wins), and the hardware loop the agents could not run themselves.</p>')
+
+    b.append('<h3>Side by side</h3>')
+    b.append(table(["", "This project", "Human team, estimate"], [
+        ["Calendar", f"{F.CAL_WEEKS} weeks (08-11 → 10-26), {F.API_DAYS} days with API activity",
+         f"{F.HUMAN_MONTHS[0]:.0f}–{F.HUMAN_MONTHS[1]:.0f} months with {F.TEAM} engineers"],
+        ["Money", f"{money(F.COST_LOGGED)}–{money(F.COST_1H)} API-equivalent", f"{F.musd(F.HUMAN_USD[0])}–{F.musd(F.HUMAN_USD[1])}"],
+        ["People", f"one person, ~{F.AUTHOR_H[0]}–{F.AUTHOR_H[1]} hours, no code written by hand", f"{F.HUMAN_EY[0]:.0f}–{F.HUMAN_EY[1]:.0f} engineer-years"],
+        ["What shipped", "v0.9.0, v1.0.0 (Old and New 3DS, Expansion Kit) and v1.1.0 (multiplayer); known gaps listed in the release notes",
+         "the same scope, plus whatever polish a funded team would add"],
+    ]))
+
+    b.append('<h2>Cost per outcome</h2>')
+    b.append(table(["Measure", "1-hour writes", "As logged"], [
+        ["Per human prompt", money(F.COST_1H / F.PROMPTS), money(F.COST_LOGGED / F.PROMPTS)],
+        [f"Per day with API activity ({F.API_DAYS})", money(F.COST_1H / F.API_DAYS), money(F.COST_LOGGED / F.API_DAYS)],
+        [f"Per line of port code ({F.LOC_PORT:,})", f"${F.COST_1H / F.LOC_PORT:.2f}", f"${F.COST_LOGGED / F.LOC_PORT:.2f}"],
+    ], num_cols=(1, 2)))
+
+    b.append('<h2>How the census was made</h2>')
+    b.append('<p><code>docs/postmortem/gen/pa_census.py</code> re-implements the first version\'s method and can be re-run. It reads every '
+             'transcript under the project\'s two Claude Code directories (<code>~/Code/G-Diffuser</code> through v1.0.0, '
+             f'<code>~/Code/gdx-3ds</code> since; {C["files_scanned"]:,} files: orchestrator sessions, Agent-tool subagents and '
+             'deep-research workflow agents). Each assistant message id is one API call; the 2–5 streamed records of the same message '
+             'are merged by taking the largest value of each usage field, so nothing is counted twice. Sessions started from the home '
+             'directory that only mention the project, and every other project on the same account, are excluded.</p>')
+    b.append(table(["Check", "Finding"], [
+        ["<b>The first phase reproduces.</b>", f"Over 08-11 to 09-03 the script finds {F.big(F.tokens(PH['first']))} tokens and "
+         f"{money(PH['first']['cost_B'])} (1-hour writes), against 3.17 B and {money(F.FIRST_PUBLISHED)} published. The first census stopped "
+         "at 19:04 UTC on 09-03; this one counts the whole UTC day."],
+        ["<b>Claude Code\'s own stats file counts every streamed record.</b>", "Its totals are about 1.9× the de-duplicated count (found in "
+         "the first phase, 5.94 B vs 3.17 B). The API bills per request, so the de-duplicated figure is the one used."],
+        ["<b>/usage shows plan utilisation, not dollars.</b>", "Reaching a weekly cap says nothing about the dollar value of the tokens under it, "
+         "and other projects shared the same allowance."],
+        ["<b>Not counted.</b>", "Web searches and fetches billed per use, context compactions and title/summary side calls are not in "
+         "the transcripts. In the first phase they came to about $13 in total."],
+    ]))
+    b.append('<p>The first phase\'s per-subagent and per-tool tables are in <a href="source-census.md">source-census.md</a>. Its clearest '
+             'cost lesson still stands: two 900-turn agents of 08-14 were left running through a credit pause and each re-read a very '
+             'large context hundreds of times. An agent that has finished its brief should be stopped.</p>')
+    return page("cost.html", "What It Cost", "".join(b))

@@ -1,7 +1,8 @@
 name: Release (3DS, native renderer)
 
 # Builds everything a player needs without a compiler:
-#   * gdx-extract, the PC-side asset extractor tools/prebake drives, for Windows, macOS and Linux;
+#   * gdx-extract, the PC-side asset extractor tools/prebake drives (plus gdx-hudpack, its HUD bake),
+#     for Windows, macOS and Linux;
 #   * the three released console targets -- Old 3DS, New 3DS and the New 3DS Expansion Kit
 #     title -- as .3dsx/.cia/.elf from a clean checkout via tools/ci-3ds.sh plus the matching cmake flags,
 #     each also packaged as a ready-to-drop-on-an-SD-card zip.
@@ -24,7 +25,7 @@ name: Release (3DS, native renderer)
 #     the incremental rebuild it times is meaningful; the ccache directory is cached
 #     between runs, one cache per console target;
 #   * tools/ci-3ds.sh is the single correctness gate, run once per console target: it checks
-#     the vendored-LUS MANIFEST.sha256, applies the 52-patch decomp stack idempotently
+#     the vendored-LUS MANIFEST.sha256, applies the 81-patch decomp stack idempotently
 #     (failing loudly on an unknown patch file), builds and runs the full host-test suite,
 #     then builds the shipped (New 3DS, non-EK) .3dsx. The other three targets configure a
 #     second, target-specific build directory with the matching -DGDX_3DS_O3DS /
@@ -79,19 +80,33 @@ jobs:
         run: cmake --build build-extract --config Release --parallel 4
       - name: Install
         run: cmake --install build-extract --config Release --prefix build-extract/install
+      - name: Build gdx-hudpack (the PC HUD bake prebake.py runs; plain C, no submodules)
+        run: |
+          cmake -S tools/hudpack -B build-hudpack -DCMAKE_BUILD_TYPE=Release ${{ matrix.extra }}
+          cmake --build build-hudpack --config Release --parallel 4
+          cmake --install build-hudpack --config Release --prefix build-hudpack/install
       - name: Package
         shell: bash
         run: |
           set -e
           mkdir -p pkg
           cp "build-extract/install/bin/${{ matrix.exe }}" pkg/
-          if command -v lipo >/dev/null; then lipo -info "pkg/${{ matrix.exe }}"; fi
+          # gdx-hudpack sits beside gdx-extract: prebake.py looks for it next to the extractor.
+          cp build-hudpack/install/bin/gdx-hudpack* pkg/
+          # Torch (MIT) and its statically linked dependencies require their notices to
+          # accompany the binary: ship the repo's license set with every extractor zip.
+          cp LICENSE THIRD_PARTY_NOTICES.md pkg/
+          cp -R LICENSES pkg/LICENSES
+          if command -v lipo >/dev/null; then lipo -info "pkg/${{ matrix.exe }}" pkg/gdx-hudpack; fi
           cat > pkg/README.txt <<'TXT'
           gdx-extract: the PC-side asset extractor for the G-Diffuser 3DS port.
           Use it with tools/prebake/prebake.py from the repository:
             python3 tools/prebake/prebake.py --rom <your F-Zero X US rev0 .z64> --extractor <path to this binary>
           It reads your own cartridge dump and writes fzerox.o2r / gdiffuser.o2r under dist/sdmc/.
-          No game data is included here.
+          gdx-hudpack (keep it next to gdx-extract) then bakes the bottom-screen HUD from those two
+          archives into hudbake.cache, so the console's first boot skips its own HUD bake.
+          No ROM, disk image, or game assets are included here: you must dump your own cartridge.
+          License: see LICENSE, THIRD_PARTY_NOTICES.md and LICENSES/ in this zip.
           TXT
           cd pkg && (command -v zip >/dev/null && zip -q -r "../gdx-extract-${{ matrix.name }}.zip" . || 7z a -bd "../gdx-extract-${{ matrix.name }}.zip" .)
       - uses: actions/upload-artifact@v4
@@ -265,7 +280,7 @@ jobs:
       - run: chmod +x tools/3ds-bin/makerom tools/3ds-bin/bannertool && ls -la tools/3ds-bin
 
       # One gate, run once per target against its own checkout: vendored-LUS MANIFEST.sha256 ->
-      # the 52 decomp patches (idempotent; an unlisted patch file is a hard FAIL) -> the full
+      # the 81 decomp patches (idempotent; an unlisted patch file is a hard FAIL) -> the full
       # host-test suite -> configure + full + incremental 3DS build of the SHIPPED (New 3DS,
       # non-EK) config into build-3ds/. tools/build-3ds.sh below configures its own
       # build-3ds-<target>/ dir regardless of target, so this stays purely a correctness gate.
@@ -366,11 +381,13 @@ jobs:
             '| New 3DS / New 2DS XL | `G-Diffuser-3DS-N3DS-v<ver>.zip` |' \
             '| New 3DS / New 2DS XL, with the Expansion Kit disk | `G-Diffuser-3DS-N3DS-EK-v<ver>.zip` |' \
             '' \
-            'The Expansion Kit build is New 3DS only for now, and needs the retail Japanese' \
-            '64DD disk image (`baserom.jp.ek.ndd`).' \
+            'The Expansion Kit build is New 3DS only for now, and needs your own dump of the' \
+            'retail Japanese 64DD disk (`baserom.jp.ek.ndd`).' \
             '' \
             'Each zip contains the `.3dsx` (Homebrew Launcher), the `.cia` (HOME menu install) and a' \
-            'README on where your own extracted game data goes. The loose `.3dsx`/`.cia`/`.elf`' \
+            'README on where your own extracted game data goes, plus `LICENSE`,' \
+            '`THIRD_PARTY_NOTICES.md` and `LICENSES/`. No ROM, disk image, or game assets are' \
+            'included. The loose `.3dsx`/`.cia`/`.elf`' \
             'files and `SHA256SUMS` below are the same builds, unpacked.')
           TABLE="${TABLE//<ver>/${GDX_VER}}"
           {

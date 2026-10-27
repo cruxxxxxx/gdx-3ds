@@ -38,6 +38,7 @@
 #include <3ds.h>
 
 #include "gdx3ds_hitch.h" /* gdx3ds_hitch_aud_inflight: the writer yields to audio-stream reads */
+#include "gdx3ds_cpucut.h" /* o3ds-cpucuts: [debug] filelog_flush_defer = 2 is a block A/B */
 
 /* REL1CRASH: a bisect title (-DGDX_3DS_TITLE_TAG=X) logs to log-X.txt so several installed
  * titles sharing one ini never overwrite each other's evidence. Untagged: the historic names. */
@@ -60,6 +61,10 @@ static int sLockInited = 0; /* first writes are main-thread boot logSteps, so th
                              * init below cannot race (threads start much later). */
 static size_t sBytesWritten = 0;
 static size_t sByteCap = 0;
+static size_t sMpReserve = 0;      /* [debug] filelog_mp_reserve_kb: the cap's tail kept for MP receipts */
+static int sMpBudgetNoted = 0;
+static volatile int sMpSession = 0; /* the reserve applies only while an MP room / race is up */
+static unsigned sMpBudgetDrops = 0;
 /* Static stream buffer: newlib otherwise mallocs one on first write, which the
  * operator-new failure tracer must never do. */
 static char sStreamBuf[1024];
@@ -156,6 +161,8 @@ static unsigned sStallMs = 0;
 static int sCapPending = 0;   /* async size cap: the writer closes the file at sCapAt */
 static unsigned sCapAt = 0;
 static int sReceiptEvery = GDX3DS_FILELOG_RECEIPT_BASE;
+/* o3ds-cpucuts [debug] filelog_flush_defer (include/gdx3ds_filelog.h). Latched at init. */
+static int sFlushDefer = 1;
 
 static void gdx3ds_filelog_ensure_lock(void) {
     if (!sLockInited) {
@@ -312,6 +319,16 @@ static void WriteRingSpan(unsigned from, unsigned to, int yieldToAudio) {
     }
 }
 
+/* o3ds-cpucuts: who asked for the next synchronous flush ([hitch] src=). Set under sLock right
+ * before a synchronous path flushes; published into sStats by the flush itself. */
+static const char* sNextSyncSrc = NULL;
+static uint32_t sNextSyncRa = 0;
+
+static void NoteSyncSrc(const char* src, uint32_t ra) {
+    sNextSyncSrc = src;
+    sNextSyncRa = ra;
+}
+
 /* Mirror the pending span [sFlushedTotal, sTotal) to the SD file. Caller holds sLock
  * and has checked sLogFile. */
 static void gdx3ds_filelog_flush_locked(void) {
@@ -339,6 +356,10 @@ static void gdx3ds_filelog_flush_locked(void) {
     sStats.syncFlushes++;
     sStats.syncBytes += pending;
     sStats.syncTicks += sLastFlushTick - t0;
+    sStats.lastSyncSrc = sNextSyncSrc != NULL ? sNextSyncSrc : "other";
+    sStats.lastSyncRa = sNextSyncRa;
+    sNextSyncSrc = NULL;
+    sNextSyncRa = 0;
 }
 
 static int OnWriterThread(void) {
@@ -405,6 +426,21 @@ void gdx3ds_filelog_set_durable(int on) {
     if (on) {
         gdx3ds_filelog_flush(); /* what the ring holds now reaches the card first */
     }
+}
+
+void gdx3ds_filelog_sync_for_ms(unsigned ms) {
+    if (ms == 0) {
+        return;
+    }
+    const u64 until = svcGetSystemTick() + (u64)ms * (u64)CPU_TICKS_PER_MSEC;
+    if (until > sSyncUntilTick) {
+        sSyncUntilTick = until;
+    }
+    gdx3ds_filelog_flush(); /* what the ring holds now reaches the card first */
+}
+
+void gdx3ds_filelog_sync_end(void) {
+    sSyncUntilTick = 0;
 }
 
 static FILE* gdx3ds_filelog_open_session(void) {
@@ -548,6 +584,8 @@ void gdx3ds_filelog_init(void) {
     if (!gdx3ds_config_get_bool("debug", "filelog", 0)) {
         return; /* retention stays on; only the SD mirror is disabled */
     }
+    sFlushDefer = gdx3ds_cpucut_clamp(gdx3ds_config_get_int("debug", "filelog_flush_defer", 1), 1);
+    gdx3ds_cpucut_lever("logdefer", &sFlushDefer, GDX3DS_CPUCUT_BIT_LOGDEFER);
     int maxKb = gdx3ds_config_get_int("debug", "filelog_max_kb", GDX3DS_FILELOG_DEFAULT_MAX_KB);
     if (maxKb < 1) {
         maxKb = 1;
@@ -563,6 +601,15 @@ void gdx3ds_filelog_init(void) {
     setvbuf(sLogFile, sStreamBuf, _IOFBF, sizeof(sStreamBuf));
     sByteCap = (size_t)maxKb * 1024u;
     sBytesWritten = 0;
+    {
+        int reserveKb = gdx3ds_config_get_int("debug", "filelog_mp_reserve_kb", maxKb / 4);
+        if (reserveKb < 0) {
+            reserveKb = 0;
+        } else if (reserveKb > maxKb / 2) {
+            reserveKb = maxKb / 2;
+        }
+        sMpReserve = (size_t)reserveKb * 1024u;
+    }
     /* Boot lines appended before init (config load, window init) are already in the
      * retained ring: start the SD mirror from here, not from history — the old batch
      * design also only captured post-init lines. */
@@ -733,6 +780,7 @@ static int MakeRoomLocked(size_t len, int fatalLine) {
     /* Synchronous mode, or a line that must reach the card: mirror the backlog first (async: wait
      * for the writer, then write the rest). */
     sStats.ringFullFlushes++;
+    NoteSyncSrc("ringfull", 0);
     gdx3ds_filelog_flush_counted_locked();
     return 1;
 }
@@ -748,6 +796,7 @@ static void MirrorPolicyLocked(size_t len, int fatalLine) {
         sBytesWritten += len + 1;
     }
     if (MustReachCardNow(fatalLine)) {
+        NoteSyncSrc(fatalLine ? "fatal" : "durable", 0);
         gdx3ds_filelog_flush_counted_locked();
     } else if (sAsync) {
         if (!sCapPending) {
@@ -755,11 +804,54 @@ static void MirrorPolicyLocked(size_t len, int fatalLine) {
         }
     } else if ((sTotal - FlushedTotal()) >= GDX3DS_FILELOG_RING_HIWAT ||
                (svcGetSystemTick() - sLastFlushTick) >= kFlushTicks) {
+        NoteSyncSrc("batch", 0);
         gdx3ds_filelog_flush_counted_locked();
     }
 }
 
 /* One line into the ring (+ the SD batch policy). Caller holds sLock. */
+/* The lines the MP reserve keeps: the online / LAN receipts a race diagnosis needs. */
+static int IsMpReceiptLine(const char* msg, size_t len) {
+    static const char* const kKeep[] = { "[mpo]", "[mpipc]", "[mpcost]", "[mprof]", "[mprate]", "[mpradio]",
+                                         "[socthr]", "[net]", "[watchdog]", "[apt]",
+                                         "[trkres] arena" /* ship6: a skipped course bake */ };
+    size_t i;
+    for (i = 0; i < sizeof(kKeep) / sizeof(kKeep[0]); i++) {
+        const size_t n = strlen(kKeep[i]);
+        if (len >= n && memcmp(msg, kKeep[i], n) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Past (cap - reserve) only MP receipt and fatal-class lines go to the card, so a long online
+ * race keeps its [mpo] stats to the end (hardware online1: the New 3DS host log stopped at race
+ * tick ~3000, before the dropout). 1 = drop this line from the SD mirror. */
+static int OverMpBudgetLocked(const char* msg, size_t len, int fatalLine) {
+    static const char kNote[] = "[filelog] general budget reached; only MP receipts and fatal lines from here "
+                                "(debug.filelog_mp_reserve_kb)";
+    if (!sMpSession || sMpReserve == 0 || sLogFile == NULL || sCapPending || fatalLine) {
+        return 0;
+    }
+    if (sBytesWritten + len + 1 + sMpReserve <= sByteCap || IsMpReceiptLine(msg, len)) {
+        return 0;
+    }
+    if (!sMpBudgetNoted) {
+        sMpBudgetNoted = 1;
+        if (MakeRoomLocked(sizeof(kNote) - 1, 0)) {
+            gdx3ds_filelog_ring_append_locked(kNote, sizeof(kNote) - 1);
+            MirrorPolicyLocked(sizeof(kNote) - 1, 0);
+        }
+    }
+    sMpBudgetDrops++;
+    return 1;
+}
+
+void gdx3ds_filelog_set_mp_session(int on) {
+    sMpSession = on ? 1 : 0;
+}
+
 static void gdx3ds_filelog_write_locked(const char* msg, size_t len) {
     if (len + 1 > GDX3DS_FILELOG_RING_CAP) {
         /* A single line larger than the whole ring: bounded drop, counted — the hard
@@ -771,6 +863,10 @@ static void gdx3ds_filelog_write_locked(const char* msg, size_t len) {
         return;
     }
     const int fatalLine = IsFatalClassLine(msg, len);
+    if (OverMpBudgetLocked(msg, len, fatalLine)) {
+        gdx3ds_net_log_write(msg, len); /* the live link still sees it */
+        return;
+    }
     if (!MakeRoomLocked(len, fatalLine)) {
         return;
     }
@@ -798,14 +894,71 @@ void gdx3ds_filelog_cost_totals(GdxFilelogCost* out) {
     RecursiveLock_Unlock(&sLock);
 }
 
-void gdx3ds_filelog_flush(void) {
+void gdx3ds_filelog_flush_sync(void) {
+    const uint32_t ra = (uint32_t)(uintptr_t)__builtin_return_address(0);
     if (sLogFile == NULL) {
         return;
     }
     gdx3ds_filelog_ensure_lock();
     RecursiveLock_Lock(&sLock);
+    NoteSyncSrc("flush_sync", ra);
     FlushSyncLocked();
     RecursiveLock_Unlock(&sLock);
+}
+
+static volatile int sRaceDefer = 0;
+
+void gdx3ds_filelog_set_race_defer(int on) {
+    sRaceDefer = on ? 1 : 0;
+}
+
+int gdx3ds_filelog_flush_lever(void) {
+    return gdx3ds_cpucut_on(sFlushDefer, GDX3DS_CPUCUT_BIT_LOGDEFER);
+}
+
+int gdx3ds_filelog_flush_defer_on(void) {
+    return sAsync && gdx3ds_filelog_flush_lever() && RaceOnScreen();
+}
+
+/* A flush the race defers: the async writer is up, nothing asks for synchronous lines. */
+static int FlushDeferredLocked(void) {
+    int byLever;
+    if (!sAsync || OnWriterThread() || MustReachCardNow(0)) {
+        return 0;
+    }
+    byLever = !sRaceDefer && gdx3ds_filelog_flush_defer_on();
+    if (!sRaceDefer && !byLever) {
+        return 0;
+    }
+    sStats.raceDeferred++;
+    if (byLever) {
+        sStats.flushDeferred++;
+    }
+    if (!sWriterBusy) {
+        LightEvent_Signal(&sWriterWake);
+    }
+    return 1;
+}
+
+static void FlushFrom(const char* src, uint32_t ra) {
+    if (sLogFile == NULL) {
+        return;
+    }
+    gdx3ds_filelog_ensure_lock();
+    RecursiveLock_Lock(&sLock);
+    if (!FlushDeferredLocked()) {
+        NoteSyncSrc(src, ra);
+        FlushSyncLocked();
+    }
+    RecursiveLock_Unlock(&sLock);
+}
+
+void gdx3ds_filelog_flush(void) {
+    FlushFrom("flush", (uint32_t)(uintptr_t)__builtin_return_address(0));
+}
+
+void gdx3ds_filelog_flush_src(const char* src) {
+    FlushFrom(src != NULL ? src : "flush", (uint32_t)(uintptr_t)__builtin_return_address(0));
 }
 
 void gdx3ds_filelog_stats(GdxFilelogStats* out) {

@@ -1,0 +1,16 @@
+# Self-host: everything on one Linux box, host networking (docker-compose.yml).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 30s
+scrape_configs:
+  - job_name: gdx-rendezvous
+    static_configs:
+      - targets: ["127.0.0.1:9727"]
+        labels:
+          instance: rendezvous
+  - job_name: gdx-probe
+    static_configs:
+      - targets: ["127.0.0.1:9728"]
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:9090"]

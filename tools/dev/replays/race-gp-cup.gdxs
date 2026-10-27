@@ -1,0 +1,781 @@
+# race-gp-cup: a whole Grand Prix cup PLAYED to its ending (plan S6:
+# the GP ending reached by play, not by [debug] force_mode).
+# Needs --ini debug.autodrive=1 (the CPU drives player 1 through all six
+# races) and a big log: --ini debug.filelog_max_kb=65536 (the default
+# 4 MB cap stops the guest log mid-cup and the run cannot see its end).
+# Ticks 0-3299: race-gp-finish's walk (GP, NOVICE, JACK cup, 30 machines).
+# Then A every 300 ticks: it is masked off racer 0 in a race (autodrive)
+# and walks every post-race screen (lap times, results, total ranking,
+# next-course card 0x0F, GP next machine 0x12). Measured mode timeline
+# (det=1, N3DS lane): races at 3240 12360 21060 28860 37860 47760
+# (Mute City .. Big Blue), GP_END_CS (0x11) at 56220: results scroll,
+# total ranking, podiums, Thanks for playing; the A at 61200 leaves it
+# for the main menu (0x07) at 61380. The run ends at 61800.
+# SHOTs hand-placed: every 1000 ticks of the cup, every 100 over the
+# last race's results and the whole ending.
+build ni-strict-census@bbd92ab
+seed1 0x1234abcd
+seed2 0x0fedcba9
+pins renderthread=0 det=1 autodrive=1
+at 400
+press START 15 0
+at 800
+press A 15 0
+at 1100
+press A 15 0
+at 1400
+press A 15 0
+at 1700
+press A 15 0
+at 2000
+press A 15 0
+at 2300
+press A 15 0
+at 2600
+press A 15 0
+at 2900
+press A 15 0
+at 3200
+press A 15 0
+at 3300
+at 3600
+press A 15 0
+at 3900
+press A 15 0
+at 4000
+wait 1
+shot c4000
+at 4200
+press A 15 0
+at 4500
+press A 15 0
+at 4800
+press A 15 0
+at 5000
+wait 1
+shot c5000
+at 5100
+press A 15 0
+at 5400
+press A 15 0
+at 5700
+press A 15 0
+at 6000
+press A 15 0
+at 6015
+wait 1
+shot c6000
+at 6300
+press A 15 0
+at 6600
+press A 15 0
+at 6900
+press A 15 0
+at 7000
+wait 1
+shot c7000
+at 7200
+press A 15 0
+at 7500
+press A 15 0
+at 7800
+press A 15 0
+at 8000
+wait 1
+shot c8000
+at 8100
+press A 15 0
+at 8400
+press A 15 0
+at 8700
+press A 15 0
+at 9000
+press A 15 0
+at 9015
+wait 1
+shot c9000
+at 9300
+press A 15 0
+at 9600
+press A 15 0
+at 9900
+press A 15 0
+at 10000
+wait 1
+shot c10000
+at 10200
+press A 15 0
+at 10500
+press A 15 0
+at 10800
+press A 15 0
+at 11000
+wait 1
+shot c11000
+at 11100
+press A 15 0
+at 11400
+press A 15 0
+at 11700
+press A 15 0
+at 12000
+press A 15 0
+at 12015
+wait 1
+shot c12000
+at 12300
+press A 15 0
+at 12600
+press A 15 0
+at 12900
+press A 15 0
+at 13000
+wait 1
+shot c13000
+at 13200
+press A 15 0
+at 13500
+press A 15 0
+at 13800
+press A 15 0
+at 14000
+wait 1
+shot c14000
+at 14100
+press A 15 0
+at 14400
+press A 15 0
+at 14700
+press A 15 0
+at 15000
+press A 15 0
+at 15015
+wait 1
+shot c15000
+at 15300
+press A 15 0
+at 15600
+press A 15 0
+at 15900
+press A 15 0
+at 16000
+wait 1
+shot c16000
+at 16200
+press A 15 0
+at 16500
+press A 15 0
+at 16800
+press A 15 0
+at 17000
+wait 1
+shot c17000
+at 17100
+press A 15 0
+at 17400
+press A 15 0
+at 17700
+press A 15 0
+at 18000
+press A 15 0
+at 18015
+wait 1
+shot c18000
+at 18300
+press A 15 0
+at 18600
+press A 15 0
+at 18900
+press A 15 0
+at 19000
+wait 1
+shot c19000
+at 19200
+press A 15 0
+at 19500
+press A 15 0
+at 19800
+press A 15 0
+at 20000
+wait 1
+shot c20000
+at 20100
+press A 15 0
+at 20400
+press A 15 0
+at 20700
+press A 15 0
+at 21000
+press A 15 0
+at 21015
+wait 1
+shot c21000
+at 21300
+press A 15 0
+at 21600
+press A 15 0
+at 21900
+press A 15 0
+at 22000
+wait 1
+shot c22000
+at 22200
+press A 15 0
+at 22500
+press A 15 0
+at 22800
+press A 15 0
+at 23000
+wait 1
+shot c23000
+at 23100
+press A 15 0
+at 23400
+press A 15 0
+at 23700
+press A 15 0
+at 24000
+press A 15 0
+at 24015
+wait 1
+shot c24000
+at 24300
+press A 15 0
+at 24600
+press A 15 0
+at 24900
+press A 15 0
+at 25000
+wait 1
+shot c25000
+at 25200
+press A 15 0
+at 25500
+press A 15 0
+at 25800
+press A 15 0
+at 26000
+wait 1
+shot c26000
+at 26100
+press A 15 0
+at 26400
+press A 15 0
+at 26700
+press A 15 0
+at 27000
+press A 15 0
+at 27015
+wait 1
+shot c27000
+at 27300
+press A 15 0
+at 27600
+press A 15 0
+at 27900
+press A 15 0
+at 28000
+wait 1
+shot c28000
+at 28200
+press A 15 0
+at 28500
+press A 15 0
+at 28800
+press A 15 0
+at 29000
+wait 1
+shot c29000
+at 29100
+press A 15 0
+at 29400
+press A 15 0
+at 29700
+press A 15 0
+at 30000
+press A 15 0
+at 30015
+wait 1
+shot c30000
+at 30300
+press A 15 0
+at 30600
+press A 15 0
+at 30900
+press A 15 0
+at 31000
+wait 1
+shot c31000
+at 31200
+press A 15 0
+at 31500
+press A 15 0
+at 31800
+press A 15 0
+at 32000
+wait 1
+shot c32000
+at 32100
+press A 15 0
+at 32400
+press A 15 0
+at 32700
+press A 15 0
+at 33000
+press A 15 0
+at 33015
+wait 1
+shot c33000
+at 33300
+press A 15 0
+at 33600
+press A 15 0
+at 33900
+press A 15 0
+at 34000
+wait 1
+shot c34000
+at 34200
+press A 15 0
+at 34500
+press A 15 0
+at 34800
+press A 15 0
+at 35000
+wait 1
+shot c35000
+at 35100
+press A 15 0
+at 35400
+press A 15 0
+at 35700
+press A 15 0
+at 36000
+press A 15 0
+at 36015
+wait 1
+shot c36000
+at 36300
+press A 15 0
+at 36600
+press A 15 0
+at 36900
+press A 15 0
+at 37000
+wait 1
+shot c37000
+at 37200
+press A 15 0
+at 37500
+press A 15 0
+at 37800
+press A 15 0
+at 38000
+wait 1
+shot c38000
+at 38100
+press A 15 0
+at 38400
+press A 15 0
+at 38700
+press A 15 0
+at 39000
+press A 15 0
+at 39015
+wait 1
+shot c39000
+at 39300
+press A 15 0
+at 39600
+press A 15 0
+at 39900
+press A 15 0
+at 40000
+wait 1
+shot c40000
+at 40200
+press A 15 0
+at 40500
+press A 15 0
+at 40800
+press A 15 0
+at 41000
+wait 1
+shot c41000
+at 41100
+press A 15 0
+at 41400
+press A 15 0
+at 41700
+press A 15 0
+at 42000
+press A 15 0
+at 42015
+wait 1
+shot c42000
+at 42300
+press A 15 0
+at 42600
+press A 15 0
+at 42900
+press A 15 0
+at 43000
+wait 1
+shot c43000
+at 43200
+press A 15 0
+at 43500
+press A 15 0
+at 43800
+press A 15 0
+at 44000
+wait 1
+shot c44000
+at 44100
+press A 15 0
+at 44400
+press A 15 0
+at 44700
+press A 15 0
+at 45000
+press A 15 0
+at 45015
+wait 1
+shot c45000
+at 45300
+press A 15 0
+at 45600
+press A 15 0
+at 45900
+press A 15 0
+at 46000
+wait 1
+shot c46000
+at 46200
+press A 15 0
+at 46500
+press A 15 0
+at 46800
+press A 15 0
+at 47000
+wait 1
+shot c47000
+at 47100
+press A 15 0
+at 47400
+press A 15 0
+at 47700
+press A 15 0
+at 48000
+press A 15 0
+at 48015
+wait 1
+shot c48000
+at 48300
+press A 15 0
+at 48600
+press A 15 0
+at 48900
+press A 15 0
+at 49000
+wait 1
+shot c49000
+at 49200
+press A 15 0
+at 49500
+press A 15 0
+at 49800
+press A 15 0
+at 50000
+wait 1
+shot c50000
+at 50100
+press A 15 0
+at 50400
+press A 15 0
+at 50700
+press A 15 0
+at 51000
+press A 15 0
+at 51015
+wait 1
+shot c51000
+at 51300
+press A 15 0
+at 51600
+press A 15 0
+at 51900
+press A 15 0
+at 52000
+wait 1
+shot c52000
+at 52200
+press A 15 0
+at 52500
+press A 15 0
+at 52800
+press A 15 0
+at 53000
+wait 1
+shot c53000
+at 53100
+press A 15 0
+at 53400
+press A 15 0
+at 53700
+press A 15 0
+at 54000
+press A 15 0
+at 54015
+wait 1
+shot c54000
+at 54300
+press A 15 0
+at 54600
+press A 15 0
+at 54900
+press A 15 0
+at 55000
+wait 1
+shot e55000
+at 55100
+wait 1
+shot e55100
+at 55200
+press A 15 0
+at 55215
+wait 1
+shot e55200
+at 55300
+wait 1
+shot e55300
+at 55400
+wait 1
+shot e55400
+at 55500
+press A 15 0
+at 55515
+wait 1
+shot e55500
+at 55600
+wait 1
+shot e55600
+at 55700
+wait 1
+shot e55700
+at 55800
+press A 15 0
+at 55815
+wait 1
+shot e55800
+at 55900
+wait 1
+shot e55900
+at 56000
+wait 1
+shot e56000
+at 56100
+press A 15 0
+at 56115
+wait 1
+shot e56100
+at 56200
+wait 1
+shot e56200
+at 56300
+wait 1
+shot e56300
+at 56400
+press A 15 0
+at 56415
+wait 1
+shot e56400
+at 56500
+wait 1
+shot e56500
+at 56600
+wait 1
+shot e56600
+at 56700
+press A 15 0
+at 56715
+wait 1
+shot e56700
+at 56800
+wait 1
+shot e56800
+at 56900
+wait 1
+shot e56900
+at 57000
+press A 15 0
+at 57015
+wait 1
+shot e57000
+at 57100
+wait 1
+shot e57100
+at 57200
+wait 1
+shot e57200
+at 57300
+press A 15 0
+at 57315
+wait 1
+shot e57300
+at 57400
+wait 1
+shot e57400
+at 57500
+wait 1
+shot e57500
+at 57600
+press A 15 0
+at 57615
+wait 1
+shot e57600
+at 57700
+wait 1
+shot e57700
+at 57800
+wait 1
+shot e57800
+at 57900
+press A 15 0
+at 57915
+wait 1
+shot e57900
+at 58000
+wait 1
+shot e58000
+at 58100
+wait 1
+shot e58100
+at 58200
+press A 15 0
+at 58215
+wait 1
+shot e58200
+at 58300
+wait 1
+shot e58300
+at 58400
+wait 1
+shot e58400
+at 58500
+press A 15 0
+at 58515
+wait 1
+shot e58500
+at 58600
+wait 1
+shot e58600
+at 58700
+wait 1
+shot e58700
+at 58800
+press A 15 0
+at 58815
+wait 1
+shot e58800
+at 58900
+wait 1
+shot e58900
+at 59000
+wait 1
+shot e59000
+at 59100
+press A 15 0
+at 59115
+wait 1
+shot e59100
+at 59200
+wait 1
+shot e59200
+at 59300
+wait 1
+shot e59300
+at 59400
+press A 15 0
+at 59415
+wait 1
+shot e59400
+at 59500
+wait 1
+shot e59500
+at 59600
+wait 1
+shot e59600
+at 59700
+press A 15 0
+at 59715
+wait 1
+shot e59700
+at 59800
+wait 1
+shot e59800
+at 59900
+wait 1
+shot e59900
+at 60000
+press A 15 0
+at 60015
+wait 1
+shot e60000
+at 60100
+wait 1
+shot e60100
+at 60200
+wait 1
+shot e60200
+at 60300
+press A 15 0
+at 60315
+wait 1
+shot e60300
+at 60400
+wait 1
+shot e60400
+at 60500
+wait 1
+shot e60500
+at 60600
+press A 15 0
+at 60615
+wait 1
+shot e60600
+at 60700
+wait 1
+shot e60700
+at 60800
+wait 1
+shot e60800
+at 60900
+press A 15 0
+at 60915
+wait 1
+shot e60900
+at 61000
+wait 1
+shot e61000
+at 61100
+wait 1
+shot e61100
+at 61200
+press A 15 0
+at 61215
+wait 1
+shot e61200
+at 61300
+wait 1
+shot e61300
+at 61400
+wait 1
+shot e61400
+at 61600
+wait 1
+shot menu61600
+at 61750
+wait 1
+shot menu61750
+len 61800

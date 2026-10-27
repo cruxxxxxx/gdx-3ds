@@ -8,6 +8,9 @@ sdmc:/3ds/gdiffuser/ folder the device expects:
 
     <out>/3ds/gdiffuser/fzerox.o2r     game archive (renamed generic.o2r)
     <out>/3ds/gdiffuser/gdiffuser.o2r  engine archive (tools/gen_f3d_o2r.py)
+    <out>/3ds/gdiffuser/hudbake.cache  bottom-screen HUD, baked from the two above by
+                                       gdx-hudpack (tools/hudpack): the console's own
+                                       SD cache, so its first boot skips the bake
 
 ROM validation mirrors the desktop port (port/gdx_extract_launch.cpp): the
 whole-file SHA-1 must equal the US rev0 big-endian (.z64) hash. Everything
@@ -243,12 +246,18 @@ STORE_ENTRIES_DEFAULT = (
 )
 
 
-def store_large_entries(src, dst, names):
+def store_large_entries(src, dst, names, compresslevel=None):
     """Rewrite src -> dst with `names` STORED (method 0) and every other entry re-deflated.
     Central-directory order, names, payload bytes, CRCs and the record count are preserved
     (only the compression method / compressed bytes change), so the runtime reads the same
     content; the golden SHA-256 gate applies to the extractor's output (validated before this
-    step), not to the installed archive."""
+    step), not to the installed archive.
+
+    The re-deflate uses this PC's zlib, so the compressed sizes (and the archive's bytes) can
+    differ between PCs (zlib-ng, another zlib version, `compresslevel`). That is fine: the
+    multiplayer content hash (port/gdx_mp_online.c gdx_mpo_zip_cd_hash) covers only each
+    member's name, CRC-32 and uncompressed size, which this step preserves and checks below.
+    tools/prebake/test_content_hash.py pins that."""
     wanted = set(names)
     seen = []
     with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
@@ -264,7 +273,8 @@ def store_large_entries(src, dst, names):
                 seen.append((zi.filename, zi.file_size, zi.compress_size))
             else:
                 out.compress_type = zipfile.ZIP_DEFLATED
-            zout.writestr(out, data)
+            # a ZipInfo carries no level of its own: pass it per entry (None = zlib's default)
+            zout.writestr(out, data, compresslevel=compresslevel)
     with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst) as zout:
         a = [(i.filename, i.CRC, i.file_size) for i in zin.infolist()]
         b = [(i.filename, i.CRC, i.file_size) for i in zout.infolist()]
@@ -278,6 +288,53 @@ def store_large_entries(src, dst, names):
     info("post-store archive: %d records, sha256 %s, %.1f MB (extractor output %.1f MB)"
          % (record_count_of(dst), sha256_file(dst), os.path.getsize(dst) / (1024.0 * 1024.0),
             os.path.getsize(src) / (1024.0 * 1024.0)))
+
+
+def find_hudpack(args, extractor):
+    """gdx-hudpack: --hudpack, else beside the extractor (the release zip ships both), else a
+    tools/hudpack build dir, else PATH. None when there is none (the console then bakes the HUD
+    itself on first boot: slower, same pixels)."""
+    exe = "gdx-hudpack.exe" if os.name == "nt" else "gdx-hudpack"
+    candidates = []
+    if args.hudpack:
+        candidates.append(args.hudpack)
+    if extractor:
+        candidates.append(os.path.join(os.path.dirname(extractor), exe))
+    for sub in ("", "Release", os.path.join("install", "bin")):
+        candidates.append(os.path.join(REPO, "build-hudpack", sub, exe))
+    on_path = shutil.which(exe)
+    if on_path:
+        candidates.append(on_path)
+    for c in candidates:
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+            return os.path.abspath(c)
+    if args.hudpack:
+        fail("--hudpack %s: not an executable file" % args.hudpack)
+    return None
+
+
+def build_hud_pack(hudpack, target_dir):
+    """hudbake.cache from the archives just installed, in the console's mount order
+    (gdiffuser.o2r, then fzerox.o2r). A failure is not fatal: the console bakes instead."""
+    dst = os.path.join(target_dir, "hudbake.cache")
+    if hudpack is None:
+        info("NOTE: gdx-hudpack not found (it ships in the gdx-extract zip; or build tools/hudpack):\n"
+             "      no hudbake.cache -- the console bakes its bottom-screen HUD on first boot instead")
+        if os.path.exists(dst):
+            os.remove(dst)  # a pack from another archive would only be rejected
+        return
+    cmd = [hudpack, "--archive", os.path.join(target_dir, "gdiffuser.o2r"),
+           "--archive", os.path.join(target_dir, "fzerox.o2r"), "--out", dst]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    for line in result.stdout.splitlines():
+        info("  " + line)
+    if result.returncode != 0:
+        info("WARNING: gdx-hudpack failed (exit %d): no hudbake.cache -- the console bakes the HUD on "
+             "first boot instead" % result.returncode)
+        if os.path.exists(dst):
+            os.remove(dst)
+        return
+    info("built %s (%d bytes)" % (dst, os.path.getsize(dst)))
 
 
 def record_count_of(path):
@@ -331,6 +388,11 @@ def main():
     parser.add_argument("--store-entry", action="append", default=None, metavar="NAME",
                         help="archive entry to keep STORED (uncompressed) in fzerox.o2r; repeatable. "
                              "Default: %s" % ", ".join(STORE_ENTRIES_DEFAULT))
+    parser.add_argument("--hudpack", default=None,
+                        help="explicit path to gdx-hudpack (default: beside the extractor, then build-hudpack/, "
+                             "then PATH); it writes hudbake.cache, the bottom-screen HUD baked on the PC")
+    parser.add_argument("--no-hudpack", action="store_true",
+                        help="do not write hudbake.cache (the console bakes the HUD on first boot)")
     parser.add_argument("--no-store", action="store_true",
                         help="install the extractor's archive as-is (every entry deflated; boot preload inflates)")
     args = parser.parse_args()
@@ -355,12 +417,16 @@ def main():
         install(generic, os.path.join(target_dir, "fzerox.o2r"))
 
     build_gdiffuser_o2r(os.path.join(target_dir, "gdiffuser.o2r"), args.build_dir)
+    if not args.no_hudpack:
+        build_hud_pack(find_hudpack(args, extractor), target_dir)
 
     print()
     info("done. SD card layout staged at: %s" % os.path.abspath(args.out))
     print("  Copy the 3ds/ folder onto the ROOT of your SD card (merge with the existing 3ds/):")
     print("    sdmc:/3ds/gdiffuser/fzerox.o2r")
     print("    sdmc:/3ds/gdiffuser/gdiffuser.o2r")
+    if os.path.exists(os.path.join(target_dir, "hudbake.cache")):
+        print("    sdmc:/3ds/gdiffuser/hudbake.cache  (the bottom-screen HUD, pre-baked; optional)")
     print("  Saves will be created by the game under sdmc:/3ds/gdiffuser/saves/.")
 
 

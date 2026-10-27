@@ -77,8 +77,25 @@ void gdx_det_set_title_demo(int armTicks, int demoTicks) {
     sTitleDemoTicks = 0;
 }
 
+/* bottom-ui (port/3ds/gdx3ds_bui.c): a bottom-screen menu flow is open on the title. The audio
+ * thread reads it (decomp-3ds-bui-title-demo-hold.patch): while it is set the attract demo is
+ * never armed, from audio state or by tick count. Written by the main thread only. */
+static volatile int sTitleDemoHeld = 0;
+
+void gdx_title_demo_set_held(int held) {
+    sTitleDemoHeld = held ? 1 : 0;
+}
+
+int gdx_title_demo_held(void) {
+    return sTitleDemoHeld;
+}
+
 int gdx_det_title_demo_step(int gameModeIsTitle, int state) {
     if (sTitleDemoArm <= 0) {
+        return state;
+    }
+    if (sTitleDemoHeld && gameModeIsTitle && state == 0) {
+        sTitleDemoTicks = 0;
         return state;
     }
     if (gameModeIsTitle && state == 0) {

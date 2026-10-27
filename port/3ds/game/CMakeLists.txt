@@ -124,7 +124,15 @@ if(GDX_3DS_EXPANSION_KIT)
     # EK=ON supplies the real leoBootID (port/n64_leo.c) and the ucode text markers
     # (port/gen/EkLinkStubs.c), so the EK=OFF stand-ins must NOT be compiled too.
     set(GDX3DS_EK_STUBS "")
-    set(GDX3DS_EK_SOURCES ${GDX_GAME_EK_PORT_SOURCES})
+    set(GDX3DS_EK_SOURCES ${GDX_GAME_EK_PORT_SOURCES}
+        # ekeditmesh [native] ek_editmesh: the course editor preview's resident bake key (o3dsek
+        # S5c). EK-only, so the shipped (EK=OFF) game links nothing new.
+        gdx3ds_ek_editmesh_game.c
+        # ekperf3 [native] ek_nimach: the EK machine select / settings machines on the NRR
+        # (decomp-3ds-ek-nimach.patch). EK-only, like the line above.
+        gdx3ds_ek_nimach_game.c
+        # [ek] course_share: the MFS half of course export/import (../gdx3ds_course_share_game.h).
+        gdx3ds_course_share_game.c)
 else()
     set(GDX3DS_EK_STUBS gdx3ds_us_linkstubs.c)
     set(GDX3DS_EK_SOURCES "")
@@ -142,12 +150,16 @@ add_library(gdx3ds_game OBJECT ${GAME_SOURCES} ${GDX_GAME_CORE_SOURCES}
     gdx3ds_gad_gbi.c        # [native] gadget_batch: real GBI emitters behind gdx3ds_gad_shim_begin.h
     gdx3ds_c5tick_game.c    # C5TICK: dlwrite scratch ranges + the gstate_ext digest (decomp types)
     gdx3ds_frameskip_game.c # n60fs [debug] frameskip = race0: the race scope from the game's mode globals
+    gdx3ds_snapshot_game.c  # mp-snapshot: the snapshot window scope + the required-symbol table (read only)
+    gdx3ds_snapshot_nosnap.c # snap-fast: the runtime NOSNAP table (census-chosen objects no race writes)
     gdx3ds_nrr_sky_game.c   # [native] nrr_sky: the consumed SKY section's stub + snapshot (n60sky)
     gdx3ds_nrr_shd_game.c   # [native] nrr_shd: the consumed SHD section's stub + snapshot (n60fx)
     gdx3ds_nrr_fx_game.c    # [native] nrr_fx: the consumed BOOST section's stub + the effects' snapshot (n60fx)
     gdx3ds_nrr_dress_game.c # [native] nrr_dress: the consumed DRESS section's stub: gadget pass native, decorations stock (n60fx)
     gdx3ds_prewarm_game.c   # [native] prewarm: first-use work in the race's opaque appear frame (n60prewarm)
     gdx3ds_course_game.c    # [native] ni_course: the course preview's marker pair + generation (nicourse)
+    gdx3ds_fullview_game.c  # MP phase 3 [net] mp_fullview / [debug] fullview_player: the local view full screen
+    gdx3ds_mp_pick_game.c   # MP stockpick: the stock 1P menus as each player's picker (decomp-3ds-mp-stockpick.patch)
 )
 
 target_include_directories(gdx3ds_game PRIVATE
@@ -207,6 +219,9 @@ add_library(gdx3ds_glue OBJECT
     "${GDX_PORT_DIR}/gdx_input_script.c"
     "${GDX_PORT_DIR}/gdx_input_rec.c"     # ORACLE: .gdxrec record/replay
     "${GDX_PORT_DIR}/gdx_determinism.c"   # ORACLE: determinism pins
+    "${GDX_PORT_DIR}/gdx_mp_lockstep.c"   # mp-spike: lockstep protocol core (pure; host-tested)
+    "${GDX_PORT_DIR}/gdx_mp_drop.c"       # mp-uds: drop-out protocol (pure; host-tested)
+    "${GDX_PORT_DIR}/gdx_mp_beacon.c"     # mp-uds: NEARBY room beacon (pure; host-tested + fuzzed)
     "${GDX_PORT_DIR}/n64_gfx_bridge.cpp"
     "${GDX_PORT_DIR}/gdx_interp.cpp"
     "${GDX_PORT_DIR}/n64_gfx_convert.cpp"
@@ -261,6 +276,8 @@ if(GDX_3DS_EXPANSION_KIT)
         # graph is stable, exactly as gen/EkAssetPack.c is.
         "${GDX_PORT_DIR}/gdx_ek_text_pack.c"
         "${GDX_PORT_DIR}/gen/EkTranslatedTextPack.c"
+        gdx3ds_disk_async.c    # o3dsekperf [debug] audio_disk_async: the 64DD audio loader's I/O worker
+        gdx3ds_ek_audio_bulk.c # ekaudio2 [debug] audio_sync_bulk_kb: sync audio_table loads in large SD reads
         gdx3ds_ek_stubs.cpp)   # 3DS stand-ins for the dropped gdx_extract_launch.cpp helpers
 endif()
 

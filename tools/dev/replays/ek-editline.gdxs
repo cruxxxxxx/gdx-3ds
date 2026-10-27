@@ -1,0 +1,84 @@
+# ek-editline: OPERATE the course editor -- place four control points so the course
+# line (func_xk2_800E0988: L3DEX2 G_VTX(2)/PIPESYNC/PRIM/LINE3D per line) is drawn
+# over the ground grid, then dwell. The [native] ek_editmesh receipt for the line half
+# of the preview memo (ekeditmesh, o3dsek plan S5c); ek-widgetdrop and ek-courseedit
+# only ever show the empty grid.
+#
+# EXPANSION-KIT-ONLY AND DISK-ONLY, exactly as ek-courseedit.gdxs explains. NOT a
+# corpus replay, SHOTs hand-placed.
+#
+# Derivation (course_edit/188850.c):
+#  - cursor starts at (160, 120); the stick moves it 2 px/tick at |stick| = 80
+#    (ek-widgetdrop.gdxs derivation), stickX=+80 right, stickY=-80 down.
+#  - with fewer than 4 points the editor is in CREATE COURSE / POINT SET
+#    (func_xk2_800DB550 tail), so A with the cursor at y >= 56 places a point
+#    (func_xk2_800DC67C) unless it lands on an existing one.
+#  - the four points are the corners of a 80 x 50 px box: (160,120) (240,120)
+#    (240,170) (160,170).
+build native/ekeditline
+seed1 0x1234abcd
+seed2 0x0fedcba9
+pins renderthread=1 bridgemain=1 det=1
+note four control points on an 80x50 px box, then a dwell with the course line drawn.
+at 350
+wait 1
+at 400
+press START 15 0
+at 600
+wait 1
+shot menu_before
+at 660
+press DOWN 12 0
+at 760
+wait 1
+shot menu_cursor
+at 820
+press A 12 0
+at 1100
+wait 1
+shot editor
+at 1150
+press A 12 0
+at 1200
+wait 1
+shot pt1
+at 1220
+stick 80 0 20
+at 1270
+wait 1
+shot mv1
+at 1300
+press A 12 0
+at 1340
+wait 1
+shot pt2
+at 1360
+stick 0 -80 20
+at 1395
+wait 1
+shot mv2
+at 1420
+press A 12 0
+at 1460
+wait 1
+shot pt3
+at 1480
+stick -80 0 20
+at 1530
+wait 1
+shot mv3
+at 1560
+press A 12 0
+at 1700
+wait 1
+shot points_4
+at 2100
+wait 1
+shot dwell_0
+at 2500
+wait 1
+shot dwell_1
+at 2900
+wait 1
+shot dwell_2
+len 3000

@@ -1,0 +1,94 @@
+diff --git a/src/audio/disk/external.c b/src/audio/disk/external.c
+--- a/src/audio/disk/external.c
++++ b/src/audio/disk/external.c
+@@ -1220,7 +1220,19 @@
+ 
+     if (!sBgmRomLoading) {
+         return;
++    }
++#ifdef PORT
++    /* decomp-3ds-ek-nodisk-audio.patch: with no disk mounted the disk BGM loads are refused
++       (load.c), so they never complete; stop waiting, or func_807424CC holds the race countdown
++       at 40 and sys_gfx.c spins on it forever. A mounted disk never takes this. */
++    {
++        extern int gdx_leo_disk_mounted(void);
++        if (!gdx_leo_disk_mounted()) {
++            sBgmRomLoading = false;
++            return;
++        }
+     }
++#endif
+ 
+     seqLoadComplete = AudioLoad_IsSeqLoadComplete(sActiveBgm + SEQ_DDBGM_MUTE_CITY);
+     fontLoadComplete = AudioLoad_IsFontLoadComplete(sActiveBgm + FONT_DDBGM_MUTE_CITY);
+diff --git a/src/audio/disk/lib/load.c b/src/audio/disk/lib/load.c
+--- a/src/audio/disk/lib/load.c
++++ b/src/audio/disk/lib/load.c
+@@ -767,6 +767,36 @@
+     return fontData;
+ }
+ 
++#ifdef PORT
++/* No disk mounted (an EK build booted without its .ndd): every MEDIUM_LBA load would issue a
++   LeoReadWrite that fails with DRIVE_NOT_READY and copies nothing, yet the caller still marks
++   the entry loaded -- so the "sequence" it then plays is whatever the audio heap held at that
++   address. Measured on test-combined (n3ds-ek, no .ndd, menus-longtail): the producer thread
++   spins forever inside AudioSynth_Update on that stale script while holding sAudioCtxMutex, and
++   the game fiber parks in AudioThread_QueueCmd behind it (frame ~127, ctx=0+1). Which bytes the
++   heap held depends on the binary's layout, which is why one build hangs and its neighbour does
++   not. Refuse the load up front instead, the way an allocation failure already does: no disk,
++   no disk audio. (An async refusal still posts its completion; external.c's Audio_CheckBgmLoad
++   stops waiting for a BGM that can never load -- both are needed so the race countdown and
++   sys_gfx.c's func_807424CC wait do not hold forever.) A mounted disk never takes this path, so every byte of a disk run is
++   unchanged. */
++static s32 AudioLoad_PortRefuseDiskless(const char* what, u32 tableType, u32 id, u32 medium) {
++    extern int gdx_leo_disk_mounted(void);
++    extern void gdx_ek_note(const char* what, unsigned int a, unsigned int b, unsigned int c,
++                            unsigned int d);
++    static s32 sDisklessLogs = 0;
++
++    if (medium != MEDIUM_LBA || gdx_leo_disk_mounted()) {
++        return false;
++    }
++    if (sDisklessLogs < 4) {
++        sDisklessLogs++;
++        gdx_ek_note(what, tableType, id, medium, 0u);
++    }
++    return true;
++}
++#endif
++
+ void* AudioLoad_SyncLoad(u32 tableType, u32 id, bool* didAllocate) {
+     size_t size;
+     AudioTable* table;
+@@ -796,6 +826,13 @@
+         medium = table->entries[id].medium;
+         cachePolicy = table->entries[id].cachePolicy;
+         romAddr = table->entries[realId].romAddr;
++#ifdef PORT
++        if (AudioLoad_PortRefuseDiskless("[audio-disk] SyncLoad REFUSED no disk table/id/medium", tableType,
++                                         realId, medium)) {
++            *didAllocate = false;
++            return NULL;
++        }
++#endif
+         switch (cachePolicy) {
+             case 0:
+                 ramAddr = AudioHeap_AllocPermanent(tableType, realId, size);
+@@ -1710,6 +1747,16 @@
+         cachePolicy = table->entries[id].cachePolicy;
+         devAddr = table->entries[realId].romAddr;
+         loadStatus = LOAD_STATUS_COMPLETE;
++#ifdef PORT
++        if (AudioLoad_PortRefuseDiskless("[audio-disk] AsyncLoad REFUSED no disk table/id/medium", tableType,
++                                         realId, medium)) {
++            /* Report it finished, exactly as the cache-hit path above does, so a caller waiting
++               on retQueue (Audio_DDBgmReadyInter's sample-bank load: D_80771C7C) is released.
++               The load status stays NOT_LOADED: nothing was loaded. */
++            osSendMesg(retQueue, (OSMesg) (retData << 0x18), OS_MESG_NOBLOCK);
++            return NULL;
++        }
++#endif
+ 
+ #ifdef PORT
+         /* B11d: the SAME bug ekdeadlock fixed in AudioLoad_SyncLoadInner, one function over,

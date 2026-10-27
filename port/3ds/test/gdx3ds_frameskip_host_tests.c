@@ -673,6 +673,289 @@ static void LiveSwitchTests(void) {
     printf("  live switch                  done\n");
 }
 
+/* NETTICK (hw 158a13e): a lockstep host waits on the peer's pads 2-20 ms a frame. A slot start the
+ * wait alone made late is not a miss (gdx_steady_late_by_net). Counted as one, it never lets a
+ * light render step back up: steady entered at D=2 (a race0 heavy trip) stays at 30 fps.
+ * Clock unit: microseconds. */
+static void SteadyNetLateTests(void) {
+    const uint64_t p = VBLANK_US;
+    Check(!gdx_steady_late_by_net(20000u, 0u, p), "net-late: no wait explains nothing");
+    Check(gdx_steady_late_by_net(20000u, 18000u, p), "net-late: an 18 ms wait explains a 20 ms late start");
+    Check(gdx_steady_late_by_net(15000u, 20000u, p), "net-late: a wait longer than the lateness explains it");
+    Check(!gdx_steady_late_by_net(30000u, 5000u, p), "net-late: 25 ms of own lateness is a miss");
+    Check(gdx_steady_late_by_net(9000u, 1000u, p), "net-late: within half a vblank once the wait is out");
+    {
+        GdxSteadyCtl oldRule;
+        GdxSteadyCtl newRule;
+        int i;
+        int oldMinD = 2;
+        int newMinD = 2;
+        gdx_steady_init(&oldRule, 1, 4, 2, p, STEADY_MARGIN_US);
+        gdx_steady_init(&newRule, 1, 4, 2, p, STEADY_MARGIN_US);
+        for (i = 0; i < 1200; i++) {
+            /* one slot in three starts ~20 ms late: an 18 ms pad wait plus 2 ms of our own */
+            const int late = (i % 3) == 0;
+            const uint64_t rw = 5000u;
+            const int newMissed = late && !gdx_steady_late_by_net(20000u, 18000u, p);
+            gdx_steady_note_slot(&oldRule, rw, late);
+            gdx_steady_note_slot(&newRule, rw, newMissed);
+            if (oldRule.d < oldMinD) {
+                oldMinD = oldRule.d;
+            }
+            if (newRule.d < newMinD) {
+                newMinD = newRule.d;
+            }
+        }
+        printf("net-late: light render at D=2, 1 slot in 3 held by pads: old rule final D=%d (min %d), "
+               "new rule final D=%d (min %d)\n", oldRule.d, oldMinD, newRule.d, newMinD);
+        Check(oldMinD == 2, "plant check: counted as misses, pad-wait late starts pin D=2 (30 fps)");
+        Check(newRule.d == 1, "net-late: not counted, a light render steps back up to D=1 (60 fps)");
+    }
+}
+
+/* o3dsperf (hw 158a13e): an Old 3DS MP race at D=3 whose render dropped to ~24 ms (+3.5 ms skip
+ * ticks) fits the 2-tick slot (24 + 4 ms margin <= 33.4) but not at the stock step-up rule's 80%
+ * (26.7 ms): it stays at 20 fps. [debug] steady_lockstep_up_pct 90 (30.0 ms) lets it step up, and
+ * the step-down rule (p75 must miss the slot at 100%) does not bounce it back. Clock: us. */
+static int RunUpPct(unsigned pct, uint64_t rw, int* minD) {
+    GdxSteadyCtl ctl;
+    const uint64_t p = VBLANK_US;
+    int i;
+    gdx_steady_init(&ctl, 1, 3, 3, p, STEADY_MARGIN_US);
+    gdx_steady_set_up_pct(&ctl, pct);
+    *minD = ctl.d;
+    for (i = 0; i < 2000; i++) {
+        const int d = ctl.d;
+        const uint64_t skips = (uint64_t)(d - 1) * 3500u;
+        const uint64_t tail = skips > STEADY_MARGIN_US ? skips : STEADY_MARGIN_US;
+        const int missed = rw + tail > (uint64_t)d * p;
+        int k;
+        for (k = 0; k < d - 1; k++) {
+            gdx_steady_note_skip(&ctl, 3500u);
+        }
+        gdx_steady_note_slot(&ctl, rw, missed);
+        if (ctl.d < *minD) {
+            *minD = ctl.d;
+        }
+    }
+    return ctl.d;
+}
+
+static void SteadyUpPctTests(void) {
+    int minD80 = 0;
+    int minD90 = 0;
+    int minDHeavy = 0;
+    const int d80 = RunUpPct(80u, 24000u, &minD80);
+    const int d90 = RunUpPct(90u, 24000u, &minD90);
+    const int dHeavy = RunUpPct(90u, 31000u, &minDHeavy);
+    printf("up-pct: 24 ms render from D=3: 80%% -> D=%d (min %d), 90%% -> D=%d (min %d); 31 ms at 90%% -> D=%d\n", d80,
+           minD80, d90, minD90, dHeavy);
+    Check(d80 == 3, "up-pct: the stock 80% rule keeps a 24 ms render at D=3");
+    Check(d90 == 2 && minD90 == 2, "up-pct: 90% steps a 24 ms render up to D=2 and holds it there");
+    Check(dHeavy == 3 && minDHeavy == 3, "up-pct: a 31 ms render does not step up at 90%");
+}
+
+/* o3ds60 steady_d1_hold_pct (hw a3b4531: every D = 1 stint ended after 3 misses in 4 slots): at
+ * D = 1, 3 misses in a row out of every 16 slots (81% hit) step the stock rules down to D = 2;
+ * with the hold at 80% D = 1 stays. Every slot missed still steps down. Clock: us. */
+static int RunD1Hold(unsigned pct, unsigned missPer16, unsigned long* holds) {
+    GdxSteadyCtl ctl;
+    const uint64_t p = VBLANK_US;
+    unsigned i;
+    gdx_steady_init(&ctl, 1, 4, 1, p, STEADY_MARGIN_US);
+    gdx_steady_set_d1_hold_pct(&ctl, pct);
+    for (i = 0; i < 64u && ctl.d == 1; i++) {
+        const int missed = (i % 16u) < missPer16;
+        (void) gdx_steady_note_slot(&ctl, missed ? 16000u : 9000u, missed);
+    }
+    *holds = ctl.d1Holds;
+    return ctl.d;
+}
+
+static void SteadyD1HoldTests(void) {
+    unsigned long h0 = 0;
+    unsigned long h80 = 0;
+    unsigned long hBad = 0;
+    const int dOff = RunD1Hold(0u, 3u, &h0);
+    const int dHold = RunD1Hold(80u, 3u, &h80);
+    const int dBad = RunD1Hold(80u, 16u, &hBad);
+    printf("d1-hold: 3 misses / 16 slots: off -> D=%d, 80%% -> D=%d (holds %lu); every slot missed at 80%% -> D=%d\n",
+           dOff, dHold, h80, dBad);
+    Check(dOff == 2, "d1-hold: off, 3 misses in a row at D=1 step down (the stock rule)");
+    Check(dHold == 1 && h80 > 0, "d1-hold: at 80% an 81% hit rate stays at D=1");
+    Check(dBad == 2, "d1-hold: at 80% a 0% hit rate still steps down");
+}
+
+/* o3ds60 steady_d1_hold_slots (hw 9088d3a, 3D: stints at 93-97% hit left D = 1 on 4 misses in a
+ * row): 4 misses in a row (18 ms renders) out of every 64 slots. 80% over 16 slots steps down;
+ * 85% over 64 holds D = 1 for 256 slots. Every slot missed at 85/64 still steps down, within 12. */
+static int RunD1Window(unsigned pct, unsigned slots, unsigned missPer64, unsigned total, unsigned* atSlot) {
+    GdxSteadyCtl ctl;
+    unsigned i;
+    gdx_steady_init(&ctl, 1, 4, 1, VBLANK_US, STEADY_MARGIN_US);
+    gdx_steady_set_d1_hold_pct(&ctl, pct);
+    gdx_steady_set_d1_hold_slots(&ctl, slots);
+    *atSlot = total;
+    for (i = 0; i < total && ctl.d == 1; i++) {
+        const int missed = ((i + 40u) % 64u) < missPer64;
+        (void) gdx_steady_note_slot(&ctl, missed ? 18000u : 11000u, missed);
+        if (ctl.d != 1) {
+            *atSlot = i + 1u;
+        }
+    }
+    return ctl.d;
+}
+
+/* o3ds60 steady_d1_retry: at D = 2 with an 11 ms render (stock: p90 + 4 ms margin must fit 80% of
+ * D = 1, never), a 120-tick retry at 85% steps up to D = 1 within ~2 s of ticks. */
+static int RunD1Retry(unsigned long retryTicks, unsigned long* ticksToUp) {
+    GdxSteadyCtl ctl;
+    unsigned long ticks = 0;
+    gdx_steady_init(&ctl, 1, 4, 2, VBLANK_US, STEADY_MARGIN_US);
+    gdx_steady_set_d1_retry(&ctl, retryTicks, 85u);
+    *ticksToUp = 0;
+    while (ticks < 3600u && ctl.d == 2) {
+        gdx_steady_note_skip(&ctl, 3000u);
+        (void) gdx_steady_note_slot(&ctl, 11000u, 0);
+        ticks += 2u;
+    }
+    *ticksToUp = ticks;
+    return ctl.d;
+}
+
+static void SteadyD1WindowTests(void) {
+    unsigned atOld = 0;
+    unsigned atNew = 0;
+    unsigned atBad = 0;
+    unsigned long upStock = 0;
+    unsigned long upRetry = 0;
+    const int dOld = RunD1Window(80u, 16u, 4u, 256u, &atOld);
+    const int dNew = RunD1Window(85u, 64u, 4u, 256u, &atNew);
+    const int dBad = RunD1Window(85u, 64u, 64u, 256u, &atBad);
+    const int dStock = RunD1Retry(0u, &upStock);
+    const int dRetry = RunD1Retry(120u, &upRetry);
+    printf("d1-window: 4-miss bursts per 64 slots: 80/16 -> D=%d (slot %u), 85/64 -> D=%d; all missed at 85/64 -> "
+           "D=%d at slot %u\n", dOld, atOld, dNew, dBad, atBad);
+    printf("d1-retry: 11 ms renders at D=2: stock -> D=%d after %lu ticks, retry 120 -> D=%d after %lu ticks\n", dStock,
+           upStock, dRetry, upRetry);
+    Check(dOld == 2, "d1-window: 80% over 16 slots leaves D=1 on a 4-miss burst (the 9088d3a rule)");
+    Check(dNew == 1, "d1-window: 85% over 64 slots holds D=1 through 4-miss bursts (94% hit)");
+    Check(dBad == 2 && atBad <= 12u, "d1-window: every slot missed still steps down within 12 slots");
+    Check(dStock == 2, "d1-retry: the stock up rule keeps an 11 ms render at D=2");
+    Check(dRetry == 1 && upRetry <= 260u, "d1-retry: the retry steps an 11 ms render up to D=1 within ~2 s");
+}
+
+/* o3ds-mp16 steady_d1_drift (hw card-3, Old 3DS 2D 16-racer VS): D = 1 slots that cost a little over
+ * a vblank (15.7 ms render + 2.2 ms post-present tail = 17.9 ms) drift: each start is 1.2 ms later
+ * than the last. The start rule (vblank passed by over half a period) calls ~half the slots missed
+ * and steps down to 30 Hz; only ~1 vblank in 14 actually repeats a frame. Simulated with the slot
+ * clock frameskip.c keeps (a late start keeps its vblank unless a whole period passed). */
+typedef struct DriftRun {
+    int d;
+    unsigned slots;
+    unsigned oldMissed;
+    unsigned repeats;
+} DriftRun;
+
+static DriftRun RunD1Drift(int driftRule, unsigned holdPct, uint64_t rw, uint64_t post, unsigned total) {
+    GdxSteadyCtl ctl;
+    DriftRun r = { 1, 0, 0, 0 };
+    const uint64_t p = VBLANK_US;
+    uint64_t vblank = 100000u;
+    uint64_t t = vblank;
+    uint64_t prevDisplay = 0;
+    unsigned i;
+    gdx_steady_init(&ctl, 1, 3, 1, p, STEADY_MARGIN_US);
+    gdx_steady_set_d1_hold_pct(&ctl, holdPct);
+    gdx_steady_set_d1_hold_slots(&ctl, 64u);
+    for (i = 0; i < total && ctl.d == 1; i++) {
+        const uint64_t target = vblank + p;
+        uint64_t start = t < target ? target : t;
+        int beginMissed = 0;
+        int repeat;
+        uint64_t display;
+        if (start > target + p / 2u) {
+            beginMissed = 1;
+            vblank = target + ((start - target) / p) * p;
+        } else {
+            vblank = target;
+        }
+        display = gdx_steady_d1_display(vblank, start + rw, STEADY_MARGIN_US, p);
+        repeat = gdx_steady_d1_repeats(prevDisplay, display, p);
+        prevDisplay = display;
+        r.oldMissed += beginMissed ? 1u : 0u;
+        r.repeats += repeat ? 1u : 0u;
+        (void) gdx_steady_note_slot(&ctl, rw, driftRule ? (beginMissed && repeat) : beginMissed);
+        t = start + rw + post;
+        r.slots++;
+    }
+    r.d = ctl.d;
+    return r;
+}
+
+static void SteadyD1DriftTests(void) {
+    const DriftRun oldRule = RunD1Drift(0, 85u, 15700u, 2200u, 640u);
+    const DriftRun drift = RunD1Drift(1, 75u, 15700u, 2200u, 640u);
+    const DriftRun fits = RunD1Drift(1, 75u, 12000u, 2000u, 640u);
+    const DriftRun heavy = RunD1Drift(1, 75u, 24000u, 2500u, 640u);
+    uint64_t d0;
+    printf("d1-drift: 17.9 ms slots: start rule -> D=%d after %u slots (%u missed); drift rule -> D=%d after %u slots "
+           "(%u repeats, start rule would say %u); 14 ms -> D=%d (%u repeats); 26.5 ms -> D=%d after %u slots\n",
+           oldRule.d, oldRule.slots, oldRule.oldMissed, drift.d, drift.slots, drift.repeats, drift.oldMissed, fits.d,
+           fits.repeats, heavy.d, heavy.slots);
+    Check(oldRule.d == 2 && oldRule.slots < 64u, "d1-drift: the start rule steps a drifting 17.9 ms D=1 down to 30 Hz");
+    Check(drift.d == 1 && drift.slots == 640u, "d1-drift: the drift rule holds D=1 for 640 slots of 17.9 ms");
+    Check(drift.repeats >= 30u && drift.repeats <= 55u, "d1-drift: ~1 repeated frame per 1.2 ms / 16.7 ms of overrun");
+    Check(drift.oldMissed > 4u * drift.repeats, "d1-drift: the start rule over-counts a drift several times over");
+    Check(fits.d == 1 && fits.repeats == 0u, "d1-drift: slots inside a vblank never repeat");
+    Check(heavy.d == 2, "d1-drift: 26.5 ms slots (a repeat every ~2nd vblank) still step down");
+    d0 = gdx_steady_d1_display(1000u, 1000u + 5000u, STEADY_MARGIN_US, VBLANK_US);
+    Check(d0 == 1000u + VBLANK_US, "d1-drift: a present with margin to spare reaches the next vblank");
+    Check(gdx_steady_d1_display(1000u, 1000u + 14000u, STEADY_MARGIN_US, VBLANK_US) == 1000u + 2u * VBLANK_US,
+          "d1-drift: a present inside the margin reaches the vblank after");
+    Check(!gdx_steady_d1_repeats(0u, d0, VBLANK_US), "d1-drift: no previous slot, no repeat");
+    Check(!gdx_steady_d1_repeats(d0, d0 + VBLANK_US, VBLANK_US), "d1-drift: consecutive vblanks are not a repeat");
+    Check(gdx_steady_d1_repeats(d0, d0 + 2u * VBLANK_US, VBLANK_US), "d1-drift: a skipped vblank is a repeat");
+}
+
+/* o3ds3d stereo_mp_lock30: the Old 3DS rules (85/64 hold, 120-tick retry at 85%) with the floor pinned
+ * at 2. A 6 ms render (fits D = 1 by every rule) never steps up while pinned; a pin at D = 1 lifts D
+ * to 2 at once; the unpin hands D back to the retry, which steps up within ~2 s. */
+static void SteadyLock30Tests(void) {
+    GdxSteadyCtl ctl;
+    unsigned long ticks = 0;
+    unsigned long ticksToUp = 0;
+    unsigned long retriesPinned;
+    int dPinned;
+    int lifted;
+    gdx_steady_init(&ctl, 1, 3, 1, VBLANK_US, STEADY_MARGIN_US);
+    gdx_steady_set_d1_hold_pct(&ctl, 85u);
+    gdx_steady_set_d1_hold_slots(&ctl, 64u);
+    gdx_steady_set_d1_retry(&ctl, 120u, 85u);
+    gdx_steady_pin_min(&ctl, 2);
+    lifted = ctl.d;
+    while (ticks < 3600u) {
+        gdx_steady_note_skip(&ctl, 3000u);
+        (void) gdx_steady_note_slot(&ctl, 6000u, 0);
+        ticks += 2u;
+    }
+    dPinned = ctl.d;
+    retriesPinned = ctl.d1Retries;
+    gdx_steady_pin_min(&ctl, 1);
+    ticks = 0;
+    while (ticks < 3600u && ctl.d == 2) {
+        gdx_steady_note_skip(&ctl, 3000u);
+        (void) gdx_steady_note_slot(&ctl, 6000u, 0);
+        ticks += 2u;
+    }
+    ticksToUp = ticks;
+    printf("lock30: pin at D=1 -> D=%d; 6 ms renders pinned 3600 ticks -> D=%d retries=%lu; unpinned -> D=%d after "
+           "%lu ticks\n", lifted, dPinned, retriesPinned, ctl.d, ticksToUp);
+    Check(lifted == 2, "lock30: the pin lifts D = 1 to 2 at once");
+    Check(dPinned == 2 && retriesPinned == 0u, "lock30: pinned, no step up and no D = 1 retry in 3600 ticks");
+    Check(ctl.d == 1 && ticksToUp <= 260u, "lock30: unpinned, the retry steps up to D = 1 within ~2 s");
+}
+
 int main(void) {
     const Plant fast = {1000, 0, 1, 0};           /* a menu: renders inside one vblank */
     const Plant o3dsRace = {4000, 63800, 0, 0};    /* hardware GP race: ~4 ms logic, 67.8 ms/frame */
@@ -781,6 +1064,12 @@ int main(void) {
     Race0GuardTests();
     Race0DwellTests();
     Race0PostFinishTests();
+    SteadyNetLateTests();
+    SteadyUpPctTests();
+    SteadyD1HoldTests();
+    SteadyD1WindowTests();
+    SteadyD1DriftTests();
+    SteadyLock30Tests();
 
     if (sFailures == 0) {
         printf("=== ALL PASS (0 failures) ===\n");

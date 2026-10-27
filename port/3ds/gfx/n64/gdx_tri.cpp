@@ -1261,6 +1261,11 @@ void Interp::SpTri(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bool is
             out[9] = 1.0f;
         }
     }
+#ifdef EXPANSION_KIT
+    if (GDX_UNLIKELY(mEkCap != nullptr)) {
+        EkPvCaptureTri(gdxOut, v_arr[0], ds); /* [native] ek_editmesh: record this element's output */
+    }
+#endif
     if (mHsxSkyVfy && !is_rect) {
         HsxSkyVerifyEmit(ds, v_arr, gdxOut, halfTexel); /* [native] hudsky_emit=2: the sky's compact packing */
     }
@@ -2197,6 +2202,14 @@ void Interp::TrackMatAfter(MachMatRec* table, int nBuckets, int ways, int modeAr
     MachMatOps::Bank(*this, rec, mTriMemo, sTrkPend.probe);
     o.banked = 1;
 }
+
+#ifdef EXPANSION_KIT
+/* [native] ek_editmesh (gdx_ekpreview.cpp): a served element opens its batch exactly as SpTri does and
+ * then latches the aux from the recorded vertex 0 -- TrackMatOps' verbatim copy of SpTri's latch. */
+void Interp::EkLatchAux(const DrawState& ds, const LoadedVertex& v0) {
+    TrackMatOps::LatchAux(*this, ds, v0, mPackAux);
+}
+#endif
 
 /* [native] hudsky_emit: the sky's compact triangle path (hudsky). */
 #include "gdx_hudsky_tri.inc"

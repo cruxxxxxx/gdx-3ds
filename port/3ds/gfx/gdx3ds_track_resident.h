@@ -26,7 +26,15 @@
  *   track_resident_maxerr  per-ring float24 gate, 1/1000 px (default 125 = track_retained's)
  *   track_resident_window  chunks either side whose layouts/tables a ring may carry (default 32)
  * Receipts: `[trkres] bake ...` per course load, `[trkres] adopt ...` on the render side, and the
- * `res` block of the `[trkrr] frame=` line. */
+ * `res` block of the `[trkrr] frame=` line.
+ *
+ * Memory (ship6): ONE linear arena, reserved once at boot and reused by every bake: two course
+ * slots (chunks, rings, hash and the vertices the GPU reads -- no per-course malloc, realloc or
+ * linearAlloc, which fragmented the Old 3DS heap until a bake failed after ~6 course loads) and
+ * the game thread's scratch (the bake's chunk table, the NRR index). A course past a slot's
+ * capacity, or both slots busy, skips the bake: the previous course's set is dropped too (the
+ * per-frame path draws), and `[trkres] arena ...` says so (an MP-budget line). Receipts:
+ * `[trkres] arena reserved ...` at boot, `[trkres] bake ... slot=` per course. */
 #ifndef GDX3DS_TRACK_RESIDENT_H
 #define GDX3DS_TRACK_RESIDENT_H
 
@@ -40,6 +48,11 @@ extern "C" {
 
 /* Game thread, Course_Init (gdxtrk_course_loaded): bake the current course. */
 void gdx3ds_track_resident_bake(void);
+
+/* ship6: boot (main_3ds.cpp, after the launch variants): latch the levers and, with
+ * track_resident on, reserve the fixed linear arena every bake reuses (two course slots + the
+ * game thread's bake scratch). The first bake reserves it instead when this was not called. */
+void gdx3ds_track_resident_reserve(void);
 
 /* Game-data side (port/3ds/game/gdx3ds_track_bake_game.c, compiled with the game's headers). */
 int gdxtrk_game_chunk_count(void);
@@ -78,8 +91,11 @@ struct GdxTrkResChunk {
     int16_t hi[3];
 };
 
-/* One course's bake. Immutable once published; owned by the render side after adoption. */
+/* One course's bake. Immutable once published; owned by the render side after adoption.
+ * ship6: the arrays live in one of the arena's two slots (gdx3ds_track_resident.cpp), never in
+ * the heap; `verts` IS the GPU's linear buffer (GdxTrkResView.linear). */
 struct GdxTrkResSet {
+    int32_t slot;       /* ship6: the arena slot holding the arrays; -1 = the "clear" set (no bake) */
     uint32_t generation;
     int32_t course;
     uint32_t nChunks;

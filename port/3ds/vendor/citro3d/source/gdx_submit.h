@@ -19,6 +19,9 @@
 // is initialized (early boot) or on a non-3DS build of this vendored source.
 extern void gdx3ds_filelog_write(const char* msg, size_t len) __attribute__((weak));
 extern void gdx3ds_filelog_flush(void) __attribute__((weak));
+// o3ds-cpucuts: the svcBreak follows at once, so the line must not wait for the async writer
+// ([debug] filelog_flush_defer turns a race's gdx3ds_filelog_flush into a writer wake).
+extern void gdx3ds_filelog_flush_sync(void) __attribute__((weak));
 static inline void GdxCmdbufOverflowLog(const char* where, u32 words, u32 off, u32 size)
 {
 	if (gdx3ds_filelog_write == NULL) {
@@ -29,7 +32,9 @@ static inline void GdxCmdbufOverflowLog(const char* where, u32 words, u32 off, u
 	                  where, (unsigned long)words, (unsigned long)off, (unsigned long)size);
 	if (n > 0) {
 		gdx3ds_filelog_write(buf, (size_t)n);
-		if (gdx3ds_filelog_flush != NULL) {
+		if (gdx3ds_filelog_flush_sync != NULL) {
+			gdx3ds_filelog_flush_sync();
+		} else if (gdx3ds_filelog_flush != NULL) {
 			gdx3ds_filelog_flush();
 		}
 	}

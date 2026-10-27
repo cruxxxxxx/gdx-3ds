@@ -691,6 +691,16 @@ void gdx_disk_stream_report(void) {
     gdx_port_logf("[diskstream] %s verify_ok=%u verify_bad=%u\n",
                   gdx_disk_stream_format_stats(stats, sizeof(stats)),
                   gdx_disk_stream_verify_ok(), gdx_disk_stream_verify_bad());
+    /* ekaudio2 `[debug] disk_stream_coalesce_kb`: how many of the fills above were coalesced
+       runs. hostReads in the line above counts each run once, so `blocks - runs` is the SD
+       requests the runs saved. Silent until the first run, so a lever-off log is unchanged. */
+    unsigned long long fillRuns = 0;
+    unsigned long long fillBlocks = 0;
+    gdx_disk_stream_fill_stats(&fillRuns, &fillBlocks);
+    if (fillRuns != 0) {
+        gdx_port_logf("[diskfill] runs=%llu blocks=%llu saved=%llu SD requests\n", fillRuns,
+                      fillBlocks, fillBlocks - fillRuns);
+    }
 }
 
 // Deletion-gate verdict: 1 only after a boot both reconstructed the disk from fzerox-disk.o2r

@@ -1,0 +1,101 @@
+--- a/src/game/course.c
++++ b/src/game/course.c
+@@ -2133,6 +2133,14 @@
+     Vec3f spA8;
+     s32 pad;
+ 
++#if defined(PORT) && defined(GDX_NATIVE_TRACK) && defined(EXPANSION_KIT)
++    {
++        /* ekeditmesh [native] ek_editmesh_track (port/3ds/game/gdx3ds_ek_editmesh_game.c): the chunks
++           are rebuilt here, so the editor's surface preview is re-keyed (re-baked once it settles). */
++        extern void gdx_ek_editmesh_gen_bump(void);
++        gdx_ek_editmesh_gen_bump();
++    }
++#endif
+     spB4 = 0;
+     segment = courseInfo->courseSegments;
+ 
+@@ -4526,17 +4534,54 @@
+ }
+ 
+ extern u32 gGameFrameCount;
++
++#if defined(PORT) && defined(GDX_NATIVE_TRACK) && defined(EXPANSION_KIT)
++/* ekeditmesh [native] ek_editmesh_track (port/3ds/game/gdx3ds_ek_editmesh_game.c): the course
++   editor's course-surface preview walk below goes through the [native] track recorder (the same record, markers and
++   GPU-transform replay as Course_Draw), drawn from the resident bake of the edited course, which
++   is keyed on the chunk generation. The [c5cat] TRK/MISC words (written only while that clock is
++   armed) time the walk's render side as trk=. Lever off: begin returns 0 and the list is stock. */
++extern s32 gdx_ek_editmesh_begin(void);
++extern void gdx_ek_editmesh_end(void);
++extern int gdx_c5cat_armed(void);
++#define GDX_EKMESH_C5CAT(cat)                                                              \
++    {                                                                                      \
++        if (gdx_c5cat_armed()) {                                                           \
++            sCourseDisp->words.w0 = ((u32) G_NOOP << 24) | (0x61u << 16) | (u32) (cat);    \
++            sCourseDisp->words.w1 = 0;                                                     \
++            sCourseDisp++;                                                                 \
++        }                                                                                  \
++    }
++#define GDX_EKMESH_LEAVE()        \
++    {                             \
++        if (gdxEditMesh) {        \
++            GDXTRK_END();         \
++            gdx_ek_editmesh_end(); \
++        }                         \
++        GDX_EKMESH_C5CAT(1);      \
++    }
++#endif
+ 
+ Gfx* func_800A95B4(Gfx* gfx) {
+     s32 trackType;
+     u32 trackShape;
+     unk_800CF528* temp_a1;
++#if defined(PORT) && defined(GDX_NATIVE_TRACK) && defined(EXPANSION_KIT)
++    s32 gdxEditMesh;
++#endif
+ 
+     if (gSegmentChunkCount < 3) {
+         return gfx;
+     }
++#if defined(PORT) && defined(GDX_NATIVE_TRACK) && defined(EXPANSION_KIT)
++    /* Before the walk's own setup: a re-bake runs the decomp's ring setup functions. */
++    gdxEditMesh = gdx_ek_editmesh_begin();
++#endif
+     D_800F89D8 = true;
+     sCourseDisp = gfx;
++#if defined(PORT) && defined(GDX_NATIVE_TRACK) && defined(EXPANSION_KIT)
++    GDX_EKMESH_C5CAT(3);
++#endif
+     gSPDisplayList(sCourseDisp++, D_8014040);
+     gSPDisplayList(sCourseDisp++, D_8014078);
+ #ifdef PORT
+@@ -4559,10 +4604,18 @@
+     D_800F89C0 = 0;
+     sWorkingSegmentChunk = gSegmentChunks;
+     sWorkingNextSegmentChunk = &gSegmentChunks[1];
++#if defined(PORT) && defined(GDX_NATIVE_TRACK) && defined(EXPANSION_KIT)
++    if (gdxEditMesh) {
++        GDXTRK_BEGIN(0);
++    }
++#endif
+     do {
+ #ifdef EXPANSION_KIT
+         // Unsure why this check is like this
+         if (gCourseVtxPtr >= &gGfxPool->effectsVtxBuffer[0x7E5]) {
++#if defined(PORT) && defined(GDX_NATIVE_TRACK)
++            GDX_EKMESH_LEAVE();
++#endif
+             return sCourseDisp;
+         }
+ #endif
+@@ -4601,6 +4654,9 @@
+ 
+     } while (sWorkingSegmentChunk != sLastSegmentChunk);
+ 
++#if defined(PORT) && defined(GDX_NATIVE_TRACK) && defined(EXPANSION_KIT)
++    GDX_EKMESH_LEAVE();
++#endif
+     return sCourseDisp;
+ }
+ 

@@ -13,6 +13,7 @@
    headers of its own (see the contract note at the top of it), so global.h must land first. */
 #include "gdx_camera_pose.h"
 #include "gdx_discord.h" /* GdxDiscordSnapshot, filled by gdx_discord_snapshot below */
+#include "gdx_snapshot.h" /* mp-snapshot: GDX_SNAP_STATE_BSS for gSegments */
 
 /* port_log.h pulls in <stdio.h> which clashes with the decomp's libc/stdint.h.
    Use gdx_ck (defined in n64_sched.c, which CAN include stdio.h) for logging. */
@@ -68,7 +69,11 @@ extern unk_80128C94* D_80128C94;
 //   reserved for gdx_rdram_peek_raw, carved between the GfxPool and the arena.
 
 unsigned char* gdx_rdram          = NULL;
-static size_t  gdx_rdram_bump     = 0;
+/* mp-snapshot: the FRONT/BACK cursor is simulation state -- a race tick can allocate (the texture
+   registry's lazily registered glyphs, object.c), and a resimulated tick must carve the same
+   addresses the real one did -- so it is restored with the decomp image (GDX_SNAP_STATE_BSS).
+   gdx_rdram_persist_top is NOT: its owners are port statics that a restore does not rewind. */
+static size_t  gdx_rdram_bump GDX_SNAP_STATE_BSS;
 size_t         gdx_rdram_arena_start = 0;
 static size_t  gdx_rdram_persist_top = 0;
 static size_t  gdx_rdram_staging_base = 0;
@@ -510,6 +515,30 @@ void gdx_rdram_mode_reset(void) {
        because this branch runs only after the baseline call above — i.e. on a real mode
        transition, by which point the renderer is live. A C TU cannot null-check the C++
        interpreter instance, so that call-site timing IS the guard. */
+#if defined(GDX_PLATFORM_3DS)
+    /* native-all S1 [native] atlas_race_reset: gGameMode is already the NEW mode here (game.c sets
+       it before Arena_StartInit). Entering a race, the owned interpreter's clear below also empties
+       the HUD texture atlas, so the race HUD packs onto fresh pages whatever the menus left there
+       (nimenu-progress.md 4.1). Asked BEFORE the clear so a deferred (render-thread) clear sees it. */
+    {
+        extern void gdx_ninterp_atlas_reset_request(void) __attribute__((weak));
+        switch (gGameMode) {
+            case GAMEMODE_GP_RACE:
+            case GAMEMODE_PRACTICE:
+            case GAMEMODE_VS_2P:
+            case GAMEMODE_VS_3P:
+            case GAMEMODE_VS_4P:
+            case GAMEMODE_TIME_ATTACK:
+            case GAMEMODE_DEATH_RACE:
+                if (&gdx_ninterp_atlas_reset_request != NULL) {
+                    gdx_ninterp_atlas_reset_request();
+                }
+                break;
+            default:
+                break;
+        }
+    }
+#endif
     gdx_texcache_request_clear();
 #endif
 }
@@ -596,8 +625,10 @@ void gdx_io_write(u32 addr, u32 data) {
  * agree on 32-bit hosts too. NOTE decomp/include/libc/stdint.h currently
  * typedefs uintptr_t as u64 for every non-LP64 PORT host; that header needs an
  * ILP32 branch before a 32-bit build is coherent (tracked in
- * docs/research/32bit-sweep.md). */
-uintptr_t gSegments[16];
+ * docs/research/32bit-sweep.md).
+ * mp-snapshot: simulation state (the segment table the race reads); GDX_SNAP_STATE_BSS puts it in
+ * the snapshot's .bss block on 3DS (port/gdx_snapshot.h). */
+uintptr_t gSegments[16] GDX_SNAP_STATE_BSS;
 
 static void* Gdx_ResolvePortAddress(uintptr_t addr) {
     static int resolveLogs = 0;
@@ -1905,6 +1936,24 @@ static int gdx_racemap_mode_is_race(int mode) {
     }
 }
 
+/* MP phase 3 (mp-fullview): the racer the bottom screen describes. 0 (stock) unless
+   [net] mp_fullview / [debug] fullview_player shows player k full screen on this console, then k
+   (port/3ds/game/gdx3ds_fullview_game.c; weak so every other target links without it). */
+#if defined(GDX_PLATFORM_3DS)
+extern int gdx_fv_local_racer(void) __attribute__((weak));
+#endif
+static int gdx_bottom_local_racer(void) {
+#if defined(GDX_PLATFORM_3DS)
+    if (gdx_fv_local_racer != NULL) {
+        const int k = gdx_fv_local_racer();
+        if (k >= 0 && k < 4) {
+            return k;
+        }
+    }
+#endif
+    return 0;
+}
+
 void gdx_racemap_snapshot(GdxRaceMapSnapshot* out) {
     extern s32 gNumPlayers;
     extern s32 gTotalRacers;
@@ -1915,11 +1964,21 @@ void gdx_racemap_snapshot(GdxRaceMapSnapshot* out) {
     extern CourseInfo* gCurrentCourseInfo;
 
     const int mode = GET_MODE(gGameMode);
+    const int local = gdx_bottom_local_racer();
     int numPlayersIndex;
     int otherCount;
     f32 scale;
     int i;
 
+#ifdef EXPANSION_KIT
+    {
+        static const void* sSeenTex = NULL;
+        if ((const void*) sCourseMinimapTex != sSeenTex) {
+            gdx_dbg_logf("[racemap] minimap tex %p -> %p (mode %d)\n", sSeenTex, (void*) sCourseMinimapTex, mode);
+            sSeenTex = sCourseMinimapTex;
+        }
+    }
+#endif
     memset(out, 0, sizeof(*out));
     out->mode = mode;
     out->numPlayers = gNumPlayers;
@@ -1948,9 +2007,9 @@ void gdx_racemap_snapshot(GdxRaceMapSnapshot* out) {
     }
 
     out->valid = 1;
-    out->lap = gRacers[0].lap;
+    out->lap = gRacers[local].lap;
     out->totalLaps = gTotalLapCount;
-    out->position = gRacers[0].position;
+    out->position = gRacers[local].position;
     out->totalRacers = gTotalRacers;
     out->blinkOn = ((gGameFrameCount % 16) < 8) ? 1 : 0;
 
@@ -1972,7 +2031,7 @@ void gdx_racemap_snapshot(GdxRaceMapSnapshot* out) {
         otherCount = 4;
     }
     for (i = 0; i < otherCount; i++) {
-        if (i == 0) {
+        if (i == local) {
             continue; /* playerIndex — drawn last, with the blink */
         }
         gdx_racemap_push(out, &gRacers[i], scale, GDX_RACEMAP_MARKER_PLAYER1 + i, 0);
@@ -1985,7 +2044,13 @@ void gdx_racemap_snapshot(GdxRaceMapSnapshot* out) {
             gdx_racemap_push(out, gFastestGhostRacer->racer, scale, GDX_RACEMAP_MARKER_GHOST, 0);
         }
     }
-    gdx_racemap_push(out, &gRacers[0], scale, GDX_RACEMAP_MARKER_PLAYER1, 1);
+    gdx_racemap_push(out, &gRacers[local], scale, GDX_RACEMAP_MARKER_PLAYER1 + local, 1);
+}
+
+/* A pointer no host build maps: NULL or the first MB (NULL plus an offset). Hardware faults on a
+   read there, the emulator reads zeros and hides it, so callers log "[nullread]" and skip. */
+static int gdx_ptr_unmapped(const void* p) {
+    return (uintptr_t) p < 0x00100000u;
 }
 
 int gdx_racemap_bitmap(const unsigned char** outTex, unsigned short* outPalette4) {
@@ -1994,6 +2059,15 @@ int gdx_racemap_bitmap(const unsigned char** outTex, unsigned short* outPalette4
     /* EK only: the buffer is Arena_Allocate'd per race. In the retail build it is a static
        array, and a NULL test on it is a compile-time constant (and a -Waddress warning). */
     if (sCourseMinimapTex == NULL) {
+        return 0;
+    }
+    if (gdx_ptr_unmapped(sCourseMinimapTex)) {
+        static int sLogged = 0;
+        if (sLogged < 4) {
+            sLogged++;
+            gdx_dbg_logf("[nullread] racemap bitmap tex=%p mode=%d (#%d)\n", (void*) sCourseMinimapTex,
+                         (int) GET_MODE(gGameMode), sLogged);
+        }
         return 0;
     }
 #endif
@@ -2026,6 +2100,29 @@ int gdx_title_demo_active(void) {
     return gTitleDemoState != TITLE_DEMO_INACTIVE;
 }
 
+/* card-4b (hw, New 3DS: "when i went to VS, the bottom screen just showed the g-diffuser logo and
+   didnt show multiplayer menu until i went back to title screen"; the log's receipt on the MAIN
+   MENU read demo=1): the audio thread arms the attract demo (external.c, gTitleDemoState =
+   TITLE_DEMO_ACTIVE) from the title BGM's sample position while gGameMode still reads TITLE, so a
+   START on the title in that window can carry an armed demo into the main menu, where nothing in
+   game.c clears it (func_80068F04 only resets it while a mode change is pending or on the title /
+   in a race). It then stays set for the whole main-menu visit: the bottom screen thinks the demo
+   runs (no Home, the VS icon's MULTIPLAYER request dropped) and a race started from there treats
+   A / START as "leave the demo". Called once per host frame between game frames: on a settled
+   MAIN MENU a demo state is stale by construction (the demo only ever runs from the title, in a
+   race mode), so it is cleared. Returns the state it cleared, 0 = nothing to do. Replays never
+   arm the demo from audio (the det audio pin), so they never reach the write. */
+int gdx_title_demo_clear_stale(void) {
+    extern s8 gTitleDemoState;
+    extern s32 gQueuedGameMode;
+    const int was = gTitleDemoState;
+    if (was == TITLE_DEMO_INACTIVE || gGameMode != GAMEMODE_FLX_MAIN_MENU || gQueuedGameMode != gGameMode) {
+        return 0;
+    }
+    gTitleDemoState = TITLE_DEMO_INACTIVE;
+    return was;
+}
+
 void gdx_racehud_snapshot(GdxRaceHudSnapshot* out) {
     extern s32 gNumPlayers;
     extern s32 gTotalRacers;
@@ -2036,6 +2133,7 @@ void gdx_racehud_snapshot(GdxRaceHudSnapshot* out) {
                                    /* Hud_DrawRacePositionExtras reads for its "/N"    */
     extern s16 gRacersKOd; /* item 6 (hardware feedback round): same global hud.c's own */
                             /* Hud_DrawKOStars reads (decomp/src/game/racer.c:84/2280)   */
+    extern s16 gPlayerLives[]; /* game/racer.c; the same stock hud.c's Hud_DrawPlayerLives draws */
     extern char* gCurrentTrackName; /* game/common.c; set by course_select.c/main_menu.c from  */
                                      /* sTrackNames[gCourseIndex] when the course is picked --  */
                                      /* COORDINATOR FIX (nibottom Phase 2, 3rd round, item 2):  */
@@ -2044,7 +2142,8 @@ void gdx_racehud_snapshot(GdxRaceHudSnapshot* out) {
                                      /* one here instead. */
 
     const int mode = GET_MODE(gGameMode);
-    const Racer* self = &gRacers[0];
+    const int local = gdx_bottom_local_racer();
+    const Racer* self = &gRacers[local];
     s32 bestLapMs;
     int i;
     int count;
@@ -2083,7 +2182,13 @@ void gdx_racehud_snapshot(GdxRaceHudSnapshot* out) {
     }
     out->bestTimeMs = (int) bestLapMs;
 
-    out->gapMs = (int) sPlayerLeadInterval[0];
+    out->gapMs = (int) sPlayerLeadInterval[local];
+
+    /* Same gate as Hud_DrawPlayerLives: the raw gGameMode, not GET_MODE, so only a GP race. */
+    out->spareMachines = -1;
+    if (gGameMode == GAMEMODE_GP_RACE) {
+        out->spareMachines = (gPlayerLives[0] > 0) ? (int) gPlayerLives[0] : 0;
+    }
 
     count = gTotalRacers;
     if (count < 0) {
@@ -2111,6 +2216,92 @@ void gdx_racehud_snapshot(GdxRaceHudSnapshot* out) {
             out->trackName[j] = (char) c;
         }
         out->trackName[j] = '\0';
+    }
+}
+
+/* The multiplayer race dash's whole-field view (gdx_racemap.h GdxRaceFieldSnapshot). */
+static int gdx_racefield_state(const Racer* r) {
+    if (r->stateFlags & RACER_STATE_FINISHED) {
+        return GDX_RACEFIELD_FINISHED;
+    }
+    if (r->stateFlags & (RACER_STATE_RETIRED | RACER_STATE_CRASHED)) {
+        return GDX_RACEFIELD_OUT;
+    }
+    return 0;
+}
+
+static int gdx_racefield_gap_ms(const Racer* leader, const Racer* r) {
+    f32 msPerUnit;
+    f32 gap;
+    if (r == leader) {
+        return 0;
+    }
+    if ((leader->stateFlags & RACER_STATE_FINISHED) && (r->stateFlags & RACER_STATE_FINISHED)) {
+        return (int) (r->raceTime - leader->raceTime);
+    }
+    if (leader->raceDistance <= 0.0f || leader->raceTime <= 0) {
+        return 0;
+    }
+    msPerUnit = (f32) leader->raceTime / leader->raceDistance;
+    gap = (leader->raceDistance - r->raceDistance) * msPerUnit;
+    return gap > 0.0f ? (int) (gap + 0.5f) : 0;
+}
+
+static void gdx_racefield_entry(GdxRaceFieldEntry* e, const Racer* leader, const Racer* r, int totalLaps, f32 scale,
+                                int withMap) {
+    s32 col = 0;
+    s32 row = 0;
+    int lap = r->lap;
+    if (totalLaps > 0 && lap > totalLaps) {
+        lap = totalLaps;
+    }
+    e->racer = (signed char) (r - gRacers);
+    e->character = (signed char) r->character;
+    e->lap = (signed char) lap;
+    e->state = (unsigned char) gdx_racefield_state(r);
+    e->gapMs = gdx_racefield_gap_ms(leader, r);
+    e->timeMs = (int) r->raceTime;
+    if (withMap) {
+        gdx_racemap_marker_cell(r, scale, &col, &row);
+    }
+    e->col = (short) col;
+    e->row = (short) row;
+}
+
+void gdx_racefield_snapshot(GdxRaceFieldSnapshot* out, int withMap) {
+    extern s32 gNumPlayers;
+    extern s32 gTotalRacers;
+    extern s32 gTotalLapCount;
+    extern Racer* gRacersByPosition[];
+    const int mode = GET_MODE(gGameMode);
+    const f32 scale = (gNumPlayers == 1) ? 1.0f : 0.75f;
+    const Racer* leader;
+    int count = gTotalRacers;
+    int i;
+
+    memset(out, 0, sizeof(*out));
+    out->numPlayers = gNumPlayers;
+    if (!gdx_racemap_mode_is_race(mode)) {
+        return;
+    }
+    if (count < 0) {
+        count = 0;
+    } else if (count > GDX_RACEFIELD_MAX) {
+        count = GDX_RACEFIELD_MAX;
+    }
+    leader = gRacersByPosition[0];
+    if (leader == NULL) {
+        return;
+    }
+    out->valid = 1;
+    out->totalLaps = gTotalLapCount;
+    for (i = 0; i < count; i++) {
+        const Racer* r = gRacersByPosition[i];
+        if (r == NULL) {
+            break;
+        }
+        gdx_racefield_entry(&out->byPos[i], leader, r, gTotalLapCount, scale, withMap);
+        out->count = i + 1;
     }
 }
 
@@ -2177,4 +2368,202 @@ unsigned int gdx_gstate_hash(int* outRacers) {
         *outRacers = (int) count;
     }
     return (unsigned int) h;
+}
+
+#ifdef __3DS__
+/* MP30 (port/3ds/net/gdx3ds_mp.c, gdx3ds_mp_online.c): the visibility the simulation reads, per
+ * racer, folded into a lockstep session's digest after gdx_gstate_hash (single-player [gstate]
+ * is unchanged: this is only ever called in a session). Two masks of gTotalRacers bits:
+ *   sim  = gdx_sim_machine_visible(machineLod), what the racer update and the CPU AI branch on
+ *          (port/3ds/gdx3ds_autodrive.c; all ones in a session by construction);
+ *   draw = machineLod != 0 as the last view's Racer_Draw left it. Every console runs every
+ *          view's visibility pass with the same cameras (fullview and dl_hollow never drop it),
+ *          so this agrees too; a lever that ever skipped another view's pass, or a view whose
+ *          camera diverged, now fails loudly at the tick it happens instead of seconds later.
+ * The LOD tier itself (1..6) is left out: rival_detail / lod6_skip / the o3ds preset change it
+ * per console by design and nothing simulated reads it. */
+unsigned int gdx_mpo_vis_hash(unsigned int h) {
+    extern s32 gTotalRacers;
+    extern int gdx_sim_machine_visible(int machineLod);
+    u32 sim[1] = { 0 };
+    u32 draw[1] = { 0 };
+    s32 count = gTotalRacers;
+    s32 i;
+
+    if (count < 0) {
+        count = 0;
+    } else if (count > TOTAL_RACER_COUNT) {
+        count = TOTAL_RACER_COUNT;
+    }
+    for (i = 0; i < count; i++) {
+        if (gdx_sim_machine_visible(gRacers[i].machineLod)) {
+            sim[0] |= 1u << i;
+        }
+        if (gRacers[i].machineLod != 0) {
+            draw[0] |= 1u << i;
+        }
+    }
+    h = gdx_gstate_mix(h, sim, sizeof(sim));
+    h = gdx_gstate_mix(h, draw, sizeof(draw));
+    return h;
+}
+#endif
+
+/* ---- mp-online (port/3ds/net/gdx3ds_mp_game.c): race-state accessors --------------------------- */
+/* The fields gdx_gstate_hash covers, readable (floats as raw bits): mp_hash_log's first ticks. */
+static unsigned int gdx_mpo_bits(f32 f) {
+    union {
+        f32 f;
+        u32 u;
+    } v;
+    v.f = f;
+    return v.u;
+}
+
+/* The raw bytes of racer `index` minus the draw-written fields (desync triage: mp_hash_deep and
+ * mp_hash_log's ring), 0 outside the table. out must be suitably aligned for a Racer. */
+int gdx_mpo_racer_raw(int index, void* out, int cap) {
+    extern s32 gTotalRacers;
+    if (out == NULL || index < 0 || index >= gTotalRacers || index >= TOTAL_RACER_COUNT || cap < (int) sizeof(Racer)) {
+        return 0;
+    }
+    memcpy(out, &gRacers[index], sizeof(Racer));
+    {
+        /* Zero what Racer_Draw writes (per view, and not at all on a skipped frame): two consoles
+         * that simulate the same race still differ there. */
+        Racer* r = (Racer*) out;
+        memset(&r->modelMatrix, 0, sizeof(r->modelMatrix));
+        r->modelMatrixInit = r->shadowMatrixInit = r->attackHighlightMatrixInit = 0;
+        r->machineLod = 0;
+        r->unk_2B2 = r->unk_2B3 = 0;
+    }
+    return (int) sizeof(Racer);
+}
+
+int gdx_mpo_racer_describe(int index, char* out, int cap) {
+    extern s32 gTotalRacers;
+    const Racer* r;
+    if (out == NULL || cap <= 0 || index < 0 || index >= gTotalRacers || index >= TOTAL_RACER_COUNT) {
+        return 0;
+    }
+    r = &gRacers[index];
+    return snprintf(out, (size_t) cap,
+                    "r%d st=%08x pos=%08x,%08x,%08x vel=%08x,%08x,%08x spd=%08x en=%08x dist=%08x lap=%d pos#=%d "
+                    "t=%d ch=%d m=%d sk=%d",
+                    index, (unsigned) r->stateFlags, gdx_mpo_bits(r->segmentPositionInfo.pos.x),
+                    gdx_mpo_bits(r->segmentPositionInfo.pos.y), gdx_mpo_bits(r->segmentPositionInfo.pos.z),
+                    gdx_mpo_bits(r->velocity.x), gdx_mpo_bits(r->velocity.y), gdx_mpo_bits(r->velocity.z),
+                    gdx_mpo_bits(r->speed), gdx_mpo_bits(r->energy), gdx_mpo_bits(r->raceDistance), (int) r->lap,
+                    (int) r->position, (int) r->raceTime, (int) r->character, (int) r->machineIndex,
+                    (int) r->machineSkinIndex);
+}
+
+/* One racer's share of gdx_gstate_hash (0 outside the table): the [net] mp_hash_log lever logs
+ * these per tick so a desync can be traced to the racer -- and the tick -- that diverged first. */
+unsigned int gdx_mpo_racer_hash(int index) {
+    extern s32 gTotalRacers;
+    if (index < 0 || index >= gTotalRacers || index >= TOTAL_RACER_COUNT) {
+        return 0;
+    }
+    return (unsigned int) gdx_gstate_mix_racer(2166136261u, &gRacers[index]);
+}
+
+/* The racer's stateFlags (RACER_STATE_*), 0 for an index outside the racer table. */
+unsigned int gdx_mpo_racer_state(int index) {
+    extern s32 gTotalRacers;
+    if (index < 0 || index >= gTotalRacers || index >= TOTAL_RACER_COUNT) {
+        return 0;
+    }
+    return (unsigned int) gRacers[index].stateFlags;
+}
+
+/* 1 when racer `index` is done racing: finished, retired or crashed out. */
+int gdx_mpo_racer_done(int index) {
+    const unsigned int f = gdx_mpo_racer_state(index);
+    return (f & (RACER_STATE_FINISHED | RACER_STATE_RETIRED | RACER_STATE_CRASHED)) != 0;
+}
+
+/* mp-online RESULTS: a player's finishing position (1-based; 0 = did not finish) and race time.
+ * The time is -1 for a racer the game finished without its laps: VS ends the race when one
+ * machine is left (racer.c Racer_Update) and flags the ones still running FINISHED where they
+ * are, so their raceTime is when the others went out, not a race time. */
+int gdx_mpo_racer_result(int index, int* raceTimeMs) {
+    extern s32 gTotalLapCount;
+    const unsigned int f = gdx_mpo_racer_state(index);
+    if (index < 0 || index >= TOTAL_RACER_COUNT) {
+        return 0;
+    }
+    if (raceTimeMs != NULL) {
+        const int ranLaps = gRacers[index].lap > gTotalLapCount;
+        *raceTimeMs = ((f & RACER_STATE_FINISHED) && !ranLaps) ? -1 : (int) gRacers[index].raceTime;
+    }
+    return (f & RACER_STATE_FINISHED) ? gRacers[index].position : 0;
+}
+
+/* The per-player camera distance survives from the previous race on each console: pin it so
+ * every console starts the session's race from the same camera state. */
+/* The VS race init does NOT read gPlayerCharacters: the machine-select screen writes the player
+ * racers' character / skin / engine factor straight into gRacers[] (machine.c), and Race_Init
+ * keeps whatever is there -- the title demo's shuffle, a previous race's picks. Pin them from the
+ * (already pinned) player globals, as func_8008969C + func_80089724 do on the menu path. */
+void gdx_mpo_pin_racers(int numPlayers) {
+    extern s16 gPlayerCharacters[4];
+    extern s16 gPlayerMachineSkins[4];
+    extern f32 gPlayerEngine[4];
+    s32 i;
+    /* Race_Init does not set every Racer field: some keep what the console's last race, title demo
+     * or menu left (unk_352, the CPU's rival index, is only ever set by a 1P race's CPU init and is
+     * read in VS too; the shadow colours; ...). So the table starts from the state a console has on
+     * its first race after boot -- zeroed, then func_8008DA68's characters and engine factor -- the
+     * same on every console whatever it did before. */
+    memset(gRacers, 0, sizeof(gRacers));
+    for (i = 0; i < TOTAL_RACER_COUNT; i++) {
+        gRacers[i].id = i;
+        gRacers[i].character = (s8) (i % TOTAL_RACER_COUNT);
+        gRacers[i].machineSkinIndex = 0;
+        gRacers[i].unk_1A8 = func_8008960C(0.5f);
+        gRacers[i].unk_350 = gRacers[i].unk_352 = 0xFF;
+    }
+    for (i = 0; i < numPlayers && i < 4; i++) {
+        gRacers[i].character = (s8) gPlayerCharacters[i];
+        gRacers[i].machineSkinIndex = gPlayerMachineSkins[i];
+        gRacers[i].unk_1A8 = func_8008960C(gPlayerEngine[i]);
+    }
+}
+
+void gdx_mpo_pin_cameras(void) {
+    s32 i;
+    for (i = 0; i < 4; i++) {
+        gCameras[i].raceSetting = CAMERA_RACE_SETTING_REGULAR;
+    }
+}
+
+/* ---- mp-uds drop-out (port/3ds/net/gdx3ds_mp.c, [net] mp_drop=retire) ----------------------------- */
+/* The machine of a player the session removed at lockstep tick T retires at the first race tick
+ * >= T, through the game's own Racer_RetireRacer, so every console retires it at the SAME tick
+ * (the session calls this from the poll, before that tick's game update, on every console).
+ * Outside an on-track race nothing happens (the menus need no seat). Returns 1 on the tick it
+ * actually retired the machine. Its pad is neutral from T either way (the coast). */
+int gdx_mp_retire_player(int player) {
+    extern s32 gTotalRacers;
+    extern s32 gNumPlayers;
+    extern void Racer_RetireRacer(Racer * racer);
+    extern int gdx_input_in_gameplay(void);
+    s32 i;
+    if (player < 0 || player >= gNumPlayers || !gdx_input_in_gameplay()) {
+        return 0;
+    }
+    for (i = 0; i < gTotalRacers && i < TOTAL_RACER_COUNT; i++) {
+        Racer* racer = &gRacers[i];
+        if (racer->id != player) {
+            continue;
+        }
+        if ((racer->stateFlags & RACER_STATE_ACTIVE) &&
+            !(racer->stateFlags & (RACER_STATE_FINISHED | RACER_STATE_RETIRED))) {
+            Racer_RetireRacer(racer);
+            return 1;
+        }
+        return 0;
+    }
+    return 0;
 }

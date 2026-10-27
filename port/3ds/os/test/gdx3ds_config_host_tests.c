@@ -159,6 +159,7 @@ int main(void) {
     check(gdx3ds_config_get_int("native", "interp", 0) == 1, "auto: new3ds auto gets interp");
     check(gdx3ds_config_get_int("debug", "tex_keep_kb", 0) == 4096, "auto: new3ds auto gets the n60 headroom");
     check(strcmp(gdx3ds_config_preset_name(), "n60") == 0, "auto: preset_name reports n60");
+    check(gdx3ds_config_get_int("native", "ni_fullview", 7) == 7, "auto: new3ds auto leaves ni_fullview out (o3ds60)");
     check(strcmp(gdx3ds_config_get_string("perf", "preset", "?"), "?") == 0,
           "auto: get_string on perf.preset itself is untouched by the auto substitution");
 
@@ -174,6 +175,27 @@ int main(void) {
     check(gdx3ds_config_get_int("debug", "tex_keep_kb", 2048) == 2048,
           "auto: old3ds auto does NOT carry n60's New-3DS tex_keep_kb headroom (fallback 2048)");
     check(strcmp(gdx3ds_config_preset_name(), "o3ds-auto") == 0, "auto: preset_name reports o3ds-auto");
+    check(gdx3ds_config_get_int("native", "ni_fullview", 0) == 0x97A,
+          "auto: old3ds auto puts the MP fullview view on the NRR (o3ds60 ni_fullview 0x97A)");
+
+    /* preset-fix: the ni_* levers are rows of both tables (gdx3ds_preset_mustship_tests.c holds the
+     * full per-model must-ship list); ni_view is New 3DS only, ni_fullview Old 3DS only. */
+    {
+        static const char* const kModels[2] = { "o3ds-auto", "n60" };
+        int m;
+        for (m = 0; m < 2; m++) {
+            gdx3ds_config_set_auto_preset_name(kModels[m]);
+            check(gdx3ds_config_get_int("native", "ni_course", 0) == 1 &&
+                      gdx3ds_config_get_int("native", "ni_mach", 0) == 3 &&
+                      gdx3ds_config_get_int("native", "ni_menu", 0) == 1 &&
+                      gdx3ds_config_get_int("native", "ni_race", 0) == 1 &&
+                      gdx3ds_config_get_int("native", "ni_menu_root", 0) == 1,
+                  "ni preset: every ni_* lever defaults on (both models)");
+            check(gdx3ds_config_get_int("native", "ni_view", 7) == (m == 0 ? 7 : 0x97A),
+                  "ni preset: ni_view 0x97A on the New 3DS only");
+        }
+        gdx3ds_config_set_auto_preset_name("o3ds-auto");
+    }
 
     write_ini("[perf]\npreset = auto\n[debug]\nrenderthread = 2\n");
     check(gdx3ds_config_load(kPath) == 0, "auto: load with an explicit literal \"auto\"");

@@ -1,0 +1,23 @@
+diff --git a/src/game/racer.c b/src/game/racer.c
+--- a/src/game/racer.c
++++ b/src/game/racer.c
+@@ -5103,6 +5103,7 @@ void func_80095144(void) {
+ #if defined(PORT) && defined(__3DS__)
+ extern int gdx_autodrive_racer(int racerId); /* port/3ds/gdx3ds_autodrive.c, [debug] autodrive */
+ extern int gdx_autodrive_mix(int racerId);   /* mp-online test bots: 1 = blend the player's pad in */
++extern int gdx_autodrive_pin_energy(int racerId); /* MP30: 0 for a dropped human the CPU took over */
+ #endif
+ 
+ void Racer_UpdateMovement(Racer* racer) {
+@@ -5151,7 +5152,10 @@ void Racer_UpdateMovement(Racer* racer) {
+             dummyController.buttonPressed |= pad->buttonPressed & (BTN_R | BTN_Z);
+             dummyController.buttonReleased |= pad->buttonReleased & (BTN_R | BTN_Z);
+         }
+-        racer->energy = racer->maxEnergy;
++        if (gdx_autodrive_pin_energy(racer->id)) {
++            /* MP30: not for a dropped human the CPU driver took over: it races like any CPU. */
++            racer->energy = racer->maxEnergy;
++        }
+         GDX_LSPLIT(PHYS);
+         Racer_UpdateFromControls(racer, &dummyController);
+         racer->unk_33C = -racer->segmentPositionInfo.segmentDisplacement.x * racer->segmentBasis.z.x -

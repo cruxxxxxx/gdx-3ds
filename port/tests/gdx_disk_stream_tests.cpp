@@ -808,6 +808,93 @@ static void case9_dcrcSidecar(const char* tmpRoot) {
     (void) system(cleanup);
 }
 
+/* case 10 -- ekaudio2's coalesced fill (gdx_disk_stream_fill_range). What it must never do is
+ * change a byte: every read after a fill is compared with the same read from a stream that never
+ * coalesced. What it is FOR is the request count, so that is asserted exactly too: one host read
+ * per run, resident blocks splitting runs, the read-ahead tail riding only on a miss. */
+static void case10_coalescedFill(const char* image) {
+    printf("case 10: coalesced fill (one SD request per run of missing blocks)\n");
+    /* 16 KiB blocks, 32 blocks = 8 sets x 4 ways: the 64DD arm's shape at cache_kb=512. */
+    check(gdx_disk_stream_open(image, DISK_EXACT_BYTES, 14, 32) == 1, "fill: cache opens");
+    gdx_disk_stream_reset_stats();
+    GdxDiskStreamStats st;
+
+    /* One LBA-sized read straddling three blocks: a 4-block window is ONE request. */
+    const unsigned int base = 0x1000000u + 0x3C00u; /* 15 KiB into a block: spans three */
+    check(gdx_disk_stream_fill_range(base, 0x4D08u, 0u, 64u * 1024u) == 1, "fill: a 3-block range is one request");
+    gdx_disk_stream_get_stats(&st);
+    checkEq(st.hostReads, 1, "fill: one host read for the run");
+    unsigned long long runs = 0;
+    unsigned long long blocks = 0;
+    gdx_disk_stream_fill_stats(&runs, &blocks);
+    checkEq(blocks, 3, "fill: the run installed the range's three blocks");
+    static unsigned char viaFill[0x10000];
+    static unsigned char viaFile[0x10000];
+    check(gdx_disk_stream_read(base, 0x4D08u, viaFill) == 1, "fill: the read after it succeeds");
+    gdx_disk_stream_get_stats(&st);
+    checkEq(st.hostReads, 1, "fill: the read after it is all hits");
+    check(gdx_disk_stream_read_uncached(base, 0x4D08u, viaFile) == 1, "fill: uncached reference");
+    check(memcmp(viaFill, viaFile, 0x4D08u) == 0, "fill: coalesced bytes == file bytes");
+
+    /* Already resident: nothing to do, no request. */
+    check(gdx_disk_stream_fill_range(base, 0x4D08u, 0u, 64u * 1024u) == 0, "fill: resident range is a no-op");
+
+    /* Read-ahead: a resident request does NOT trigger its tail ... */
+    gdx_disk_stream_get_stats(&st);
+    const unsigned long long before = st.hostReads;
+    check(gdx_disk_stream_fill_range(base, 0x4D08u, 0x8000u, 64u * 1024u) == 0,
+          "fill: the read-ahead tail rides only on a miss");
+    /* ... a missing one does, and the whole window is still one request. */
+    const unsigned int next = 0x1200000u;
+    check(gdx_disk_stream_fill_range(next, 0x4D08u, 0x10000u - 0x4D08u, 64u * 1024u) == 1,
+          "fill: a missing request + its tail is one request");
+    gdx_disk_stream_get_stats(&st);
+    checkEq(st.hostReads - before, 1, "fill: one host read for request + tail");
+    check(gdx_disk_stream_read(next + 0x8000u, 0x4000u, viaFill) == 1, "fill: a read in the tail");
+    gdx_disk_stream_get_stats(&st);
+    checkEq(st.hostReads - before, 1, "fill: the tail was resident");
+    check(gdx_disk_stream_read_uncached(next + 0x8000u, 0x4000u, viaFile) == 1, "fill: tail reference");
+    check(memcmp(viaFill, viaFile, 0x4000u) == 0, "fill: tail bytes == file bytes");
+
+    /* A resident block in the middle splits the run; a lone missing block is left to the
+     * demand read. Blocks: [A missing][B resident][C missing][D missing]. */
+    const unsigned int split = 0x1400000u;
+    check(gdx_disk_stream_read(split + 0x4000u + 16u, 16u, viaFill) == 1, "fill: make B resident");
+    gdx_disk_stream_get_stats(&st);
+    const unsigned long long beforeSplit = st.hostReads;
+    check(gdx_disk_stream_fill_range(split, 0x10000u, 0u, 64u * 1024u) == 1,
+          "fill: A is lone (skipped), C+D are one run");
+    gdx_disk_stream_get_stats(&st);
+    checkEq(st.hostReads - beforeSplit, 1, "fill: exactly one request for the split range");
+    check(gdx_disk_stream_read(split, 0x10000u, viaFill) == 1, "fill: the split range reads");
+    check(gdx_disk_stream_read_uncached(split, 0x10000u, viaFile) == 1, "fill: split reference");
+    check(memcmp(viaFill, viaFile, 0x10000u) == 0, "fill: split bytes == file bytes");
+
+    /* A run is capped at the set count (8 here): 12 missing blocks are two requests, and
+     * a whole fill at half the cache (16 blocks = 256 KiB). */
+    gdx_disk_stream_get_stats(&st);
+    const unsigned long long beforeCap = st.hostReads;
+    check(gdx_disk_stream_fill_range(0x2000000u, 12u * 0x4000u, 0u, 256u * 1024u) == 2,
+          "fill: a run never holds two blocks of one set");
+    gdx_disk_stream_get_stats(&st);
+    checkEq(st.hostReads - beforeCap, 2, "fill: 12 blocks at 8 sets = two requests");
+    check(gdx_disk_stream_fill_range(0x2800000u, 0x100000u, 0u, 256u * 1024u) == 2,
+          "fill: a fill is capped at half the cache");
+
+    /* The image's last block: a run reaching EOF reads the short tail and still matches. */
+    const unsigned int tailOff = DISK_EXACT_BYTES - 0x6000u;
+    check(gdx_disk_stream_fill_range(tailOff, 0x6000u, 0u, 64u * 1024u) >= 0, "fill: a run to EOF");
+    check(gdx_disk_stream_read(tailOff, 0x6000u, viaFill) == 1, "fill: EOF range reads");
+    check(gdx_disk_stream_read_uncached(tailOff, 0x6000u, viaFile) == 1, "fill: EOF reference");
+    check(memcmp(viaFill, viaFile, 0x6000u) == 0, "fill: EOF bytes == file bytes");
+
+    /* Off: maxRun 0 or one block issues nothing. */
+    check(gdx_disk_stream_fill_range(0x3000000u, 0x10000u, 0u, 0u) == 0, "fill: maxRun 0 is off");
+    check(gdx_disk_stream_fill_range(0x3000000u, 0x10000u, 0u, 0x4000u) == 0, "fill: a one-block run is off");
+    gdx_disk_stream_close();
+    check(gdx_disk_stream_fill_range(0x3000000u, 0x10000u, 0u, 64u * 1024u) == 0, "fill: a closed stream is a no-op");
+}
+
 int main(int argc, char** argv) {
     if (argc < 4) {
         fprintf(stderr,
@@ -838,6 +925,7 @@ int main(int argc, char** argv) {
     }
     case8_corruptImage(image);
     case9_dcrcSidecar((argc > 5) ? argv[5] : ".");
+    case10_coalescedFill(image);
 
     printf("gdx_disk_stream_tests: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

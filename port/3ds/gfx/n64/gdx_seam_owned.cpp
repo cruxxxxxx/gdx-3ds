@@ -283,7 +283,7 @@ int GdxOwnedSeam::ExecHookCmds(size_t begin, size_t end) {
         const Cmd c = ReadCmd(f.list, i);
         f.idx = i + 1;
         if (mI->NcOn()) {
-            mI->NcNote(c, false); /* [debug] nicensus */
+            mI->NcNote(c, false, Interp::NCS_HOOKCMD); /* [debug] nicensus */
         }
         (void)mI->Exec(c, f, 0);
     }
@@ -303,7 +303,7 @@ int GdxOwnedSeam::ExecHookCmdList(const uint16_t* idx, size_t n) {
         const Cmd c = ReadCmd(f.list, idx[k]);
         f.idx = static_cast<size_t>(idx[k]) + 1u;
         if (mI->NcOn()) {
-            mI->NcNote(c, false); /* [debug] nicensus */
+            mI->NcNote(c, false, Interp::NCS_HOOKCMD); /* [debug] nicensus */
         }
         (void)mI->Exec(c, f, 0);
     }

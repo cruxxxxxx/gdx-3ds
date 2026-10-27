@@ -192,6 +192,16 @@ void C3Dgdx_StencilCheck(uint32_t fragOpMode, uint32_t alphaBlend, uint32_t logi
 /* Every draw while a mode is set (C3D_DrawArrays / C3D_DrawElements, the NRR direct draws). */
 void C3Dgdx_StencilDraw(void);
 
+/* GDX (o3ds3d, port/3ds/gfx/gdx3ds_prewrite.c): read-only views for the [prewrite] / [gpumem]
+ * receipts and the [debug] ceiling_probe. C3Dgdx_CmdBufWords: the size C3D_Init gave the command
+ * buffer, in words (C3D_GetCmdBufUsage x this = the words of the frame so far). C3Dgdx_QueueEntries:
+ * the entries queued on the frame's GX queue. C3Dgdx_FrameQueueIdle: outside a frame only, wait up to
+ * `timeoutNs` for the previous frame's GX queue to run out WITHOUT clearing it (the wait
+ * C3D_FrameBegin makes, moved earlier); false on a timeout or inside a frame. */
+unsigned C3Dgdx_CmdBufWords(void);
+unsigned C3Dgdx_QueueEntries(void);
+bool C3Dgdx_FrameQueueIdle(long long timeoutNs);
+
 #ifdef __cplusplus
 }
 #endif

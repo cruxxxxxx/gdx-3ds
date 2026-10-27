@@ -28,6 +28,10 @@
 #include "miniz.h"
 #include "zip.h"
 
+int gdx3ds_zipshim_entry_fingerprint(const char* name, unsigned int* fingerprint); /* the shim's own API */
+int gdx3ds_zipshim_entry_locate(const char* name, unsigned long long* offset, unsigned long long* size);
+void gdx3ds_zipshim_io_stats(unsigned long* reads, unsigned long long* bytes);
+
 static int s_failures = 0;
 
 #define CHECK(cond, what)                                        \
@@ -138,6 +142,24 @@ static void testZipshim(void) {
               strcmp(st.name, "seg/only_in_fzerox") == 0,
           "zip_stat_index size + stable name");
 
+    /* The fingerprint the HUD bake's SD cache is keyed on: from the open handles' central
+     * directories, deduped per archive (LUS pools several handles of one archive). */
+    {
+        unsigned int print = 0;
+        unsigned int again = 1;
+        zip_t* second = zip_open("sdmc:/3ds/gdiffuser/fzerox.o2r", ZIP_RDONLY, &zerr);
+        CHECK(gdx3ds_zipshim_entry_fingerprint("seg/only_in_fzerox", &print) == 1 && print != 0,
+              "fingerprint of an open archive's entry");
+        CHECK(gdx3ds_zipshim_entry_fingerprint("SEG/ONLY_IN_FZEROX", &again) == 0 && again == 0,
+              "fingerprint lookup is case-sensitive");
+        CHECK(gdx3ds_zipshim_entry_fingerprint("seg/nope", &again) == 0, "fingerprint of a missing entry");
+        if (second != NULL) {
+            CHECK(gdx3ds_zipshim_entry_fingerprint("seg/only_in_fzerox", &again) == 1 && again == print,
+                  "a second handle on the same archive does not change the fingerprint");
+            zip_close(second);
+        }
+    }
+
     zip_file_t* file = zip_fopen_index(archive, (zip_uint64_t)index, 0);
     CHECK(file != NULL, "zip_fopen_index");
     if (file != NULL) {
@@ -156,6 +178,11 @@ static void testZipshim(void) {
     zip_source_free(source);
 
     CHECK(zip_close(archive) == 0, "zip_close");
+    {
+        unsigned int print = 1;
+        CHECK(gdx3ds_zipshim_entry_fingerprint("seg/only_in_fzerox", &print) == 0 && print == 0,
+              "a closed archive leaves the fingerprint registry");
+    }
 
     zip_t* missing = zip_open("sdmc:/3ds/gdiffuser/nope.o2r", ZIP_RDONLY, &zerr);
     CHECK(missing == NULL && zerr != 0, "zip_open miss without ZIP_CREATE fails");
@@ -165,6 +192,167 @@ static void testZipshim(void) {
     if (missing != NULL) {
         zip_close(missing);
     }
+}
+
+/* ---- the shim's own I/O (read-ahead window, direct large reads, sorted-index lookup) ---- */
+
+#define IO_SMALL 300
+#define IO_BIG_RANDOM (40 * 1024)
+#define IO_BIG_TEXT (200 * 1024)
+#define IO_STORED (20 * 1024)
+
+static unsigned sIoSeed = 12345u;
+static unsigned char ioRand(void) {
+    sIoSeed = sIoSeed * 1103515245u + 12345u;
+    return (unsigned char)(sIoSeed >> 16);
+}
+
+static unsigned char* sIoPayload[IO_SMALL + 5];
+static size_t sIoLen[IO_SMALL + 5];
+static char sIoKey[IO_SMALL + 5][48];
+
+static int writeIoArchive(const char* path) {
+    mz_zip_archive zip;
+    int n = 0;
+    mz_zip_zero_struct(&zip);
+    if (!mz_zip_writer_init_file(&zip, path, 0)) {
+        return 0;
+    }
+    for (int i = 0; i < IO_SMALL; i++, n++) {
+        const size_t len = 16 + (size_t)(ioRand() * 7) % 3000;
+        snprintf(sIoKey[n], sizeof(sIoKey[n]), "small/rec%03d", i);
+        sIoLen[n] = len;
+        sIoPayload[n] = (unsigned char*)malloc(len);
+        for (size_t b = 0; b < len; b++) {
+            sIoPayload[n][b] = (unsigned char)((i & 1) ? ioRand() : (unsigned char)('a' + (b % 7)));
+        }
+    }
+    snprintf(sIoKey[n], sizeof(sIoKey[n]), "big/random");
+    sIoLen[n] = IO_BIG_RANDOM;
+    sIoPayload[n] = (unsigned char*)malloc(IO_BIG_RANDOM);
+    for (size_t b = 0; b < IO_BIG_RANDOM; b++) {
+        sIoPayload[n][b] = ioRand();
+    }
+    n++;
+    snprintf(sIoKey[n], sizeof(sIoKey[n]), "big/text");
+    sIoLen[n] = IO_BIG_TEXT;
+    sIoPayload[n] = (unsigned char*)malloc(IO_BIG_TEXT);
+    for (size_t b = 0; b < IO_BIG_TEXT; b++) {
+        sIoPayload[n][b] = (unsigned char)("the quick brown fox "[b % 20]);
+    }
+    n++;
+    snprintf(sIoKey[n], sizeof(sIoKey[n]), "big/stored");
+    sIoLen[n] = IO_STORED;
+    sIoPayload[n] = (unsigned char*)malloc(IO_STORED);
+    for (size_t b = 0; b < IO_STORED; b++) {
+        sIoPayload[n][b] = ioRand();
+    }
+    n++;
+    snprintf(sIoKey[n], sizeof(sIoKey[n]), "case/Name");
+    sIoLen[n] = 5;
+    sIoPayload[n] = (unsigned char*)malloc(5);
+    memcpy(sIoPayload[n], "UPPER", 5);
+    n++;
+    snprintf(sIoKey[n], sizeof(sIoKey[n]), "case/name");
+    sIoLen[n] = 5;
+    sIoPayload[n] = (unsigned char*)malloc(5);
+    memcpy(sIoPayload[n], "lower", 5);
+    n++;
+    for (int i = 0; i < n; i++) {
+        const mz_uint level = (strcmp(sIoKey[i], "big/stored") == 0) ? MZ_NO_COMPRESSION : MZ_BEST_COMPRESSION;
+        if (!mz_zip_writer_add_mem(&zip, sIoKey[i], sIoPayload[i], sIoLen[i], level)) {
+            mz_zip_writer_end(&zip);
+            return 0;
+        }
+    }
+    if (!mz_zip_writer_finalize_archive(&zip)) {
+        mz_zip_writer_end(&zip);
+        return 0;
+    }
+    mz_zip_writer_end(&zip);
+    return n;
+}
+
+/* Reads entry i through the libzip surface; 1 when the bytes match what was written. */
+static int ioReadMatches(zip_t* archive, int i) {
+    const zip_int64_t index = zip_name_locate(archive, sIoKey[i], 0);
+    zip_stat_t st;
+    zip_file_t* f;
+    unsigned char* buf;
+    int ok;
+    if (index < 0) {
+        return 0;
+    }
+    zip_stat_init(&st);
+    if (zip_stat_index(archive, (zip_uint64_t)index, 0, &st) != 0 || st.size != sIoLen[i]) {
+        return 0;
+    }
+    f = zip_fopen_index(archive, (zip_uint64_t)index, 0);
+    if (f == NULL) {
+        return 0;
+    }
+    buf = (unsigned char*)malloc(sIoLen[i] + 1);
+    ok = zip_fread(f, buf, sIoLen[i]) == (zip_int64_t)sIoLen[i] && memcmp(buf, sIoPayload[i], sIoLen[i]) == 0;
+    free(buf);
+    zip_fclose(f);
+    return ok;
+}
+
+static void testZipshimIo(void) {
+    const char* path = "sdmc:/3ds/gdiffuser/io.o2r";
+    const int n = writeIoArchive(path);
+    int zerr = 0;
+    int allOk = 1;
+    unsigned long reads0 = 0;
+    unsigned long reads1 = 0;
+    unsigned long long bytes0 = 0;
+    unsigned long long bytes1 = 0;
+    printf("zipshim I/O (read-ahead window, sorted lookup):\n");
+    CHECK(n == IO_SMALL + 5, "fabricate the I/O fixture archive");
+    zip_t* archive = zip_open(path, ZIP_RDONLY, &zerr);
+    CHECK(archive != NULL, "zip_open the I/O fixture");
+    if (archive == NULL) {
+        return;
+    }
+    /* Archive order (the order the writer laid them out): the window serves neighbours. */
+    gdx3ds_zipshim_io_stats(&reads0, &bytes0);
+    for (int i = 0; i < IO_SMALL; i++) {
+        allOk &= ioReadMatches(archive, i);
+    }
+    gdx3ds_zipshim_io_stats(&reads1, &bytes1);
+    CHECK(allOk, "every small record reads back byte for byte, in archive order");
+    printf("  note: %d small records in archive order: %lu reads, %llu bytes\n", IO_SMALL, reads1 - reads0,
+           bytes1 - bytes0);
+    CHECK(reads1 - reads0 < (unsigned long)IO_SMALL, "neighbouring small records share window reads");
+    allOk = 1;
+    for (int i = n - 1; i >= 0; i--) {
+        allOk &= ioReadMatches(archive, i);
+    }
+    CHECK(allOk, "every record (big compressed, big random, stored, small) reads back in reverse order");
+    allOk = 1;
+    for (int i = 0; i < n; i += 37) {
+        allOk &= ioReadMatches(archive, (i * 7919) % n);
+    }
+    CHECK(allOk, "scattered reads read back");
+    CHECK(ioReadMatches(archive, n - 2) && ioReadMatches(archive, n - 1),
+          "names that differ only in case resolve exactly (case/Name vs case/name)");
+    CHECK(zip_name_locate(archive, "CASE/NAME", 0) < 0, "a case-only variant that is not stored misses");
+    CHECK(zip_name_locate(archive, "small/nope", 0) < 0, "a missing name misses");
+    {
+        unsigned long long ofsA = 0;
+        unsigned long long ofsB = 0;
+        unsigned long long size = 0;
+        CHECK(gdx3ds_zipshim_entry_locate("small/rec000", &ofsA, &size) == 1 && size == sIoLen[0],
+              "entry_locate finds the size");
+        CHECK(gdx3ds_zipshim_entry_locate("small/rec001", &ofsB, &size) == 1 && ofsB > ofsA,
+              "entry_locate offsets follow the archive layout");
+        CHECK(gdx3ds_zipshim_entry_locate("small/nope", &ofsA, &size) == 0, "entry_locate of a missing name");
+    }
+    zip_close(archive);
+    for (int i = 0; i < n; i++) {
+        free(sIoPayload[i]);
+    }
+    remove(path);
 }
 
 int main(void) {
@@ -193,6 +381,7 @@ int main(void) {
     testReadAsset();
     testSaves();
     testZipshim();
+    testZipshimIo();
 
     gdx3ds_fs_shutdown();
 

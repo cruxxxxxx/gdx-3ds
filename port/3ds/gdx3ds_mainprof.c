@@ -1,6 +1,7 @@
 /* port/3ds/gdx3ds_mainprof.c — G-MAINPROF implementation. The contract, the bucket
  * semantics and the receipt format are all in gdx3ds_mainprof.h; read that first. */
 #include "gdx3ds_mainprof.h"
+#include "gdx3ds_cpucut.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -12,6 +13,7 @@
 #include "gdx3ds_filelog.h"
 #include "gdx3ds_hwprof.h"
 #include "gfx/gdx3ds_ships.h"
+#include "gfx/gdx3ds_prewrite.h"
 
 /* Logical-main test (host thread or any game fiber it created). port/n64_sched.c. */
 extern int gdx_sched_on_host_thread(void);
@@ -117,6 +119,7 @@ int gdx3ds_c5sub_armed(void) {
 
 int gdx3ds_c5cat_enter(int cat) {
     int prev;
+    GDX3DS_PW_POLL(); /* o3ds3d [prewrite]: a raw command-buffer write since the last poll */
     if (!gdx3ds_mprof_active) {
         return -1;
     }
@@ -482,6 +485,7 @@ void gdx3ds_mprof_frame_end(unsigned long frame) {
         MProfEmit(frame, sWinFrames);
     }
     C5CatEmit(frame, sWinFrames);
+    gdx3ds_cpucut_window_end(frame, sWinFrames); /* o3ds-cpucuts: the A/B block ends with the window */
     C5CntEmit(frame);
     gdx3ds_ships_emit(frame); /* N60SHIPS: same window as [c5cat] */
     gdx3ds_hwprof_emit(frame, sWinFrames, sWinRendered); /* hwprof [c5pmu] / [hwsite] */

@@ -18,6 +18,8 @@ extern void gdx3ds_boot_trail(const char* line) __attribute__((weak)); /* n60tai
 extern int gdx3ds_zclr_phase(void) __attribute__((weak)); /* gfx_citro3d.cpp [native] zclear_elide */
 extern int gdx3ds_stereo_tail_phase(void) __attribute__((weak)); /* n60tail: stereo_fold (1) / stereo_xl_early (2) */
 extern int gdx3ds_skylate_phase(void) __attribute__((weak));     /* n60tail: [native] sky_late (4) */
+/* onesubmit [debug] gxcost (port/3ds/gdx3ds_gxcost.c): counts the GX interrupts these callbacks see. */
+extern void gdx3ds_gxcost_on_event(int evt) __attribute__((weak));
 
 enum {
     TL_RING = 256,     /* completion stamps; ~25 per 3D frame, drained every frame */
@@ -25,6 +27,7 @@ enum {
     TL_SNAPS = 12,     /* 2 per kick (OVERLAP_MAX_KICKS 4) + the frame end */
     TL_CHUNKS = 3,
     TL_TINY_WORDS = 96,
+    TL_HEAD_WORDS = 24, /* stereo-race-fps: a long list's head scanned for a framebuffer bind */
     TL_KEEP = 256,     /* per-frame values kept for the window's percentiles */
     TL_NOTES = 8,      /* n60tail: folded lists per frame (2 kicks + the frame end) */
 };
@@ -69,7 +72,7 @@ static int sEndPhase = 0; /* the recorded frame's lever phase: zc | tp << 1 */
 
 typedef struct {
     unsigned frames, miss, k2frames, overlap, tinyN, fills, xfers, copies, entries;
-    double eye[3];               /* busy ms by eye of the lists (2 = off-screen) */
+    double eye[4];               /* busy ms by eye of the lists (2 = off-screen, 3 = both: onesubmit) */
     double chunk[2][TL_CHUNKS];  /* busy ms by eye and chunk, frames with 2 kicks only */
     double fill, xfer, copy, tiny, idle, tail, span;
     float keepLR[TL_KEEP], keepTail[TL_KEEP];
@@ -109,6 +112,9 @@ static void OnGpuEvent(void* data) {
     s->evt = (u8)(uintptr_t)data;
     __sync_synchronize();
     sHead = h + 1u;
+    if (&gdx3ds_gxcost_on_event != NULL) {
+        gdx3ds_gxcost_on_event((int)(uintptr_t)data); /* EV_* are the GSPGPU_EVENT_* numbers */
+    }
 }
 
 int gdx3ds_gputl_on(void) {
@@ -155,12 +161,23 @@ static float Pct(float* v, unsigned n, float p) {
  * "F F l l l l l X | l l X": F fill, l/r list of the left / right eye (o off-screen), X transfer,
  * '|' where a snapshot (kick or frame end) made the following entries available. */
 static void LogSeq(void) {
-    static unsigned seenPhases = 0;
-    const unsigned bit = 1u << (unsigned)(sEndPhase & 15);
-    if ((seenPhases & bit) != 0u || sFrameKicks != 2) {
+    /* onesubmit: tp bits 32 / 64 / 128 (gdx3ds_stereo_tail_phase) outgrew a 64-bit seen mask */
+    enum { kSeenMax = 32 };
+    static int seenPhases[kSeenMax];
+    static int seenN = 0;
+    const int noBodyKicks = ((sEndPhase >> 1) & 64) != 0; /* onesubmit_kicks: the head run is the one kick */
+    if (sFrameKicks != 2 && !(noBodyKicks && sFrameKicks >= 1)) {
         return;
     }
-    seenPhases |= bit;
+    for (int i = 0; i < seenN; i++) {
+        if (seenPhases[i] == sEndPhase) {
+            return;
+        }
+    }
+    if (seenN >= kSeenMax) {
+        return;
+    }
+    seenPhases[seenN++] = sEndPhase;
     char seq[160];
     int n = 0;
     int snap = 0;
@@ -172,10 +189,10 @@ static void LogSeq(void) {
             }
         }
         const Ent* e = &sEnt[k];
-        static const char kList[3] = { 'l', 'r', 'o' };
+        static const char kList[4] = { 'l', 'r', 'o', 'b' };
         char c = '?';
         if (e->kind == K_LIST) {
-            c = kList[e->eye < 3 ? e->eye : 2];
+            c = kList[e->eye < 4 ? e->eye : 2];
             if (e->tiny) {
                 c = (char)(c - 'a' + 'A'); /* tiny lists in capitals */
             }
@@ -189,7 +206,7 @@ static void LogSeq(void) {
         seq[n++] = c;
     }
     seq[n] = '\0';
-    TlLog("[gputl] seq zc=%d tp=%d n=%d %s (F fill, l/r body list L/R eye, L/R/O tiny list, X/Y left/right transfer, | a submit point)",
+    TlLog("[gputl] seq zc=%d tp=%d n=%d %s (F fill, l/r body list L/R eye, b both eyes (onesubmit), L/R/O tiny list, X/Y left/right transfer, | a submit point)",
           sEndPhase & 1, sEndPhase >> 1, sN, seq);
 }
 
@@ -202,10 +219,10 @@ static void EmitWindow(void) {
     const float p50t = Pct(sWin.keepTail, sWin.kept, 0.5f);
     const float p90t = Pct(sWin.keepTail, sWin.kept, 0.9f);
     const float maxt = Pct(sWin.keepTail, sWin.kept, 1.0f);
-    TlLog("[gputl] frame=%lu n=%u zc=%d tp=%d miss=%u | busy ms/f L=%.2f R=%.2f off=%.2f fill=%.2f (%.2f/f) xfer=%.2f (%.2f/f) "
+    TlLog("[gputl] frame=%lu n=%u zc=%d tp=%d miss=%u | busy ms/f L=%.2f R=%.2f B=%.2f off=%.2f fill=%.2f (%.2f/f) xfer=%.2f (%.2f/f) "
           "copy=%.2f | L+R p50=%.2f p90=%.2f max=%.2f | tail p50=%.2f p90=%.2f max=%.2f | idle=%.2f span=%.2f "
           "tiny=%.0fus x%.1f ovl=%u ent=%.1f",
-          sFrame, sWin.frames, sWin.zc, sWin.tp, sWin.miss, sWin.eye[0] / f, sWin.eye[1] / f, sWin.eye[2] / f, sWin.fill / f,
+          sFrame, sWin.frames, sWin.zc, sWin.tp, sWin.miss, sWin.eye[0] / f, sWin.eye[1] / f, sWin.eye[3] / f, sWin.eye[2] / f, sWin.fill / f,
           (double)sWin.fills / f, sWin.xfer / f, (double)sWin.xfers / f, sWin.copy / f, p50lr, p90lr, maxlr, p50t,
           p90t, maxt, sWin.idle / f, sWin.span / f,
           sWin.tinyN > 0u ? 1000.0 * sWin.tiny / sWin.tinyN : 0.0, (double)sWin.tinyN / f, sWin.overlap,
@@ -296,7 +313,7 @@ static void AccountFrame(void) {
         switch (e->kind) {
             case K_LIST:
                 sWin.eye[e->eye] += busy;
-                if (e->eye < 2) {
+                if (e->eye != 2) { /* L, R, or both (onesubmit) */
                     lr += busy;
                 }
                 if (e->tiny && backlogged) { /* a tiny list's busy = the per-entry GSP / dispatch cost */
@@ -384,7 +401,8 @@ void gdx3ds_gputl_note_eye(int entry, int eye) {
     sNotes++;
 }
 
-/* The eye a noted (folded) list leaves bound, else `eye`. */
+/* The eye a noted (folded) list leaves bound, else `eye`. A list noted 3 (onesubmit: both eyes in
+ * one list) leaves the right eye bound; frame_end classifies the list itself as 3. */
 static int NotedEye(int k, int eye) {
     for (int i = 0; i < sNotes; i++) {
         if (sNoteEntry[i] == k) {
@@ -466,8 +484,15 @@ void gdx3ds_gputl_frame_end(const void* mainColor, const void* rightColor) {
                 eye = ScanEye((const u32*)en->data[1], words, mainPa, rightPa, eye);
                 e->eye = (u8)eye;
             } else {
-                e->eye = (u8)eye; /* a body list: the eye bound when it starts */
+                /* a body list: the eye bound when it starts -- stereo-race-fps resume_fold: a left list
+                 * may begin with the left eye's resume words (its framebuffer bind in the first words) */
+                eye = ScanEye((const u32*)en->data[1], TL_HEAD_WORDS, mainPa, rightPa, eye);
+                e->eye = (u8)eye;
                 eye = NotedEye(k, eye);
+                if (eye == 3) {
+                    e->eye = 3;
+                    eye = 1;
+                }
             }
         } else if (id == 0x02u) {
             e->kind = K_FILL;

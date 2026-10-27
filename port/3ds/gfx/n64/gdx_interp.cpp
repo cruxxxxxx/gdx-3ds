@@ -23,6 +23,9 @@ extern "C" int gdx_ninterp_tmemfault(void);
 extern "C" int gdx_ninterp_tmemcls(void);
 extern "C" int gdx_ninterp_o3dsfast(void);
 extern "C" int gdx_ninterp_trimemo(void);
+#ifdef EXPANSION_KIT
+extern "C" int gdx_ninterp_ekeditmesh(void);
+#endif
 
 Interp::Interp(Backend* backend) : mBackend(backend) {
     memset(&mRsp, 0, sizeof(mRsp));
@@ -63,6 +66,9 @@ Interp::Interp(Backend* backend) : mBackend(backend) {
     /* o3dsinterp (NEXT.md C4m): the exact rewrites and the tri state memo. */
     mO3dsFast = gdx_ninterp_o3dsfast();
     mTriMemoOn = gdx_ninterp_trimemo();
+#ifdef EXPANSION_KIT
+    mEkPvOn = gdx_ninterp_ekeditmesh();
+#endif
     memset(&mTmKey, 0, sizeof(mTmKey));
     memset(&mTmState, 0, sizeof(mTmState));
 }

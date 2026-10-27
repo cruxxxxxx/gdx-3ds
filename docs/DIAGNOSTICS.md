@@ -2,8 +2,9 @@
 
 The console has no process environment, so **nothing here is an environment variable** — every
 switch is a key in `sdmc:/3ds/gdiffuser/gdiffuser.ini`, under the `[debug]` section unless noted.
-Edit the file by hand, or use the in-game console (DEBUG button, bottom-left of the idle/race
-screen) — settings changed there are written back to the ini for you.
+Edit the file by hand, or use the in-game developer console (hold **L+R+SELECT for 1.5 s**, or
+set `dev_console = 1` to get its tabs inside SETTINGS) — settings changed there are written back
+to the ini for you.
 
 Audience: anyone filing a bug report, and anyone reproducing one.
 

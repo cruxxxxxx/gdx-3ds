@@ -1,5 +1,7 @@
+import os
 from framework import *
 import statistics as st
+import pb_tabs
 
 
 def stats(f):
@@ -141,25 +143,129 @@ def build(D, P):
         ["Render-thread-owned texture cache", "Fixes the round-5 data abort: clears become requests drained on the render thread", "receipt texcacheMainMut=0; awaiting HW", G],
     ]))
 
-    b.append('<h2>What is left</h2>')
-    b.append('<p>Round 5 is the last measured state: 53% of beats at the cap and a median a hair under 60. The floor is still the crowd start. '
-             'The remaining known levers, in the order the research ranked them: double command buffers on the render thread (CPU build and GPU '
-             'are still serialised on core 2), a texture import-lookup memo (imp 0.7 ms, 83 imports per frame), tuning the auto-LOD thresholds '
-             'against hardware, and, if ever wanted, GPU vertex transform phase 2 on lit machine geometry with a large-coordinate CPU fallback.</p>')
-    return page("road-to-60.html", "The Road to Sixty", "".join(b))
+    body = "".join(b)
+    return compose(body[body.index('<h2>Where the frame went'):])
     # continuation_note() is deliberately NOT appended here: build.py appends it exactly once, after
     # wrapping this page (for both the live and frozen/reframed paths). Appending it here too would
     # duplicate it on every build — see framework.reframe()'s docstring.
 
 
 def continuation_note():
-    """A short pointer forward. build.py appends this once, after page()-wrapping, on every build path."""
-    return ('<h2>Where the road went next</h2>'
-            '<p>None of the above levers reached the Old 3DS, which has no second render core, no L2 cache, and a third of the clock. '
-            'Starting 09-24, a second performance campaign rebuilt the race-frame renderer around that console\'s instruction cache instead '
-            'of its instruction count, and an internal development card reached 59–60 fps (245–256 of 256 frames on the first vblank) in '
-            '3D Grand Prix races by 10-08. v1.0.0 ships that same renderer lever family on by default on both consoles via '
-            '<code>[perf] preset = auto</code> — no ini editing needed. '
-            'That campaign, card by card, is on '
-            '<a href="old-3ds.html">Old 3DS: the road to a real 60</a>; the renderer work that enabled it is on '
-            '<a href="native.html">The Native Fork</a>.</p>')
+    """build.py appends this once, after page()-wrapping, on every build path. The forward pointer it used to
+    carry now lives in the page's own header ("Where we are now", compose() below), so this is empty."""
+    return ""
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Current-status header + dated history. In frozen mode (no session scratchpad) the historical body comes
+# from pb_road_history.html, a verbatim snapshot of the last page rendered from the raw fps samples; the
+# live path (build() above) produces the same body and goes through compose() too.
+# ---------------------------------------------------------------------------------------------------------
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def build_current(D):
+    return compose(open(os.path.join(HERE, "pb_road_history.html")).read())
+
+
+def _later(text, when, src, held=False):
+    return pb_tabs.later(text, when, esc(src), held=held)
+
+
+# (anchor text in the historical body, what to put after it). Each anchor must occur exactly once.
+ANNOTATIONS = [
+    ('<h2>Where the frame went: the CPU-bound verdict</h2>',
+     '<p class="pb-era">New 3DS · 08-20 measurement pass (emulator), confirmed on hardware 09-01</p>'),
+    ('<h2>The LOCKED-60 campaign: 09-01 → 09-03</h2>',
+     '<p class="pb-era">New 3DS hardware · v0.9.0-era libultraship interpreter build · rounds 1–5</p>'),
+    ('<h2>Where the milliseconds came from</h2>',
+     '<p class="pb-era">New 3DS hardware · 09-02 → 09-03 · trace on</p>'),
+    ('<h2>Every lever, and its verdict</h2>',
+     '<p class="pb-era">Verdicts as of 09-03 (v0.9.0); later changes noted in the rows</p>'),
+    ('receipt texcacheMainMut=0; awaiting HW',
+     _later("the render thread is off in the v1.0.0 presets, so this fix is off the default path.", "10-19", "gdx3ds_preset_n60.c")),
+    ('breaks ±32000-unit floors',
+     _later("a machines-only <code>gpuxf = 1</code> ships on by default on both consoles; the floor stays on the CPU.", "09-29 → 10-19",
+            "o3dsgpuxf-progress.md; gdx3ds_preset_n60.c")),
+    ('HW round 5: median 59.6, p10 51.4, 53% at cap',
+     _later("off by default since v1.0.0 (<code>renderthread = 0</code>): the native race path fits on one core, and New 3DS 3D races "
+            "held 60 in every window on card 6 without it.", "10-19 → 10-26", "gdx3ds_preset_n60.c; o3ds-card6-analysis.md §4")),
+    ('+8–9 fps in crowds on hardware',
+     _later("the New 3DS preset now runs full rival detail; automatic scaling is an Old 3DS lever.", "10-19", "RELEASE-NOTES.md v1.0.0")),
+    ('shipped in round 5; thresholds untuned on HW',
+     _later("kept in the Old 3DS <code>o3ds-auto</code> preset; not used by the New 3DS preset.", "10-19", "RELEASE-NOTES.md v1.0.0")),
+    ('flush cost is GPU-side and the GPU idles',
+     _later("both eyes did end up in one GPU submission, by another route (a <code>CMDBUF_JUMP</code> per stereo chunk): 3D menus "
+            "+11% on Old 3DS, neutral on New 3DS; v1.1.0 default.", "10-26", "o3ds-card6-analysis.md")),
+    ('ceiling ~1.5 ms',
+     _later("the NO-GO stands; the native fork removed the bridge from the race path instead.", "10-02", "native.html", held=True)),
+]
+
+END_NOTE = ('<h2>Where this road ended</h2>'
+            '<p>The interpreter path topped out here: a median a hair under 60 on the New 3DS, with the crowd start still the floor. '
+            'For the Old 3DS it was a dead end, about 10 fps on first boot, far short of 60. That is '
+            'what led to the native fork: <a href="native.html">The road to 60, all over again</a>.</p>')
+
+STYLE = """<style>
+.pb-era { font-family:var(--sans); font-weight:700; font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--ink3);
+  margin:-6px 0 10px; }
+.pb-now { border-top:3px solid var(--good); padding:2px 0 4px; margin:26px 0 10px; }
+.pb-now h2 { margin-top:12px; border-top:0; padding-top:0; }
+.pb-hist { margin:48px 0 0; padding:12px 0; border-top:1px solid var(--rule); border-bottom:1px solid var(--line); font-size:14px; color:var(--ink2); max-width:78ch; }
+</style>"""
+
+
+def now_table():
+    return table(["Console · mode", "Now (date, build)", "Then"], [
+        ["<b>New 3DS</b> · 1P race, 3D", "<b>60 fps</b> in every ~1 s window; render task 2.5–3.8 ms, ~13 ms of headroom "
+         "(card 6, 10-26, ba0692e; widescreen on)", "median 59.6, p10 51.4, 53% of beats at 60 (round 5, 09-03)"],
+        ["<b>New 3DS</b> · 1P race, 2D", "no separate native-renderer figure on file (v1.0.0 notes: not yet measured); 3D, the heavier mode, holds 60",
+         "median 57.2 with stereo off (round 2, 09-02)"],
+        ["<b>New 3DS</b> · menus, 3D", "medians 56–61 fps (card 6; few windows, noisy)", "~20 fps in the emulator (08-21)"],
+        ["<b>Old 3DS</b> · 1P race, 2D", "<b>60 fps</b>: median frame 16.5 ms, 0 hitches (card 3, 10-02); full-field GP 57.3 fps mean "
+         "with diagnostic logging (card 2, 10-02)", "unsupported until 09-28; ~10 fps on first boot (09-29)"],
+        ["<b>Old 3DS</b> · 1P race, 3D", "<b>59.7–59.8 fps</b> with one submission per stereo chunk, baseline 56.4 / 59.3 (card 6, 10-26; "
+         "two blocks per arm); a heavier 16-machine race 53.7 fps (10-24)", "59–60 in race windows on courses 12–16 (card 4, 10-08)"],
+        ["<b>Old 3DS</b> · menus, 3D", "<b>44.6 fps</b>, from 40.2 (card 6, 10-26)", "interpreter menus with frame skipping (v1.0.0)"],
+        ["<b>Old 3DS</b> · multiplayer", "2D: <b>60 fps</b> race windows, 2 players + 14 CPU (10-25, 3c0c7b7). 3D: <b>locked 30</b> by design (10-24)",
+         "multiplayer is new in v1.1.0"],
+        ["<b>New 3DS</b> · multiplayer", "no separate figure on file", "—"],
+    ])
+
+
+def compose(history):
+    cut = history.index('<h2>What is left</h2>')
+    history = history[:cut] + END_NOTE
+    for anchor, add in ANNOTATIONS:
+        assert history.count(anchor) == 1, anchor
+        history = history.replace(anchor, anchor + add)
+    b = [pb_tabs.STYLE, STYLE]
+    b.append('<p class="eyebrow">04 · Road to 60</p><h1>The road to sixty</h1>')
+    b.append('<p class="lede">F-Zero X runs its logic at 60 Hz and the port never lowered that. On 10-26 both consoles race at 60: the New '
+             '3DS with headroom to spare, the Old 3DS at the edge in 3D. Most of this page is how the New 3DS got there first, from 08-14 to '
+             '09-03, on a renderer that is no longer the default. Every number is labelled with its date and build.</p>')
+    b.append('<div class="pb-now"><h2>Where we are now · 10-26, v1.1.0</h2>')
+    b.append(tiles([
+        ("60<small>fps</small>", "New 3DS 1P race in 3D, every window (card 6, 10-26)", "red"),
+        ("59.7<small>fps</small>", "Old 3DS 1P race in 3D with one submission per stereo chunk (card 6, 10-26)", "red"),
+        ("60 / 30", "Old 3DS multiplayer: 2D at 60 (10-25), 3D locked at 30 (10-24)", False),
+        ("59.6", "New 3DS median at the end of this page's campaign (round 5, 09-03)", False),
+    ]))
+    b.append(now_table())
+    b.append('<p style="font-size:13px;color:var(--ink3)">Since v1.0.0 (10-19) both consoles run the native renderer by default '
+             '(<code>[perf] preset = auto</code>: <code>n60</code> on New 3DS, <code>o3ds-auto</code> on Old 3DS), with the render '
+             'thread off. Sources: <code>hwlogs/n3ds-card6</code>, <code>o3ds-card6</code>, <code>o3ds-card3</code>, <code>o3ds-0c2</code>; '
+             '<a href="../RELEASE-NOTES.md">RELEASE-NOTES.md</a>; <a href="../MULTIPLAYER.md">MULTIPLAYER.md</a>. The renderer and the '
+             'Old 3DS road are on <a href="native.html">The road to 60, all over again</a>.</p>')
+    b.append('<h3>What the Old 3DS work gave back to the New 3DS</h3><ul>'
+             '<li><b>The default route.</b> The native renderer, per-eye stereo replay and end-of-frame pacing are the New 3DS default '
+             'since v1.0.0 (<code>n60</code>, render thread off). The render-thread path below is still built in behind an explicit ini.</li>'
+             '<li><b>Two audio levers</b> (<code>audio_ctx_narrow</code>, <code>audio_simd</code>) are on in the New 3DS preset too, though it '
+             'never lacked audio headroom.</li>'
+             '<li><b>Fixes for both models:</b> a backlight/HOME freeze, a save that could be lost on power loss (an SD rename quirk), and a '
+             'log that never blocks the frame.</li></ul></div>')
+    b.append('<p class="pb-hist"><b>Where we were.</b> Everything below is the New 3DS campaign of 08-14 → 09-03 (v0.9.0), on the '
+             'libultraship-derived interpreter with a render thread on core 2. Notes marked <b style="color:var(--warn)">Later</b> say what '
+             'changed afterwards.</p>')
+    b.append(f'<div class="pb-road">{history}</div>')
+    return page("road-to-60.html", "The Road to Sixty", "".join(b))

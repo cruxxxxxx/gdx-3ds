@@ -57,6 +57,7 @@ extern GfxPool D_1000000;
 extern Mtx D_2000000[];
 extern Camera gCameras[];
 extern s32 gNumPlayers;
+extern void gdx_fv_map_point(int view, f32* x, f32* y); /* gdx3ds_fullview_game.c */
 extern s32 gGameMode;
 extern s32 gCourseIndex;
 extern u32 gGameFrameCount;
@@ -447,8 +448,13 @@ static void NrrSkySnapStars(NrrFrame* fr, GdxNrrSkyFrame* f, s32 view) {
     }
     for (i = 0, st = sStars; i < sStarCount; i++, st++) {
         if (st->isVisible[view]) {
-            out[n].xl = (s16) (s32) (st->screenPosition[view].left * 4.0f);
-            out[n].yl = (s16) (s32) (st->screenPosition[view].top * 4.0f);
+            /* MP phase 3: the local view of a fullview build maps the split-screen position to the
+             * full-screen viewport (Background_DrawStars does the same; identity otherwise). */
+            f32 left = st->screenPosition[view].left;
+            f32 top = st->screenPosition[view].top;
+            gdx_fv_map_point(view, &left, &top);
+            out[n].xl = (s16) (s32) (left * 4.0f);
+            out[n].yl = (s16) (s32) (top * 4.0f);
             out[n].rgba[0] = st->red;
             out[n].rgba[1] = st->green;
             out[n].rgba[2] = st->blue;

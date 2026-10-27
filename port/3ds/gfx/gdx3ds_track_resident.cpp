@@ -3,9 +3,11 @@
  * side lives in gdx3ds_track_retained.cpp, which owns the replay's slot state.
  *
  * Threads. The bake runs on the game thread inside Course_Init and publishes an immutable set
- * through one atomic slot; the render thread exchanges it out at its next retained run, copies
- * the vertices into linear memory and becomes the set's only owner. A set the render side never
- * picked up (two loads in a row) is freed by the game thread when it publishes the next one. */
+ * through one atomic pointer; the render thread exchanges it out at its next retained run and
+ * becomes the set's only owner. ship6: every set lives in one of the two slots of a fixed linear
+ * arena reserved once (no per-course heap or linear allocation; see "the arena" below), and its
+ * vertices are the GPU's buffer directly. A set the render side never picked up (two loads in a
+ * row) is taken back by the game thread at its next bake. */
 #include "gdx3ds_track_resident.h"
 
 #include <3ds.h>
@@ -125,20 +127,95 @@ void LatchConfig() {
         sCfg.verify ? 1 : 0, sCfg.maxErr, sCfg.window);
 }
 
+/* ---- ship6: the arena (one linear block, reserved once) ------------------------------------
+ *
+ * Card-6 hardware (Old 3DS, ~10 min, 6 course loads): `[alloc-fail] malloc 96768` in BakeCourse
+ * with 1.6 MB of heap free -- fragmentation, not exhaustion -- and a `realloc 156672` of the same
+ * ring growth one course later; the course silently lost the resident path and the previous
+ * course's set stayed adopted. Every array a bake writes now lives in this arena instead.
+ *
+ * Capacities, worst case over every course (ship6 census of `[trkres] bake` / `[nrrtrk] index`
+ * receipts, emulator + hardware: all 24 stock courses, the 12 Expansion Kit disk courses, X cup,
+ * Death Race, ending): chunks max 495 (35 Big Blue 3; stock 422, 23 Big Hand) against
+ * gSegmentChunks' 1025; rings max 1659 (39 Fire Field 2; stock 1657, 20 Space Plant) against
+ * kArenaRings 2048; NRR index max 32928 keys (343 chunks x 4 U tables; 495 x 4 would be 47520)
+ * against kArenaIndexKeys 65536. A user-made (EK editor) course past a capacity skips its bake
+ * (the per-frame path draws it) and says so.
+ *
+ * Two slots, because the render side keeps drawing the adopted set (and the GPU keeps reading
+ * its vertices for a few frames) while the game thread bakes the next one (the EK editor rebakes
+ * a course it is drawing). A slot's state: FREE -> GAME (the game thread bakes / publishes it) ->
+ * RENDER (adopted) -> RETIRED (the next adoption replaced it; the GPU may still read it) -> GAME
+ * again once kSlotReuseFrames game frames have passed. The game thread is the only writer of FREE
+ * / RETIRED -> GAME; the render side of GAME -> RENDER -> RETIRED. Linear memory: the heap is the
+ * Old 3DS's tight pool (card-6 race: heapFree 3-20 KB), linear had ~6.5-9.9 MB free in the race. */
+constexpr uint32_t kArenaChunks = 1025;      /* gSegmentChunks[1025] (decomp-3ds-snapshot.patch) */
+constexpr uint32_t kArenaRings = 2048;       /* per slot; the largest course (39 Fire Field 2) bakes 1659 */
+constexpr uint32_t kArenaHash = 4096;        /* power of two >= 2 * kArenaChunks (BuildHash) */
+constexpr uint32_t kArenaIndexKeys = 65536;  /* NRR index keys (24 per chunk and U table); largest 32928 */
+constexpr uint32_t kArenaSlots = 2;
+constexpr uint32_t kSlotReuseFrames = 16;    /* game frames between a slot's retirement and its reuse */
+
+enum SlotState : int { SLOT_FREE = 0, SLOT_GAME = 1, SLOT_RENDER = 2, SLOT_RETIRED = 3 };
+
+struct ArenaSlot {
+    GdxTrkResSet set;     /* the header; its arrays point into this slot's part of the block */
+    uint32_t vertRings;   /* rings `set.verts` holds: kArenaRings + the atlas copies */
+    int state;            /* SlotState (atomic) */
+    uint32_t retireFrame; /* gGameFrameCount-based frame of the adoption that retired it */
+};
+
+struct ChunkSrc;
+
+struct BakeScratch {
+    ChunkSrc* src;   /* the bake's per-chunk source table (kArenaChunks) */
+    uint16_t* indexRing;    /* the NRR index's key -> ring table (kArenaIndexKeys) */
+    int8_t* chunkTable;     /* the NRR index's per-chunk U table (kArenaChunks) */
+    uint16_t* joinRing;     /* the NRR index's per-chunk join ring (kArenaChunks) */
+};
+
+struct Arena {
+    void* block;      /* one linearAlloc, never freed while the process runs */
+    uint32_t bytes;
+    bool tried;       /* reserve attempted (a failure is logged once and turns the lever off) */
+    ArenaSlot slot[kArenaSlots];
+    BakeScratch scratch;
+    GdxNrrTrkIndex index; /* the one NRR index (game thread only, rebuilt per bake) */
+};
+Arena sArena = {};
+/* published "no bake": the render side drops the set it holds (a skipped bake must not leave the
+ * previous course's set drawing the new course) */
+GdxTrkResSet sClearSet = { -1, 0, -1, 0, 0, nullptr, nullptr, nullptr, 0, nullptr, 0, { 0 }, 0.0f };
+
+int SlotStateLoad(const ArenaSlot& a) {
+    return __atomic_load_n(&a.state, __ATOMIC_ACQUIRE);
+}
+
+void SlotStateStore(ArenaSlot& a, int state) {
+    __atomic_store_n(&a.state, state, __ATOMIC_RELEASE);
+}
+
+bool SlotStateClaim(ArenaSlot& a, int from) {
+    int expected = from;
+    return __atomic_compare_exchange_n(&a.state, &expected, (int)SLOT_GAME, false, __ATOMIC_ACQ_REL,
+                                       __ATOMIC_ACQUIRE);
+}
+
+uint32_t AlignUp16(uint32_t v) {
+    return (v + 15u) & ~15u;
+}
+
 /* ---- the bake (game thread) ---------------------------------------------------------------- */
 
 GdxTrkResSet* sPending = nullptr; /* published, not yet adopted (atomic exchange only) */
 uint32_t sGeneration = 0;
 
-void FreeSet(GdxTrkResSet* s) {
-    if (s == nullptr) {
+/* A set the render side never adopted (or a bake that did not finish): its slot is free again. */
+void ReleaseUnadopted(GdxTrkResSet* s) {
+    if (s == nullptr || s->slot < 0 || s->slot >= (int32_t)kArenaSlots) {
         return;
     }
-    free(s->chunks);
-    free(s->rings);
-    free(s->verts);
-    free(s->hash);
-    free(s);
+    SlotStateStore(sArena.slot[s->slot], SLOT_FREE);
 }
 
 /* A ring's key: the positions of its vertices 0 and 4 (referencePos1 and 2, distinct per chunk);
@@ -175,26 +252,9 @@ struct Builder {
     GdxNrrTrkIndex* nrr; /* n60 nrr_trk: (chunk, layout, table, corr, patched) -> ring; NULL = not built */
 };
 
+/* ship6: the slot's fixed capacity (no growth); false = the course is past the arena. */
 bool Reserve(Builder& b, uint32_t rings) {
-    if (b.s->nRings + rings <= b.cap) {
-        return true;
-    }
-    uint32_t cap = b.cap * 2;
-    while (cap < b.s->nRings + rings) {
-        cap *= 2;
-    }
-    GdxTrkResRing* r = (GdxTrkResRing*)realloc(b.s->rings, cap * sizeof(GdxTrkResRing));
-    if (r == nullptr) {
-        return false;
-    }
-    b.s->rings = r;
-    Gdx3dsVtxIn* v = (Gdx3dsVtxIn*)realloc(b.s->verts, (size_t)cap * 8u * sizeof(Gdx3dsVtxIn));
-    if (v == nullptr) {
-        return false;
-    }
-    b.s->verts = v;
-    b.cap = cap;
-    return true;
+    return b.s->nRings + rings <= b.cap;
 }
 
 /* Append ring (raw game output + final U/V) to chunk i unless an identical one is there. Returns
@@ -421,10 +481,10 @@ bool BuildHash(GdxTrkResSet& s) {
     while (size < s.nChunks * 2u) {
         size *= 2;
     }
-    s.hash = (uint16_t*)calloc(size, sizeof(uint16_t));
-    if (s.hash == nullptr) {
-        return false;
+    if (size > kArenaHash || s.hash == nullptr) {
+        return false; /* ship6: the slot's table (kArenaChunks bounds nChunks, so never past it) */
     }
+    memset(s.hash, 0, size * sizeof(uint16_t));
     s.hashMask = size - 1u;
     for (uint32_t i = 0; i < s.nChunks; i++) {
         const GdxTrkResChunk& ch = s.chunks[i];
@@ -454,42 +514,36 @@ bool BuildHash(GdxTrkResSet& s) {
 GdxNrrTrkIndex* sNrrIx = nullptr;
 uint32_t sNrrIxBytes = 0;
 
+/* ship6: the index's tables are the arena's scratch; only the verify copy (nrr_trk = 2) is heap. */
 void NrrIndexFree(GdxNrrTrkIndex* x) {
     if (x == nullptr) {
         return;
     }
-    free(x->chunkTable);
-    free(x->ring);
-    free(x->joinRing);
     free(const_cast<void*>(x->verts));
-    free(x);
+    x->verts = nullptr;
 }
 
 GdxNrrTrkIndex* NrrIndexBegin(int n, const ChunkSrc* src, const int16_t (*tables)[5], int nTables) {
     if (gdxtrk_nrr_level() == 0 || nTables <= 0) {
         return nullptr;
     }
-    GdxNrrTrkIndex* x = (GdxNrrTrkIndex*)calloc(1, sizeof(GdxNrrTrkIndex));
-    if (x == nullptr) {
+    const size_t keys = (size_t)n * 4u * (size_t)nTables * (size_t)GDX_NRR_TRK_VMODES;
+    if (keys > kArenaIndexKeys) {
+        Log("[trkres] arena: NRR index skipped (chunks=%d tables=%d keys=%u > %u) -- the track pass walks "
+            "the legacy groups",
+            n, nTables, (unsigned)keys, kArenaIndexKeys);
         return nullptr;
     }
+    GdxNrrTrkIndex* x = &sArena.index;
+    memset(x, 0, sizeof(*x));
     x->nChunks = (uint32_t)n;
     x->nTables = (uint32_t)nTables;
     memcpy(x->tables, tables, (size_t)nTables * sizeof(tables[0]));
-    const size_t keys = (size_t)n * 4u * (size_t)nTables * (size_t)GDX_NRR_TRK_VMODES;
-    x->ring = (uint16_t*)malloc(keys * sizeof(uint16_t));
-    x->chunkTable = (int8_t*)malloc((size_t)n);
-    if (x->ring == nullptr || x->chunkTable == nullptr) {
-        NrrIndexFree(x);
-        return nullptr;
-    }
+    x->ring = sArena.scratch.indexRing;
+    x->chunkTable = sArena.scratch.chunkTable;
     memset(x->ring, 0xFF, keys * sizeof(uint16_t));
     if (gdxtrk_nrr_joins()) {
-        x->joinRing = (uint16_t*)malloc((size_t)n * sizeof(uint16_t));
-        if (x->joinRing == nullptr) {
-            NrrIndexFree(x);
-            return nullptr;
-        }
+        x->joinRing = sArena.scratch.joinRing;
         memset(x->joinRing, 0xFF, (size_t)n * sizeof(uint16_t));
     }
     for (int i = 0; i < n; i++) {
@@ -513,8 +567,7 @@ void NrrIndexPublish(GdxNrrTrkIndex* x, const GdxTrkResSet& s) {
             x->verts = v;
         }
     }
-    NrrIndexFree(sNrrIx);
-    sNrrIx = x;
+    sNrrIx = x; /* the one index (sArena.index): the bake released the previous course's first */
 }
 
 /* n60atlas [debug] atlas_census: the course's chunks by (shape, type) -- the track materials the walk
@@ -555,20 +608,34 @@ __attribute__((noinline, cold)) void CensusChunks(const ChunkSrc* src, int n) {
     Log("%s", b);
 }
 
-GdxTrkResSet* BakeCourse() {
+/* ship6: why a bake gave no set (the caller logs and clears accordingly). */
+enum BakeResult { BAKE_OK = 0, BAKE_NO_COURSE = 1, BAKE_OVERFLOW = 2 };
+
+BakeResult BakeCourse(ArenaSlot& slot, int* chunksOut) {
     const int n = gdxtrk_game_chunk_count();
-    if (n <= 0 || n > 4096) {
-        return nullptr;
+    *chunksOut = n;
+    if (n <= 0) {
+        return BAKE_NO_COURSE;
     }
-    ChunkSrc* src = (ChunkSrc*)calloc((size_t)n, sizeof(ChunkSrc));
-    GdxTrkResSet* s = (GdxTrkResSet*)calloc(1, sizeof(GdxTrkResSet));
+    if ((uint32_t)n > kArenaChunks) {
+        return BAKE_OVERFLOW;
+    }
+    ChunkSrc* src = sArena.scratch.src;
+    GdxTrkResSet* s = &slot.set;
+    GdxTrkResChunk* chunks = s->chunks;
+    GdxTrkResRing* rings = s->rings;
+    Gdx3dsVtxIn* verts = s->verts;
+    uint16_t* hash = s->hash;
+    const int32_t slotIndex = s->slot;
+    memset(s, 0, sizeof(*s));
+    s->slot = slotIndex;
+    s->chunks = chunks;
+    s->rings = rings;
+    s->verts = verts;
+    s->hash = hash;
     int16_t tables[kMaxTables][5];
     int nTables = 0;
-    if (src == nullptr || s == nullptr) {
-        free(src);
-        FreeSet(s);
-        return nullptr;
-    }
+    memset(src, 0, (size_t)n * sizeof(ChunkSrc));
     for (int i = 0; i < n; i++) {
         src[i].info = gdxtrk_game_chunk_info(i);
         src[i].layout = gdxtrk_game_layout_of(src[i].info);
@@ -590,35 +657,23 @@ GdxTrkResSet* BakeCourse() {
     }
     CensusChunks(src, n);
     s->nChunks = (uint32_t)n;
-    s->chunks = (GdxTrkResChunk*)calloc((size_t)n, sizeof(GdxTrkResChunk));
-    Builder b = { s, 0, false, NrrIndexBegin(n, src, tables, nTables) };
-    b.cap = (uint32_t)n * 2u;
-    s->rings = (GdxTrkResRing*)malloc(b.cap * sizeof(GdxTrkResRing));
-    s->verts = (Gdx3dsVtxIn*)malloc((size_t)b.cap * 8u * sizeof(Gdx3dsVtxIn));
-    if (s->chunks == nullptr || s->rings == nullptr || s->verts == nullptr) {
-        free(src);
-        FreeSet(s);
-        return nullptr;
-    }
+    memset(s->chunks, 0, (size_t)n * sizeof(GdxTrkResChunk));
+    Builder b = { s, kArenaRings, false, NrrIndexBegin(n, src, tables, nTables) };
     for (int i = 0; i < n && !b.failed; i++) {
         s->chunks[i].info9 = (uint16_t)(src[i].info & 0x1FFu); /* n60atlas: the chunk's shape | type */
         BakeChunk(b, i, n, src, tables, nTables);
         BakeJoin(b, i, n, src);
         s->maxVariants = s->chunks[i].nRings > s->maxVariants ? s->chunks[i].nRings : s->maxVariants;
     }
-    free(src);
     if (b.failed || !BuildHash(*s)) {
-        Log("[trkres] bake FAILED (chunks=%d rings=%u: out of memory or past %u resident vertices)", n, s->nRings,
-            kMaxResidentVerts);
         NrrIndexFree(b.nrr);
-        FreeSet(s);
-        return nullptr;
+        return BAKE_OVERFLOW;
     }
     for (uint32_t i = 0; i < s->nChunks; i++) {
         BoundChunk(*s, i);
     }
     NrrIndexPublish(b.nrr, *s);
-    return s;
+    return BAKE_OK;
 }
 
 uint32_t CountKinds(const GdxTrkResSet& s, uint8_t bit) {
@@ -629,74 +684,165 @@ uint32_t CountKinds(const GdxTrkResSet& s, uint8_t bit) {
     return t;
 }
 
-/* ---- the render side ----------------------------------------------------------------------- */
+/* ---- ship6: arena reserve + slot hand-off (game thread) ------------------------------------- */
 
-struct Retired {
-    void* p;
-    uint32_t frame;
-};
-constexpr int kRetireCap = 4;
-Retired sRetired[kRetireCap];
-GdxTrkResView sView = { nullptr, nullptr, 0, 0 };
-GdxTrkResSet* sOwned = nullptr;
-uint32_t sAcquireFrame = 0;
-
-void DrainRetired(uint32_t frame) {
-    for (int i = 0; i < kRetireCap; i++) {
-        /* a course change is many frames of loading; three frames is past any queued GPU read */
-        if (sRetired[i].p != nullptr && frame - sRetired[i].frame >= 3u) {
-            if (GDX_NRR_CRUMBS_ON()) {
-                gdx3ds_nrr_crumb("trk linearFree(%p) retired at frame %lu", sRetired[i].p, (unsigned long)sRetired[i].frame);
-            }
-            linearFree(sRetired[i].p);
-            sRetired[i].p = nullptr;
-        }
-    }
+uint32_t SlotBytes(uint32_t vertRings) {
+    return AlignUp16(vertRings * 8u * (uint32_t)sizeof(Gdx3dsVtxIn)) +
+           AlignUp16(kArenaChunks * (uint32_t)sizeof(GdxTrkResChunk)) +
+           AlignUp16(kArenaRings * (uint32_t)sizeof(GdxTrkResRing)) + AlignUp16(kArenaHash * (uint32_t)sizeof(uint16_t));
 }
 
-void Retire(const void* p, uint32_t frame) {
-    if (p == nullptr) {
-        return;
+uint32_t ScratchBytes() {
+    return AlignUp16(kArenaChunks * (uint32_t)sizeof(ChunkSrc)) + AlignUp16(kArenaIndexKeys * (uint32_t)sizeof(uint16_t)) +
+           AlignUp16(kArenaChunks) + AlignUp16(kArenaChunks * (uint32_t)sizeof(uint16_t));
+}
+
+/* Carve the next `bytes` (16-aligned) off the block. */
+void* Carve(uint8_t*& at, uint32_t bytes) {
+    void* p = at;
+    at += AlignUp16(bytes);
+    return p;
+}
+
+void CarveSlot(uint8_t*& at, int index, uint32_t vertRings) {
+    ArenaSlot& a = sArena.slot[index];
+    memset(&a, 0, sizeof(a));
+    a.vertRings = vertRings;
+    a.set.slot = index;
+    a.set.verts = (Gdx3dsVtxIn*)Carve(at, vertRings * 8u * (uint32_t)sizeof(Gdx3dsVtxIn));
+    a.set.chunks = (GdxTrkResChunk*)Carve(at, kArenaChunks * (uint32_t)sizeof(GdxTrkResChunk));
+    a.set.rings = (GdxTrkResRing*)Carve(at, kArenaRings * (uint32_t)sizeof(GdxTrkResRing));
+    a.set.hash = (uint16_t*)Carve(at, kArenaHash * (uint32_t)sizeof(uint16_t));
+    SlotStateStore(a, SLOT_FREE);
+}
+
+void CarveScratch(uint8_t*& at) {
+    sArena.scratch.src = (ChunkSrc*)Carve(at, kArenaChunks * (uint32_t)sizeof(ChunkSrc));
+    sArena.scratch.indexRing = (uint16_t*)Carve(at, kArenaIndexKeys * (uint32_t)sizeof(uint16_t));
+    sArena.scratch.chunkTable = (int8_t*)Carve(at, kArenaChunks);
+    sArena.scratch.joinRing = (uint16_t*)Carve(at, kArenaChunks * (uint32_t)sizeof(uint16_t));
+}
+
+/* Once per process: one linearAlloc for both slots and the scratch. false = no arena (logged once;
+ * the lever is off from here, the per-frame path draws every course). */
+bool ArenaReserve() {
+    if (sArena.block != nullptr) {
+        return true;
     }
-    for (int i = 0; i < kRetireCap; i++) {
-        if (sRetired[i].p == nullptr) {
-            sRetired[i].p = const_cast<void*>(p);
-            sRetired[i].frame = frame;
-            return;
+    if (sArena.tried) {
+        return false;
+    }
+    sArena.tried = true;
+    uint32_t vertRings = kArenaRings + sCfg.atlasRings;
+    vertRings = vertRings * 8u > kMaxResidentVerts ? kMaxResidentVerts / 8u : vertRings;
+    const uint32_t slotBytes = SlotBytes(vertRings);
+    const uint32_t bytes = slotBytes * kArenaSlots + ScratchBytes();
+    const unsigned linBefore = (unsigned)(linearSpaceFree() / 1024u);
+    void* p = linearAlloc(bytes);
+    if (p == nullptr) {
+        Log("[trkres] arena: linearAlloc(%u) FAILED (linfree=%uK) -- track_resident off, per-frame path", bytes,
+            linBefore);
+        sCfg.level = 0;
+        return false;
+    }
+    sArena.block = p;
+    sArena.bytes = bytes;
+    uint8_t* at = (uint8_t*)p;
+    for (uint32_t i = 0; i < kArenaSlots; i++) {
+        CarveSlot(at, (int)i, vertRings);
+    }
+    CarveScratch(at);
+    Log("[trkres] arena reserved %u bytes linear (%u slots x %u: chunks<=%u rings<=%u (+%u atlas) hash<=%u; "
+        "scratch %u: index keys<=%u) linfree=%uK->%uK",
+        bytes, kArenaSlots, slotBytes, kArenaChunks, kArenaRings, vertRings - kArenaRings, kArenaHash, ScratchBytes(),
+        kArenaIndexKeys, linBefore, (unsigned)(linearSpaceFree() / 1024u));
+    return true;
+}
+
+/* The game frame now (the counter the render side's `frame` comes from: GDXTRK_BEGIN). */
+extern "C" unsigned int gGameFrameCount __attribute__((weak));
+
+bool SlotReusable(const ArenaSlot& a) {
+    if (&gGameFrameCount == nullptr) {
+        return true;
+    }
+    return (int32_t)((uint32_t)gGameFrameCount - a.retireFrame) >= (int32_t)kSlotReuseFrames;
+}
+
+/* A FREE slot, else a RETIRED one the GPU is done with. -1 = both busy (the adopted set and one
+ * retired a moment ago: two bakes within kSlotReuseFrames of an adoption). */
+int ClaimSlot() {
+    for (uint32_t i = 0; i < kArenaSlots; i++) {
+        if (SlotStateClaim(sArena.slot[i], SLOT_FREE)) {
+            return (int)i;
         }
     }
-    /* every slot busy (four course loads inside three frames): leak rather than free early */
+    for (uint32_t i = 0; i < kArenaSlots; i++) {
+        ArenaSlot& a = sArena.slot[i];
+        if (SlotStateLoad(a) == SLOT_RETIRED && SlotReusable(a) && SlotStateClaim(a, SLOT_RETIRED)) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+/* Take back a set published but never adopted: its slot is the game thread's again. */
+void ReclaimPending() {
+    GdxTrkResSet* old = __atomic_exchange_n(&sPending, (GdxTrkResSet*)nullptr, __ATOMIC_ACQ_REL);
+    ReleaseUnadopted(old);
+}
+
+void Publish(GdxTrkResSet* s) {
+    GdxTrkResSet* old = __atomic_exchange_n(&sPending, s, __ATOMIC_ACQ_REL);
+    ReleaseUnadopted(old); /* nullptr after ReclaimPending; kept for safety */
+}
+
+/* A bake that could not run: the render side drops the previous course's set at its next run. */
+void PublishClear() {
+    Publish(&sClearSet);
+}
+
+/* ---- the render side ----------------------------------------------------------------------- */
+
+GdxTrkResView sView = { nullptr, nullptr, 0, 0 };
+GdxTrkResSet* sOwned = nullptr;
+
+/* The adopted set's slot goes to RETIRED: the GPU may read it until kSlotReuseFrames pass. */
+void RetireOwned(uint32_t frame) {
+    if (sOwned == nullptr) {
+        return;
+    }
+    ArenaSlot& a = sArena.slot[sOwned->slot];
+    a.retireFrame = frame;
+    SlotStateStore(a, SLOT_RETIRED);
+    sOwned = nullptr;
 }
 
 void Adopt(GdxTrkResSet* s, uint32_t frame) {
     HazardCrumb("[hzc] trkres adopt enter gen=%u course=%d frame=%lu\n", s->generation, (int)s->course,
                 (unsigned long)frame);
-    Retire(sView.linear, frame);
-    FreeSet(sOwned);
-    sOwned = s;
+    RetireOwned(frame);
     sView.set = nullptr;
     sView.linear = nullptr;
     sView.nVerts = 0;
+    sView.ringCap = 0;
+    if (s->slot < 0 || s->nRings == 0) {
+        return; /* the clear set, or an empty bake: the per-frame path draws */
+    }
+    ArenaSlot& a = sArena.slot[s->slot];
+    SlotStateStore(a, SLOT_RENDER);
+    sOwned = s;
     const uint32_t bytes = s->nRings * 8u * (uint32_t)sizeof(Gdx3dsVtxIn);
     /* n60atlas: room for the atlas slots' ring copies behind the bake's rings (u16 indices) */
     uint32_t ringCap = s->nRings + sCfg.atlasRings;
-    ringCap = ringCap * 8u > kMaxResidentVerts ? kMaxResidentVerts / 8u : ringCap;
-    const uint32_t capBytes = ringCap * 8u * (uint32_t)sizeof(Gdx3dsVtxIn);
-    HazardCrumb("[hzc] trkres adopt pre-linearAlloc gen=%u bytes=%lu capBytes=%lu\n", s->generation,
-                (unsigned long)bytes, (unsigned long)capBytes);
-    void* p = bytes != 0 ? linearAlloc(capBytes) : nullptr;
-    HazardCrumb("[hzc] trkres adopt post-linearAlloc gen=%u p=%p\n", s->generation, p);
+    ringCap = ringCap > a.vertRings ? a.vertRings : ringCap;
+    void* p = s->verts; /* ship6: the slot's vertices are the GPU's buffer (linear, no copy) */
     if (GDX_NRR_CRUMBS_ON()) {
         char b[96];
         gdx3ds_nrr_crumb_buf(b, sizeof(b), "ring", p);
-        gdx3ds_nrr_crumb("trk adopt gen=%u linearAlloc(%lu) %s%s linfree=%uK (render side)", s->generation,
-                         (unsigned long)bytes, b, p == nullptr ? " FAILED" : "", gdx3ds_nrr_crumb_linfree_kb());
+        gdx3ds_nrr_crumb("trk adopt gen=%u slot=%d (%lu bytes) %s linfree=%uK (render side)", s->generation,
+                         (int)s->slot, (unsigned long)bytes, b, gdx3ds_nrr_crumb_linfree_kb());
     }
-    if (p == nullptr) {
-        Log("[trkres] adopt gen=%u: linearAlloc(%u) FAILED -- per-frame path only", s->generation, bytes);
-        return;
-    }
-    memcpy(p, s->verts, bytes);
     HazardCrumb("[hzc] trkres adopt pre-flush_resident gen=%u\n", s->generation);
     gdx3ds_mesh_backend_flush_resident(p, bytes);
     HazardCrumb("[hzc] trkres adopt post-flush_resident gen=%u\n", s->generation);
@@ -704,50 +850,20 @@ void Adopt(GdxTrkResSet* s, uint32_t frame) {
     sView.linear = static_cast<const Gdx3dsVtxIn*>(p);
     sView.nVerts = s->nRings * 8u;
     sView.ringCap = ringCap;
-    Log("[trkres] adopt gen=%u course=%d rings=%u verts=%u resident=%u bytes (linear)", s->generation, (int)s->course,
-        s->nRings, sView.nVerts, bytes);
+    Log("[trkres] adopt gen=%u course=%d rings=%u verts=%u resident=%u bytes (linear arena slot %d)", s->generation,
+        (int)s->course, s->nRings, sView.nVerts, bytes, (int)s->slot);
     HazardCrumb("[hzc] trkres adopt exit gen=%u\n", s->generation);
 }
 
-} // namespace
-
-extern "C" const GdxNrrTrkIndex* gdxtrk_nrr_index(void) {
-    return sNrrIx;
-}
-
-extern "C" void gdx3ds_track_resident_bake(void) {
-    LatchConfig();
-    if (sCfg.level == 0) {
-        return;
-    }
-    const uint64_t t0 = svcGetSystemTick();
-    if (GDX_NRR_CRUMBS_ON()) {
-        gdx3ds_nrr_crumb("trk bake > course=%d (game thread, Course_Init) linfree=%uK", &gCourseIndex != nullptr ? gCourseIndex : -1,
-                         gdx3ds_nrr_crumb_linfree_kb());
-    }
-    NrrIndexFree(sNrrIx); /* a new course: the old index names the old course's rings */
-    sNrrIx = nullptr;
-    HazardCrumb("[hzc] trkres bake pre-BakeCourse course=%d\n", &gCourseIndex != nullptr ? gCourseIndex : -1);
-    GdxTrkResSet* s = BakeCourse();
-    HazardCrumb("[hzc] trkres bake post-BakeCourse set=%p\n", (void*)s);
-    if (GDX_NRR_CRUMBS_ON()) {
-        gdx3ds_nrr_crumb("trk bake < set=%p rings=%u chunks=%u index=%p index bytes=%u", (void*)s, s != nullptr ? s->nRings : 0u,
-                         s != nullptr ? s->nChunks : 0u, (void*)sNrrIx, sNrrIxBytes);
-    }
-    if (s == nullptr) {
-        return;
-    }
-    s->generation = ++sGeneration;
-    s->course = &gCourseIndex != nullptr ? gCourseIndex : -1;
-    s->bakeMs = (float)((double)(svcGetSystemTick() - t0) / (double)SYSCLOCK_ARM11 * 1000.0);
-    const uint32_t bytes = s->nRings * 8u * (uint32_t)sizeof(Gdx3dsVtxIn);
-    const uint32_t heap = bytes + s->nChunks * (uint32_t)sizeof(GdxTrkResChunk) +
-                          s->nRings * (uint32_t)sizeof(GdxTrkResRing) + (s->hashMask + 1u) * 2u;
+void LogBake(const GdxTrkResSet& s) {
+    const uint32_t bytes = s.nRings * 8u * (uint32_t)sizeof(Gdx3dsVtxIn);
+    const uint32_t side = s.nChunks * (uint32_t)sizeof(GdxTrkResChunk) + s.nRings * (uint32_t)sizeof(GdxTrkResRing) +
+                          (s.hashMask + 1u) * 2u;
     Log("[trkres] bake gen=%u course=%d chunks=%u rings=%u variants/chunk=%.2f max=%u kinds own=%u corr=%u patched=%u "
-        "ftable=%u flayout=%u | resident=%u bytes (+%u heap) ms=%.2f window=%d",
-        s->generation, (int)s->course, s->nChunks, s->nRings, s->nChunks ? (double)s->nRings / s->nChunks : 0.0,
-        s->maxVariants, s->kindCount[0], CountKinds(*s, GDXTRK_RES_CORR), CountKinds(*s, GDXTRK_RES_PATCHED),
-        CountKinds(*s, GDXTRK_RES_FTABLE), CountKinds(*s, GDXTRK_RES_FLAYOUT), bytes, heap - bytes, (double)s->bakeMs, sCfg.window);
+        "ftable=%u flayout=%u | resident=%u bytes (+%u chunks/rings/hash) slot=%d of arena ms=%.2f window=%d",
+        s.generation, (int)s.course, s.nChunks, s.nRings, s.nChunks ? (double)s.nRings / s.nChunks : 0.0, s.maxVariants,
+        s.kindCount[0], CountKinds(s, GDXTRK_RES_CORR), CountKinds(s, GDXTRK_RES_PATCHED), CountKinds(s, GDXTRK_RES_FTABLE),
+        CountKinds(s, GDXTRK_RES_FLAYOUT), bytes, side, (int)s.slot, (double)s.bakeMs, sCfg.window);
     if (sNrrIx != nullptr) {
         uint32_t filled = 0;
         const uint32_t keys = sNrrIx->nChunks * 4u * sNrrIx->nTables * GDX_NRR_TRK_VMODES;
@@ -759,8 +875,67 @@ extern "C" void gdx3ds_track_resident_bake(void) {
             sNrrIx->gen, sNrrIx->nChunks, sNrrIx->nTables, keys, filled, sNrrIxBytes, sNrrIx->verts != nullptr ? 1 : 0,
             sNrrIx->nJoinRings, sNrrIx->nJoinRings * 8u * (uint32_t)sizeof(Gdx3dsVtxIn));
     }
-    GdxTrkResSet* old = __atomic_exchange_n(&sPending, s, __ATOMIC_ACQ_REL);
-    FreeSet(old); /* published but never adopted */
+}
+
+} // namespace
+
+extern "C" const GdxNrrTrkIndex* gdxtrk_nrr_index(void) {
+    return sNrrIx;
+}
+
+extern "C" void gdx3ds_track_resident_reserve(void) {
+    LatchConfig();
+    if (sCfg.level != 0) {
+        ArenaReserve();
+    }
+}
+
+extern "C" void gdx3ds_track_resident_bake(void) {
+    LatchConfig();
+    if (sCfg.level == 0 || !ArenaReserve()) {
+        return;
+    }
+    const uint64_t t0 = svcGetSystemTick();
+    const int course = &gCourseIndex != nullptr ? gCourseIndex : -1;
+    if (GDX_NRR_CRUMBS_ON()) {
+        gdx3ds_nrr_crumb("trk bake > course=%d (game thread, Course_Init) linfree=%uK", course, gdx3ds_nrr_crumb_linfree_kb());
+    }
+    NrrIndexFree(sNrrIx); /* a new course: the old index names the old course's rings */
+    sNrrIx = nullptr;
+    ReclaimPending();
+    const int slotIndex = ClaimSlot();
+    if (slotIndex < 0) {
+        Log("[trkres] arena busy: course=%d bake skipped (both slots in use within %u frames of an adoption) -- "
+            "previous course's set dropped, per-frame path",
+            course, kSlotReuseFrames);
+        PublishClear();
+        return;
+    }
+    ArenaSlot& slot = sArena.slot[slotIndex];
+    HazardCrumb("[hzc] trkres bake pre-BakeCourse course=%d slot=%d\n", course, slotIndex);
+    int chunks = 0;
+    const BakeResult r = BakeCourse(slot, &chunks);
+    HazardCrumb("[hzc] trkres bake post-BakeCourse result=%d\n", (int)r);
+    GdxTrkResSet* s = &slot.set;
+    if (GDX_NRR_CRUMBS_ON()) {
+        gdx3ds_nrr_crumb("trk bake < result=%d slot=%d rings=%u chunks=%u index=%p index bytes=%u", (int)r, slotIndex,
+                         s->nRings, s->nChunks, (void*)sNrrIx, sNrrIxBytes);
+    }
+    if (r != BAKE_OK) {
+        SlotStateStore(slot, SLOT_FREE);
+        if (r == BAKE_OVERFLOW) {
+            Log("[trkres] arena overflow: course=%d chunks=%d rings>=%u (capacity chunks=%u rings=%u, %u resident "
+                "vertices) bake skipped -- previous course's set dropped, per-frame path",
+                course, chunks, s->nRings, kArenaChunks, kArenaRings, kMaxResidentVerts);
+            PublishClear();
+        }
+        return;
+    }
+    s->generation = ++sGeneration;
+    s->course = course;
+    s->bakeMs = (float)((double)(svcGetSystemTick() - t0) / (double)SYSCLOCK_ARM11 * 1000.0);
+    LogBake(*s);
+    Publish(s);
 }
 
 namespace GdxTrkRes {
@@ -782,10 +957,6 @@ const GdxTrkResView* Acquire(uint32_t frame) {
     LatchConfig();
     if (sCfg.level == 0) {
         return nullptr;
-    }
-    if (frame != sAcquireFrame) {
-        sAcquireFrame = frame;
-        DrainRetired(frame);
     }
     GdxTrkResSet* s = __atomic_exchange_n(&sPending, (GdxTrkResSet*)nullptr, __ATOMIC_ACQ_REL);
     if (s != nullptr) {
@@ -819,19 +990,13 @@ int32_t FindChunk(const GdxTrkResSet& s, const Gdx3dsVtxIn* const v[8]) {
     return -1;
 }
 
+/* ship6: drops the view; the arena itself stays reserved for the process (one block, no churn). */
 void Shutdown() {
-    for (int i = 0; i < kRetireCap; i++) {
-        if (sRetired[i].p != nullptr) {
-            linearFree(sRetired[i].p);
-            sRetired[i].p = nullptr;
-        }
+    sView = { nullptr, nullptr, 0, 0 };
+    if (sOwned != nullptr) {
+        SlotStateStore(sArena.slot[sOwned->slot], SLOT_FREE);
+        sOwned = nullptr;
     }
-    if (sView.linear != nullptr) {
-        linearFree(const_cast<Gdx3dsVtxIn*>(sView.linear));
-    }
-    sView = { nullptr, nullptr, 0 };
-    FreeSet(sOwned);
-    sOwned = nullptr;
 }
 
 } // namespace GdxTrkRes

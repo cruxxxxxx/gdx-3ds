@@ -121,6 +121,10 @@ class Backend {
     virtual unsigned long AtlasEpoch() {
         return 0;
     }
+    /* native-all S1 [native] atlas_race_reset: release every atlas view and page (the caller has
+     * retired every cache entry naming one). Default: no atlas, nothing to do. */
+    virtual void AtlasResetAll() {
+    }
     /* The same epoch as a counter the caller may poll directly ([native] nrr_hud reads it once per
      * HUD run); nullptr = no atlas (the epoch is the constant 0). */
     virtual const unsigned long* AtlasEpochPtr() {

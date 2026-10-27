@@ -1,0 +1,41 @@
+diff --git a/src/game/racer.c b/src/game/racer.c
+--- a/src/game/racer.c
++++ b/src/game/racer.c
+@@ -5106,6 +5106,21 @@ extern s8 gGamePaused;
+ extern GfxPool* gGfxPool;
+ extern s32 gFastestGhostTime;
+ 
++#if defined(PORT) && defined(__3DS__)
++extern int gdx_mp_ek_bgm_hold(int localLoading, s32 raceFrame); /* port/3ds/gdx3ds_autodrive.c */
++
++/* MP30: this console's own answer, for the "BGM ready" bit of its lockstep pads
++   (port/3ds/net/gdx3ds_mp_online.c LocalPad): 1 unless an Expansion Kit disk BGM load is still
++   in flight. Not a sim read: it only feeds the pad this console sends. */
++int gdx_mp_local_bgm_ready(void) {
++#ifdef EXPANSION_KIT
++    return func_807424CC() == 0;
++#else
++    return 1;
++#endif
++}
++#endif
++
+ void Racer_Update(void) {
+     f32 xVelocityDiff;
+     f32 yVelocityDiff;
+@@ -5162,7 +5177,15 @@ void Racer_Update(void) {
+             gRaceIntroTimer--;
+             if (gRaceIntroTimer == 40) {
+ #ifdef EXPANSION_KIT
++#if defined(PORT) && defined(__3DS__)
++                /* MP30 (port/3ds/gdx3ds_autodrive.c): the countdown waits for THIS console's disk
++                   BGM load, whose length differs per console. In a lockstep session the hold is
++                   decided from the exchanged pads instead (every player's "BGM ready" bit, or a
++                   cap), so every console releases it on the same tick. Off a session: stock. */
++                if (gdx_mp_ek_bgm_hold(func_807424CC() != 0, sRaceFrameCount)) {
++#else
+                 if (func_807424CC() != 0) {
++#endif
+                     gRaceIntroTimer++;
+                     spC0 = true;
+                 } else {

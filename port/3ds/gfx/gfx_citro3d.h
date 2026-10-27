@@ -118,6 +118,8 @@ class GfxRenderingAPIC3D final : public GfxRenderingAPI {
     ~GfxRenderingAPIC3D() override = default;
     // HOMEFIX diagnostic: is a C3D frame open (render-thread state; racy read, receipts only).
     bool DiagFrameActive() const { return mFrameActive; }
+    // o3ds3d [prewrite]: the VBO pool cursor (same thread as the frame build).
+    size_t DiagVboUsedFloats() const { return mVboOffsetFloats; }
 
     const char* GetName() override;
     int GetMaxTextureSize() override;
@@ -322,6 +324,10 @@ class GfxRenderingAPIC3D final : public GfxRenderingAPI {
     }
     void VboPackRefreshTextures(Gdx3dsVboPackParams* params);
     void AtlasStats(unsigned long out[5]) const;
+    /* native-all S1 [native] atlas_race_reset: drop every view and every page (the caller has
+     * already retired every cache entry naming a view), so the next placements start from an
+     * empty atlas whatever the previous screens left in it. Bumps the placement epoch. */
+    void AtlasResetAll();
     /* [native] hud_retain: the placement epoch alone (AtlasStats also walks the linear heap). */
     unsigned long AtlasResetCount() const {
         return mAtlasResets;
@@ -521,7 +527,16 @@ class GfxRenderingAPIC3D final : public GfxRenderingAPI {
     void* ReplayMainColorBuf(); /* C6 [replay]: the main target's colour buffer (verify lane) */
     void XfSetCull(int cullMode);
     void XfRestore();
-    void StereoReplayRow(bool texBacked, float clsW, bool anchoredDraw); /* n60stereo frame replay */
+    /* n60stereo frame replay; returns the draw's stereo class (mstereo: the census reads it) */
+    int StereoReplayRow(bool texBacked, float clsW, bool anchoredDraw, const float* dst, size_t numVerts);
+    /* mstereo [stereo] menu_depth: a screen-space draw's class in a menu frame (MenuUiClass on its verts) */
+    int StereoMenuUiClass(const float* dst, size_t numVerts) const;
+    bool StereoMenuUiRuns(const float* dst, size_t numVerts, const C3D_Mtx* dispBase);
+    bool StereoReplayMenuRuns(const float* dst, size_t numVerts, const C3D_Mtx* dispBase);
+    void StereoDrawRunBothEyes(int cls, uint32_t first, uint32_t count, const C3D_Mtx* dispBase,
+                               C3D_RenderTarget* mainTarget);
+    /* mstereo [debug] stereo_census: one receipt line per stereo draw of a census frame (cold). */
+    void StereoCensusDraw(int cls, const float* dst, size_t numVerts, const C3D_Mtx* dispBase, char path);
 };
 
 } // namespace Fast

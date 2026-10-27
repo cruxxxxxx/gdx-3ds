@@ -1779,7 +1779,7 @@ bool TemplateIsPair(int t) {
     static bool sInit = false;
     if (!sInit) {
         for (int i = 0; i < GDXTRK_TEMPLATE_COUNT; i++) {
-            const GdxTrkTemplate& tp = kGdxTrkGolden[i];
+            const GdxTrkTemplate& tp = gGdxTrkTemplate[i];
             bool pair = tp.ntris > 0;
             for (int j = 0; j < tp.ntris * 3 && pair; j++) {
                 pair = tp.idx[j] < 16;
@@ -2143,7 +2143,7 @@ bool ResidentTemplate(Run& r, int tmplIdx) {
             TcLeave(tcRes);
             return false;
         }
-        MixedTemplate(r, op, kGdxTrkGolden[tmplIdx]);
+        MixedTemplate(r, op, gGdxTrkTemplate[tmplIdx]);
         TcLeave(tcRes);
         return true;
     }
@@ -2161,7 +2161,7 @@ bool ResidentTemplate(Run& r, int tmplIdx) {
             }
         }
     }
-    const GdxTrkTemplate& t = kGdxTrkGolden[tmplIdx]; /* the op stays in TC_RES; nested buckets switch back */
+    const GdxTrkTemplate& t = gGdxTrkTemplate[tmplIdx]; /* the op stays in TC_RES; nested buckets switch back */
     int ev = 0;
     for (int i = 0; i < t.ntris; i++) {
         while (ev < t.nevents && t.events[ev].beforeTri == i) {
@@ -2453,7 +2453,7 @@ void gdx3ds_track_retained_run(GdxInterpSeam& I, GdxTrkRecord* rec, uint32_t run
                     if (r.res != nullptr) {
                         sWin.frameOps++;
                     }
-                    RetainedTemplate(r, kGdxTrkGolden[op.tmpl]);
+                    RetainedTemplate(r, gGdxTrkTemplate[op.tmpl]);
                 }
                 break;
             default:

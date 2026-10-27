@@ -45,6 +45,9 @@ enum Gdx3dsStereoClass {
     GDX3DS_STEREO_UI_ZERO_PARALLAX = 1,
     GDX3DS_STEREO_SKY_DEEP = 2,
     GDX3DS_STEREO_ANCHORED = 3, /* ortho draw pinned to a world depth (prim-depth rects: race markers) */
+    /* mstereo [stereo] menu_depth: a screen-space draw of a MENU frame, at the layer depth its
+     * coverage gives it (SetMenuUiDraw). Internal: never set through gdx3ds_stereo_set_draw_class. */
+    GDX3DS_STEREO_MENU_UI = 4,
 };
 
 #ifdef __cplusplus
@@ -60,6 +63,14 @@ void gdx3ds_stereo_set_draw_class(int stereoClass);
 /* Force-enable regardless of config — for the DL harness, which does not link
  * the OS/config library. Must be called before the backend's Init(). */
 void gdx3ds_stereo_request_enable(void);
+
+/* o3ds60 the Home screen's 3D button: [stereo] enabled as this session runs it (1 = the slider
+ * decides), and the button's flip. set_user_on writes [stereo] enabled into the config table (the
+ * caller saves the ini) and takes effect on the next frame; 1 in a session that booted with 3D
+ * off creates the right-eye target then. In an online race [stereo] mp_ab / mp_3d decide first
+ * (mp_3d = 0, the Old 3DS default: 2D unless the button was pressed in this launch). */
+int gdx3ds_stereo_user_on(void);
+void gdx3ds_stereo_set_user_on(int on);
 
 /* B11q. Mark the OPEN frame as a TASKLESS HOLD PRESENT: a frame that puts no draws on
  * the screen target and instead restores it from the frame mirror with a framebuffer
@@ -84,6 +95,35 @@ void gdx3ds_stereo_mark_hold_frame(void);
  * Returns 0 on success, nonzero when stereo is inactive/unavailable. */
 int gdx3ds_stereo_read_right(uint16_t* rgba16Buf, uint32_t width, uint32_t height);
 
+/* mstereo [stereo] menu_depth (default 0): the menu screens' depth layout. With the lever on and the
+ * right-eye pass active, a frame whose game mode is a menu (title, main menu, machine select /
+ * settings, course select, the GP next-course card, records course select, options) places
+ *   - its screen-space draws by the size of their rectangles (the largest width or height of any one
+ *     triangle): a backdrop (>= 272 px: the art drawn in full-width strips) `menu_back` px behind
+ *     the screen, a panel / icon / portrait / banner (32 .. 160 px) at the screen plane, text glyphs, arrows and
+ *     cursors (<= 24 px) `menu_front` px in front, linear ramps between (an animated element that
+ *     grows slides, it never pops); a draw that touches the left or right screen edge stays at the
+ *     plane (a shifted edge would uncover a strip in one eye);
+ *   - its perspective (SCENE) draws -- the menu's 3D models, the tiled transitions' captured screen
+ *     -- flat at `menu_model` px (default 0: on the plane with the panels and icons they are drawn
+ *     over and under, in front of the backdrop), instead of the race convergence's far-plane
+ *     parallax (+2 x iod: the menu cameras put every model at NDC depth 0.96 .. 0.999).
+ * Every value is a disparity (right eye minus left eye) in top-screen pixels at full slider and the
+ * default iod (12), scaled by slider x iod / 12: the 3D slider and [stereo] iod act on menus as they
+ * do on races. Slider 0 / stereo off: nothing here runs (byte-identical mono). Non-menu frames
+ * (races, records flyby, demos, credits, editors): unchanged. */
+/* 1 while the open frame takes the menu depth layout (latched at the frame's StartFrame). */
+int gdx3ds_stereo_menu_frame(void);
+/* 1 with the menu_depth lever on: the machine settings' flat backdrop fills the frame (hwfix-combined;
+ * decomp object.c declares it locally). */
+int gdx3ds_stereo_menu_backdrop_full(void);
+/* The NRR's per-draw row of a screen-space menu draw (`verts`: packed triangles, `stride` floats per
+ * vertex, clip x y z w first): the MENU_UI row of its coverage. */
+void gdx3ds_stereo_menu_ui_row(const float* verts, uint32_t nVerts, uint32_t stride, float row[4]);
+/* The end vertex of the run of a menu screen-space draw that starts at vertex `first` (nVerts when
+ * the rest is one layer; Gdx3dsStereo::MenuUiRunEnd), for the NRR menu runner's batches. */
+uint32_t gdx3ds_stereo_menu_run_end(const float* verts, uint32_t nVerts, uint32_t stride, uint32_t first);
+
 #ifdef __cplusplus
 } /* extern "C" */
 
@@ -97,6 +137,10 @@ namespace Gdx3dsStereo {
 bool Init();
 
 bool Enabled();
+
+/* o3ds60: the Home 3D button turned 3D on in a session that booted without it. The backend's
+ * StartFrame then calls Init() (once). Also runs the online-race receipts while stereo is off. */
+bool WantInit();
 
 /* Per-frame gate, called from StartFrame() inside the C3D frame (only when
  * Enabled()): polls the slider, and when slider > 0 queues the right target
@@ -156,6 +200,19 @@ void SetAnchorDepth(float d);
 
 /* B11q: true while the open frame is a taskless hold present (no right-eye content to make). */
 bool HoldFrame();
+
+/* mstereo [stereo] menu_depth (see gdx3ds_stereo_menu_frame above). MenuFrame: the open frame takes
+ * the menu layout. MenuUiClass: the class of a screen-space draw of such a frame (its triangles:
+ * `verts`, `stride` floats per vertex, clip x y z w first) -- GDX3DS_STEREO_MENU_UI with its layer
+ * shift latched for the draw that follows, or UI_ZERO_PARALLAX when its layer is the screen plane. */
+bool MenuFrame();
+int MenuUiClass(const float* verts, uint32_t nVerts, uint32_t stride);
+/* The end vertex of the run of a menu screen-space draw starting at vertex `first` (nVerts when the
+ * draw is one layer): a batch is cut where its rectangles change layer class, nine-slice pieces kept
+ * together (MenuUiRunEndImpl). The per-draw loop, the frame replay and the NRR menu runner. */
+uint32_t MenuUiRunEnd(const float* verts, uint32_t nVerts, uint32_t stride, uint32_t first);
+/* The [stereo] menu receipt's model= count: a SCENE draw of a menu frame (the backend calls it). */
+void MenuNoteModel();
 
 /* ---- n60stereo: the stereo FRAME REPLAY (gdx3ds_stereo_frame.cpp, STEREO.md "Frame replay") ----
  *

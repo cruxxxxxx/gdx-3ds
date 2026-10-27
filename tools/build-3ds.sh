@@ -253,8 +253,10 @@ target_artifact_suffix() { # target
 
 # Same zip layout .github/workflows/release-3ds.yml's console job produces, so there is
 # one implementation: 3ds/<name>.3dsx, <name>.cia at the zip root, a README.txt with the
-# SD-card paths (and, for an -EK target, where its .ndd goes). has_cia=0 skips the .cia
-# entry (e.g. --no-cia, or makerom/bannertool were never found) rather than failing.
+# SD-card paths (and, for an -EK target, where its .ndd goes), plus LICENSE,
+# THIRD_PARTY_NOTICES.md and LICENSES/ -- the MIT/ISC/zlib/CC0 components compiled into the
+# binary require their notices to travel with it. has_cia=0 skips the .cia entry (e.g.
+# --no-cia, or makerom/bannertool were never found) rather than failing.
 make_zip() { # target suffix has_cia
     local t="$1" suffix="$2" has_cia="$3"
     local name="G-Diffuser-3DS-${suffix}"
@@ -275,7 +277,7 @@ make_zip() { # target suffix has_cia
     local ek_line=""
     case "$suffix" in
         *-EK)
-            ek_line=$'\\nThis is the Expansion Kit title: it installs alongside the normal game. For the\\nExpansion Kit modes (course editor, machine creator) put your own 64DD disk dump at:\\n  3ds/gdiffuser/media/baserom.jp.ek.ndd          (Japanese retail disk), or\\n  3ds/gdiffuser/media/baserom.translated.ek.ndd  (English fan translation)\\nThe first boot checks the whole image once (about a minute). Without a disk it plays\\nthe normal game.\\n'
+            ek_line=$'\nThis is the Expansion Kit title: it installs alongside the normal game. For the\nExpansion Kit modes (course editor, machine creator) put your own dump of the retail\nJapanese 64DD disk at:\n  3ds/gdiffuser/media/baserom.jp.ek.ndd\nFan-translated disk images are not supported in this release (they can hang at boot).\nThe first boot checks the whole image once (about a minute). Without a disk it plays\nthe normal game.\n'
             ;;
     esac
 
@@ -286,6 +288,8 @@ make_zip() { # target suffix has_cia
     if [ "$has_cia" -eq 1 ]; then
         cp "${OUT_DIR}/${name}.cia" "${zip_work}/${name}.cia"
     fi
+    cp "${ROOT}/LICENSE" "${ROOT}/THIRD_PARTY_NOTICES.md" "${zip_work}/"
+    cp -R "${ROOT}/LICENSES" "${zip_work}/LICENSES"
     printf '%s\n' \
         "G-Diffuser 3DS -- ${suffix} build${ZIP_VERSION:+ (v${ZIP_VERSION})}" \
         "Console: ${console_line}" \
@@ -300,11 +304,15 @@ make_zip() { # target suffix has_cia
         "cartridge/ROM dump, then copy the two files it writes onto the SD card at:" \
         "  3ds/gdiffuser/" \
         "${ek_line}" \
-        "No game data is included in this download." \
+        "No ROM, disk image, or game assets are included in this download: the binaries contain" \
+        "code compiled from the community decompilation, and you must dump your own cartridge" \
+        "(and, for the Expansion Kit, your own 64DD disk)." \
+        "" \
+        "License: see LICENSE, THIRD_PARTY_NOTICES.md and LICENSES/ in this zip." \
         > "${zip_work}/README.txt"
 
     rm -f "${OUT_DIR}/${zip_name}"
-    ( cd "$zip_work" && zip -q -r "../${zip_name}" README.txt 3ds $( [ "$has_cia" -eq 1 ] && echo "${name}.cia" ) )
+    ( cd "$zip_work" && zip -q -r "../${zip_name}" README.txt LICENSE THIRD_PARTY_NOTICES.md LICENSES 3ds $( [ "$has_cia" -eq 1 ] && echo "${name}.cia" ) )
     rm -rf "$zip_work"
     echo "zipped: ${OUT_DIR}/${zip_name}"
     ZIP_MADE_NAME="$zip_name"

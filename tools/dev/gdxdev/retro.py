@@ -27,6 +27,7 @@ gotchas are in docs/research/native/devcli-progress.md.
 
 import atexit
 import errno
+import fcntl
 import json
 import os
 import re
@@ -67,18 +68,31 @@ GFX_ALIASES = {"vulkan": "Vulkan", "opengl": "OpenGL", "gl": "OpenGL",
 # macOS restores "windows from the last session" after an abnormal exit by putting up an
 # NSAlert. RetroArch has no window to attach it to at that point, so the alert is
 # invisible and the process sits there forever — which is what several runs did after the
-# SIGKILL testing. ApplePersistenceIgnoreState turns the whole mechanism off. Written
-# before every launch rather than once, because anything can reset a user default.
-RETROARCH_BUNDLE_ID = "com.libretro.RetroArch"
+# SIGKILL testing. ApplePersistenceIgnoreState turns the whole mechanism off, and
+# NSQuitAlwaysKeepsWindows=NO stops the "The last time you opened RetroArch, it
+# unexpectedly quit while reopening windows" prompt. Written before every launch rather
+# than once, because anything can reset a user default, and to BOTH bundle ids: the
+# libretro.com download is `com.libretro.dist.RetroArch`, which the old single id
+# (`com.libretro.RetroArch`) never reached. The saved-state folder is removed too, so a
+# killed run never leaves a session for the next launch to offer back.
+RETROARCH_BUNDLE_IDS = ("com.libretro.dist.RetroArch", "com.libretro.RetroArch")
+RETROARCH_DEFAULTS = (("ApplePersistenceIgnoreState", "YES"), ("NSQuitAlwaysKeepsWindows", "NO"))
 
 
 def suppress_restore_prompt(out=None):
-    p = subprocess.run(["defaults", "write", RETROARCH_BUNDLE_ID,
-                        "ApplePersistenceIgnoreState", "-bool", "YES"],
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    if p.returncode != 0 and out:
-        out.warn("could not set ApplePersistenceIgnoreState: %s" % (p.stdout or "").strip())
-    return p.returncode == 0
+    ok = True
+    for bundle_id in RETROARCH_BUNDLE_IDS:
+        for key, value in RETROARCH_DEFAULTS:
+            p = subprocess.run(["defaults", "write", bundle_id, key, "-bool", value],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            if p.returncode != 0:
+                ok = False
+                if out:
+                    out.warn("could not set %s %s: %s" % (bundle_id, key, (p.stdout or "").strip()))
+        saved_state = os.path.expanduser(
+            "~/Library/Saved Application State/%s.savedState" % bundle_id)
+        shutil.rmtree(saved_state, ignore_errors=True)
+    return ok
 
 
 def normalise_gfx(value):
@@ -714,6 +728,11 @@ def strip_run_control(path):
     return removed
 
 
+# preset-fix: `retro run --bare-ini`. Set by do_run; seed_sd then writes an EMPTY instance ini
+# (the measurement keys and --ini still merge on top) instead of copying the Qt SD's user sections.
+_BARE_INI = False
+
+
 def seed_sd(inst, out, ini_settings=None):
     """Copy the o2r archives + ini into this instance's private SD.
 
@@ -754,7 +773,12 @@ def seed_sd(inst, out, ini_settings=None):
     # "default" run got it carrying the previous run's fxceiling=2. A run's configuration
     # must be a function of its command line and nothing else.
     fresh = not os.path.exists(dst_ini)
-    if os.path.exists(src_ini):
+    if _BARE_INI:
+        with open(dst_ini, "w") as f:
+            f.write("; gdx-dev retro run --bare-ini: no seeded user sections\n")
+        if out:
+            out.say("bare ini: the instance ini starts empty (no seeded [display]/[stereo]/[input]/... keys)")
+    elif os.path.exists(src_ini):
         shutil.copy2(src_ini, dst_ini)
         stripped = strip_run_control(dst_ini)
         if fresh:
@@ -825,6 +849,62 @@ _LAST_ATTEMPT = {}
 
 # One boot is retried this many times before moving to the next renderer.
 EARLY_CRASH_ATTEMPTS = 3          # i.e. the initial try plus 2 retries
+
+# Boot serialisation. With several agents launching at once, nearly every RetroArch crash on
+# this machine (56 of 56 DiagnosticReports on 2026-10-20) was a SIGSEGV/SIGBUS inside the
+# core's Vulkan/MoltenVK startup (vulkan_lock_queue, vkQueueSubmit, vkCreateImageView), all
+# within 20 s of launch. Each one is retried here, but macOS still puts up "RetroArch quit
+# unexpectedly" for it. So only one instance boots at a time: the machine-wide lock is taken
+# just before Popen and released as soon as the guest heartbeat advances (past the
+# VulkanWorker crash window, guest frame ~35-40), the process exits, or BOOT_LOCK_MAX_S
+# passes. Runs still overlap once booted.
+BOOT_LOCK_PATH = os.path.join(INSTANCE_ROOT, ".boot.lock")
+BOOT_LOCK_MAX_S = 45.0
+BOOT_LOCK_WAIT_S = 600.0
+
+
+class BootLock:
+    def __init__(self, out=None):
+        self.fd = None
+        self.out = out
+        self.t_acquired = 0.0
+
+    def acquire(self):
+        os.makedirs(INSTANCE_ROOT, exist_ok=True)
+        self.fd = os.open(BOOT_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o644)
+        t0 = time.time()
+        warned = False
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as e:
+                if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                    raise
+            if not warned and self.out:
+                self.out.say("waiting for another instance to finish booting (boot lock)")
+                warned = True
+            if time.time() - t0 > BOOT_LOCK_WAIT_S:
+                # A stuck holder must not wedge every run: boot unserialised instead.
+                if self.out:
+                    self.out.warn("boot lock still held after %.0fs; booting anyway" % BOOT_LOCK_WAIT_S)
+                os.close(self.fd)
+                self.fd = None
+                return
+            time.sleep(1.0)
+        self.t_acquired = time.time()
+
+    def expired(self):
+        return self.fd is not None and time.time() - self.t_acquired > BOOT_LOCK_MAX_S
+
+    def release(self):
+        if self.fd is None:
+            return
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self.fd)
+            self.fd = None
 
 # `--seconds` is a CEILING, not a schedule: the run ends when the guest ends.
 DEFAULT_SECONDS = 60              # no replay: this is a boot smoke test
@@ -921,10 +1001,16 @@ def _attempt(inst, gfx, core, threedsx, extra, seconds, settings, rd, ctx, out, 
             % (gfx, video_driver, attempt, EARLY_CRASH_ATTEMPTS))
 
     console = open(rd.sub("console-%s-%s-%d.txt" % (inst.name, gfx.lower(), attempt)), "w")
-    # start_new_session: the child leads its own process group, so one killpg takes down
-    # it and anything it spawns even if our own shell is gone.
-    proc = subprocess.Popen(cmd, stdout=console, stderr=subprocess.STDOUT,
-                            start_new_session=True)
+    boot_lock = BootLock(out)
+    boot_lock.acquire()
+    try:
+        # start_new_session: the child leads its own process group, so one killpg takes down
+        # it and anything it spawns even if our own shell is gone.
+        proc = subprocess.Popen(cmd, stdout=console, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+    except BaseException:
+        boot_lock.release()
+        raise
     set_child(inst, proc.pid, ctx, rd.path)
     t0 = time.time()
     deadline = t0 + seconds
@@ -936,6 +1022,10 @@ def _attempt(inst, gfx, core, threedsx, extra, seconds, settings, rd, ctx, out, 
         if rc is not None:
             break
         _retro_snapshot(rd, inst)
+        if boot_lock.fd is not None:
+            beats = prof.parse_text(util.read_text(rd.sub("log-%s.txt" % inst.name))).watchdog
+            if len({b["frame"] for b in beats}) >= 2 or boot_lock.expired():
+                boot_lock.release()
         # Same early return as the Qt lane: the core can outlive the guest, so waiting on
         # the process alone burns the rest of --seconds after the run is already over.
         guest_done = emu_guest_exit_reason(util.read_text(rd.sub("log-%s.txt" % inst.name)))
@@ -965,6 +1055,7 @@ def _attempt(inst, gfx, core, threedsx, extra, seconds, settings, rd, ctx, out, 
         time.sleep(3)
         if proc.poll() is None:
             kill_group(proc.pid)
+    boot_lock.release()
     console.close()
     set_child(inst, None, ctx, rd.path)
     _retro_snapshot(rd, inst)
@@ -988,7 +1079,10 @@ def _attempt(inst, gfx, core, threedsx, extra, seconds, settings, rd, ctx, out, 
     # check accepted it as success and the retry never fired.
     beats = prof.parse_text(sd_log).watchdog
     advanced = len({b["frame"] for b in beats}) >= 2
-    if advanced:
+    # A guest that EXITED ON PURPOSE (replay_quit / quit_at_tick) ran; it was not the
+    # VulkanWorker crash. probeboot (420 ticks) quits before its second ~300-frame beat,
+    # and used to be retried three times and scored FAIL with every SHOT captured.
+    if advanced or guest_done:
         out.say("guest log reached the private SD (%d bytes) with %s" % (len(sd_log), gfx))
         return True, False, sd_log, ""
 
@@ -1028,7 +1122,9 @@ def _three_d_or_none(args):
 
 
 def do_run(args, out, ctx):
+    global _BARE_INI
     dry = bool(getattr(args, "dry_run", False))
+    _BARE_INI = bool(getattr(args, "bare_ini", False))
     if not os.path.exists(RETRO_BIN):
         # A dry run reports the missing frontend instead of refusing: saying what WOULD
         # happen is exactly what the flag is for, and it needs no frontend to say it.
@@ -1094,7 +1190,8 @@ def do_run(args, out, ctx):
         # NEXT.md B19: a staged replay ENDS the run at its last tick unless the
         # invocation said otherwise. `explicit` is what the command line named, so
         # --no-replay-quit / --ini debug.replay_quit=0 survive this.
-        replay.apply_implied(settings, explicit, kind=replay_block.get("kind"), out=out)
+        replay.apply_implied(settings, explicit, kind=replay_block.get("kind"), out=out,
+                             last=replay_block.get("last_tick"), private_sd=True)
     else:
         replay.stale_autoinput_warning(out, sdmc_root=inst.sdmc())
 
@@ -1229,7 +1326,8 @@ def _dry_run(args, out, ctx, threedsx, core, gfx_list, settings, explicit, three
         replay_block, extra = replay.stage(args.replay, sdmc_root=inst.sdmc(),
                                            gdx_dir=inst.gdx_dir(), dry_run=True, out=out)
         settings.update(extra)
-        replay.apply_implied(settings, explicit, kind=replay_block.get("kind"), out=out)
+        replay.apply_implied(settings, explicit, kind=replay_block.get("kind"), out=out,
+                             last=replay_block.get("last_tick"), private_sd=True)
     seconds, seconds_why = resolve_seconds(args, replay_block)
 
     # No core installed yet (a fresh host, or a Linux CI runner): report where a real run
@@ -1268,7 +1366,8 @@ def _dry_run(args, out, ctx, threedsx, core, gfx_list, settings, explicit, three
               [["%s.%s" % k, settings[k],
                 "--ini" if k in explicit else
                 ("--replay" if k in extra else
-                 ("implied by --replay" if k == replay.REPLAY_QUIT_KEY and replay_block
+                 ("implied by --replay" if k in (replay.REPLAY_QUIT_KEY, replay.QUIT_AT_TICK_KEY)
+                  and replay_block
                   else "lane default"))]
                for k in sorted(settings)])
     stale = buildmod.tree_warning(tree)
@@ -1383,7 +1482,9 @@ def _prune_instances(args, out, claimed):
     Never touches a dir that is locked by a live driver, has a RetroArch running, or was
     modified inside the window — including named instances other tracks reuse.
     """
-    days = getattr(args, "days", None) or 2
+    days = getattr(args, "days", None)
+    if days is None:
+        days = 2
     cutoff = time.time() - days * 86400
     live = {p["instance"] for p in our_retro_processes()}
     pruned = []
@@ -1406,7 +1507,7 @@ def _prune_instances(args, out, claimed):
         out.say("pruned %s (%.1f days old)" % (name, age_days))
         pruned.append(name)
     if not pruned:
-        out.say("nothing to prune (no idle instance dir older than %d day(s))" % days)
+        out.say("nothing to prune (no idle instance dir older than %g day(s))" % days)
     return pruned
 
 

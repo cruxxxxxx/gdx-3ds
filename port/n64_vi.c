@@ -13,14 +13,15 @@
 #include "PR/os_vi.h"
 #include "PR/os_message.h"
 #include "n64_gfx_bridge.h"
+#include "gdx_snapshot.h" // mp-snapshot: the framebuffer rotation is rewound with the decomp image
 
 extern void gdx_yield(void);
 
 // Set here because decomp initialize.c, which normally sets it, is excluded (N64 hardware I/O).
 s32 osViClock = 48681812; // VI_NTSC_CLOCK
 
-static void* sCurrentFb = (void*) 0;
-static void* sNextFb = (void*) 0;
+static void* sCurrentFb GDX_SNAP_STATE_BSS = (void*) 0;
+static void* sNextFb GDX_SNAP_STATE_BSS = (void*) 0;
 static OSMesgQueue* sViQueue = (void*) 0;
 static OSMesg sViMsg = (void*) 0;
 

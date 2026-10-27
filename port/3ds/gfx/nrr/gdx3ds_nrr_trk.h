@@ -61,7 +61,7 @@ extern "C" {
 #define GDX_NRR_TRK_MAX_OPS 1024
 #define GDX_NRR_TRK_MAX_RUNS 192
 
-/* One template op: the template (kGdxTrkGolden index) over the two rings in slots 0-7 / 8-15, and
+/* One template op: the template (gGdxTrkTemplate index) over the two rings in slots 0-7 / 8-15, and
  * for a tunnel-mouth join template (D_80143E0..D_80144D0, `[native] nrr_trk_joins`) the chunk's
  * resident join vertices in slots 16-20 (`join`; GDX_NRR_TRK_NO_RING for every other template). */
 typedef struct GdxNrrTrkOp {

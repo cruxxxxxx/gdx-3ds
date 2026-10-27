@@ -183,7 +183,7 @@ GDX_COLD void Interp::WalkNestedList(const ListRef& sub) {
             mBackend->VerifyNoteCmd(c.w0, c.w1);
         }
         if (GDX_UNLIKELY(mNc != nullptr)) {
-            NcNote(c, f.list.isF3d); /* [debug] nicensus */
+            NcNote(c, f.list.isF3d, NCS_NESTED); /* [debug] nicensus */
         }
         const int r = Exec(c, f, f3dXfer);
         if (r == 1) {
@@ -522,6 +522,12 @@ int Interp::Exec(const Cmd& c, Frame& f, size_t f3dXferSize) {
             SpPopMatrix(c.w1 / 64u);
             return 0;
         case OP_VTX:
+#ifdef EXPANSION_KIT
+            /* [native] ek_editmesh: the editor's VTX/PIPESYNC/PRIM/LINE3D line, from its memo */
+            if (GDX_UNLIKELY(mEkPvOn != 0) && EkPvVtx(c, f)) {
+                return 0;
+            }
+#endif
             SpVertex(C0(c.w0, 12, 8), C0(c.w0, 1, 7) - C0(c.w0, 12, 8), c, f.list);
             return 0;
         case OP_MODIFYVTX:

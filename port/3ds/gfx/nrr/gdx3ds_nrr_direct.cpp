@@ -174,6 +174,7 @@ std::vector<std::vector<uint32_t>> sGroupSeen[kDxGroups];
  * instead of needing an addr2line pass. Weak + null-checked: zero-cost before gdx3ds_filelog is up. */
 extern "C" void gdx3ds_filelog_write(const char* msg, size_t len) __attribute__((weak));
 extern "C" void gdx3ds_filelog_flush(void) __attribute__((weak));
+extern "C" void gdx3ds_filelog_flush_sync(void) __attribute__((weak)); /* o3ds-cpucuts: svcBreak next */
 GDX_COLD void DxOverflowLog(uint32_t n, uint32_t off, uint32_t size) {
     if (gdx3ds_filelog_write == nullptr) {
         return;
@@ -183,7 +184,9 @@ GDX_COLD void DxOverflowLog(uint32_t n, uint32_t off, uint32_t size) {
                             (unsigned long)n, (unsigned long)off, (unsigned long)size);
     if (rc > 0) {
         gdx3ds_filelog_write(buf, (size_t)rc);
-        if (gdx3ds_filelog_flush != nullptr) {
+        if (gdx3ds_filelog_flush_sync != nullptr) {
+            gdx3ds_filelog_flush_sync();
+        } else if (gdx3ds_filelog_flush != nullptr) {
             gdx3ds_filelog_flush();
         }
     }

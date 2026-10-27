@@ -35,6 +35,9 @@ extern void gdx_dbg_logf(const char* fmt, ...) __attribute__((weak));
 extern int gdx3ds_config_get_int(const char* section, const char* key, int fallback) __attribute__((weak));
 typedef void* (*GdxDlbStubFn)(void* gfx, int sec, int view);
 extern int gdx3ds_c5tick_consume(int sec, GdxDlbStubFn stub);
+#ifdef EXPANSION_KIT
+extern int gdx3ds_c5tick_testdrive_scope(void); /* S5b: gdx3ds_c5tick.h */
+#endif
 extern int gdx_dress_scope_marker(void* slot, int scope, int open);
 /* [native] nrr_deco (gfx/nrr/gdx3ds_nrr_mach.cpp): 1 when the category's render half is on. */
 extern int gdx3ds_nrr_deco_on(void) __attribute__((weak));
@@ -742,6 +745,11 @@ static int NrrDressNativeScope(s32 view) {
     if (!gdx3ds_nrr_view_ok(NRR_CAT_DRESS, view, gNumPlayers) || gdx3ds_nrr_fx_broken[2]) { /* niview: 2-4P */
         return 0;
     }
+#ifdef EXPANSION_KIT
+    if (gInCourseEditor) {
+        return gdx3ds_c5tick_testdrive_scope(); /* S5b: the editor's test drive race, nothing else */
+    }
+#endif
     return !gInCourseEditor;
 }
 

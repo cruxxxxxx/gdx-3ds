@@ -88,7 +88,7 @@ void gdxtrk_gbi_loadblock(void* g, int tile, int uls, int ult, int lrs, int dxt)
 /* Ring layouts (gdx3ds_track_bake_game.c): which setup a walking shape runs on its rings. */
 enum { LAYOUT_ROAD = 0, LAYOUT_PIPE = 1, LAYOUT_CYL = 2, LAYOUT_HALF = 3 };
 
-/* D_800F8958[slot].unk_04 .. unk_28 as kGdxTrkGolden indices (course.c Course_Init 3308-3329). */
+/* D_800F8958[slot].unk_04 .. unk_28 as gGdxTrkTemplate indices (course.c Course_Init 3308-3329). */
 enum { F04 = 0, F08, F0C, F10, F14, F18, F1C, F20, F24, F28 };
 static const uint8_t kTmpl[2][10] = {
     { 0, 2, 0, 4, 6, 7, 10, 11, 14, 16 },
@@ -1002,7 +1002,7 @@ static uint32_t CompareRing(const NrrVSlot* s, const Vtx* ring, uint32_t* checke
  * A join template reads one ring and the join vertices; the other half holds whatever the stock walk
  * last loaded there (the join setup replaced its reload), which no triangle reads. */
 static uint32_t TemplateReads(int tmpl) {
-    const GdxTrkTemplate* t = &kGdxTrkGolden[tmpl];
+    const GdxTrkTemplate* t = &gGdxTrkTemplate[tmpl];
     uint32_t m = 0;
     int i;
     for (i = 0; i < t->ntris * 3; i++) {

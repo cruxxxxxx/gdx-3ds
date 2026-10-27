@@ -458,7 +458,7 @@ int gdx3ds_os_window_init(int* outWidth, int* outHeight) {
 static void osExitReceipt(const char* msg) {
     svcOutputDebugString(msg, strlen(msg));
     gdx3ds_filelog_write(msg, strlen(msg));
-    gdx3ds_filelog_flush();
+    gdx3ds_filelog_flush_sync();
 }
 
 void gdx3ds_os_window_shutdown(void) {
@@ -574,6 +574,41 @@ int gdx3ds_os_window_swap(void) {
     return 0;
 }
 
+#ifdef GDX3DS_COURSE_SHARE
+extern uint32_t gdx3ds_cshare_game_key_mask(void) __attribute__((weak));
+#endif
+
+/* [ui] bottom_menus (port/3ds/gdx3ds_bui.c): a bottom-screen flow at TITLE / MAIN MENU owns the
+ * buttons; [debug] bui_input feeds scripted keys / circle pad. Weak: the DL test harness links
+ * this library without the menus. */
+extern uint32_t gdx3ds_bui_game_key_mask(uint32_t held) __attribute__((weak));
+extern int gdx3ds_bui_game_stick_hidden(void) __attribute__((weak));
+extern uint32_t gdx3ds_bui_script_keys(uint32_t held) __attribute__((weak));
+extern int gdx3ds_bui_script_circle(int* dx, int* dy) __attribute__((weak));
+
+static u32 PollBuiKeys(u32 held) {
+    if (gdx3ds_bui_script_keys != NULL) {
+        held = gdx3ds_bui_script_keys(held);
+    }
+    if (gdx3ds_bui_game_key_mask != NULL) {
+        held &= ~(u32) gdx3ds_bui_game_key_mask(held);
+    }
+    return held;
+}
+
+static void PollBuiCircle(circlePosition* cpad) {
+    int dx = 0;
+    int dy = 0;
+    if (gdx3ds_bui_script_circle != NULL && gdx3ds_bui_script_circle(&dx, &dy)) {
+        cpad->dx = (s16) dx;
+        cpad->dy = (s16) dy;
+    }
+    if (gdx3ds_bui_game_stick_hidden != NULL && gdx3ds_bui_game_stick_hidden()) {
+        cpad->dx = 0;
+        cpad->dy = 0;
+    }
+}
+
 void gdx3ds_os_poll_input(Gdx3dsPadState* outPads, int maxPads) {
     u32 held;
     uint16_t buttons = 0;
@@ -585,7 +620,15 @@ void gdx3ds_os_poll_input(Gdx3dsPadState* outPads, int maxPads) {
     }
 
     hidScanInput();
-    held = hidKeysHeld();
+    held = PollBuiKeys(hidKeysHeld());
+#ifdef GDX3DS_COURSE_SHARE
+    /* [ek] course_share (EK builds only): the SCAN view hides the buttons from the game, so B
+     * cancels a scan without also backing out of the main menu. Weak: the DL test harness links
+     * this library without the menu. */
+    if (gdx3ds_cshare_game_key_mask != NULL) {
+        held &= ~(u32) gdx3ds_cshare_game_key_mask();
+    }
+#endif
 
     for (i = 0; i < GDX_INPUT_ACTION_COUNT; i++) {
         if (held & sActions[i].hid) {
@@ -599,6 +642,7 @@ void gdx3ds_os_poll_input(Gdx3dsPadState* outPads, int maxPads) {
     }
 
     hidCircleRead(&cpad);
+    PollBuiCircle(&cpad);
 
     outPads[0].buttons = buttons;
     {

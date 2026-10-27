@@ -143,7 +143,7 @@ void gdx3ds_track_marker_seam(GdxInterpSeam& I, uint32_t w0, uintptr_t w1) {
                 break;
             case GDXTRK_OP_DL:
                 if (op.tmpl < GDXTRK_TEMPLATE_COUNT) {
-                    ReplayTemplate(c, kGdxTrkGolden[op.tmpl]);
+                    ReplayTemplate(c, gGdxTrkTemplate[op.tmpl]);
                 }
                 break;
             default:

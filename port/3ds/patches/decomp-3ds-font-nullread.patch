@@ -1,0 +1,53 @@
+diff --git a/src/overlays/ovl_i2/font.c b/src/overlays/ovl_i2/font.c
+index c5b9c32..efce7e1 100644
+--- a/src/overlays/ovl_i2/font.c
++++ b/src/overlays/ovl_i2/font.c
+@@ -1630,12 +1630,34 @@ s32 Font_GetCharacterWidth(s8* str, s32 fontSet) {
+     return strWidth;
+ }
+ 
++#ifdef GDX_PLATFORM_3DS
++/* gdx 3DS: a NULL string reaches a stock font draw only through port code (b5f620a: the MP pickers
++ * restored a NULL gCurrentTrackName). Hardware faults on it, the emulator reads zeros and hides it;
++ * either way log "[nullread]" (the first 8, with the caller) and draw nothing. */
++static s32 sGdxFontNullReads = 0;
++
++static void GdxFontNullRead(const char* fn, void* caller) {
++    extern void gdx_dbg_logf(const char* fmt, ...);
++    if (sGdxFontNullReads < 8) {
++        sGdxFontNullReads++;
++        gdx_dbg_logf("[nullread] %s str=NULL caller=%p (#%d)\n", fn, caller, (int) sGdxFontNullReads);
++    }
++}
++#endif
++
+ s32 Font_GetStringWidth(s8* str, s32 fontSet, s32 additionalSpacing) {
+     const s16* fontCharWidths;
+     s32 strWidth;
+     s32 fontSpaceWidth;
+     s32 fontChar;
+ 
++#ifdef GDX_PLATFORM_3DS
++    if (str == NULL) {
++        GdxFontNullRead("Font_GetStringWidth", __builtin_return_address(0));
++        return 0;
++    }
++#endif
++
+     strWidth = 0;
+     switch (fontSet) {
+         case FONT_SET_2:
+@@ -1746,6 +1768,13 @@ Gfx* Font_DrawString(Gfx* gfx, s32 left, s32 top, s8* str, s32 additionalSpacing
+     unk_80077D50** fontCharTexInfos;
+     s32 fontSpaceWidth;
+ 
++#ifdef GDX_PLATFORM_3DS
++    if (str == NULL) {
++        GdxFontNullRead("Font_DrawString", __builtin_return_address(0));
++        return gfx;
++    }
++#endif
++
+     switch (fontSet) {
+         case FONT_SET_2:
+             fontCharWidths = kFont2CharWidths;

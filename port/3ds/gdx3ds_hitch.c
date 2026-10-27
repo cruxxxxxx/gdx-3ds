@@ -17,7 +17,7 @@
 #define HITCH_RING 32              /* work samples per class for the running median */
 #define HITCH_WARM 16              /* samples before a class can report a hitch */
 #define HITCH_PENDING 8            /* buffered lines */
-#define HITCH_LINE_CAP 448
+#define HITCH_LINE_CAP 512
 #define HITCH_EMIT_GAP 8u          /* iterations between two emitted lines */
 #define HITCH_BUDGET 16u           /* lines per HITCH_BUDGET_WINDOW iterations */
 #define HITCH_BUDGET_WINDOW 256u
@@ -223,6 +223,20 @@ static void PutEvents(LineBuf* b, const uint32_t* ev, int lodDelta) {
     PutMs(b, "gsp", ev[GDX_HITCH_EV_GSP_WAIT_TICKS]);
 }
 
+/* o3ds-cpucuts: which caller forced this iteration's synchronous flush (the latest one when there
+ * were several): a name (gdx3ds_filelog_flush_src, or the sink's own fatal / durable / ringfull /
+ * batch paths) or, for an unnamed gdx3ds_filelog_flush / _flush_sync, its return address. */
+static void PutSyncSource(LineBuf* b, const GdxFilelogStats* now) {
+    if (now->syncFlushes == sLogPrev.syncFlushes || now->lastSyncSrc == NULL) {
+        return;
+    }
+    if (now->lastSyncRa != 0) {
+        Put(b, " src=%s@%08lx", now->lastSyncSrc, (unsigned long)now->lastSyncRa);
+    } else {
+        Put(b, " src=%s", now->lastSyncSrc);
+    }
+}
+
 static void PutLogAndAudio(LineBuf* b, const GdxFilelogStats* now, const uint32_t* ev) {
     const unsigned syncMsX10 = MsX10(now->syncTicks - sLogPrev.syncTicks);
     Put(b, " | log=%lu sync=%lu/%luK/%u.%u async=%d/%uK aud=%lu/%luK/%d", now->lines - sLogPrev.lines,
@@ -230,6 +244,7 @@ static void PutLogAndAudio(LineBuf* b, const GdxFilelogStats* now, const uint32_
         syncMsX10 / 10u, syncMsX10 % 10u, now->writerBusy, now->pending / 1024u,
         (unsigned long)ev[GDX_HITCH_EV_AUD_SD_READ], (unsigned long)(ev[GDX_HITCH_EV_AUD_SD_BYTES] / 1024u),
         gdx3ds_hitch_aud_inflight);
+    PutSyncSource(b, now);
 }
 
 /* Format the hitch line into the pending ring (dropped + counted when the ring is full). */
@@ -290,7 +305,7 @@ static void EmitPending(unsigned long frame) {
 
 static void EmitSummary(unsigned long frame) {
     GdxFilelogStats now;
-    char line[480];
+    char line[544];
     int n;
     gdx3ds_filelog_stats(&now);
     {
@@ -302,7 +317,7 @@ static void EmitSummary(unsigned long frame) {
                      "log lines=%lu KiB=%lu sync=%lu/%u.%ums async=%d writes=%lu/%u.%ums max=%u.%u waits=%lu "
                      "ringfull=%lu pending=%u | cause flush=%lu tex=%lu bake=%lu load=%lu lod=%lu aud=%lu none=%lu | "
                      "texmiss/iter 1-3=%lu 4-7=%lu 8-15=%lu 16+=%lu max=%lu | quiet=%lu dropped=%lu thinned=%lu "
-                     "ayield=%lu",
+                     "ayield=%lu fdefer=%lu lastsync=%s",
                      frame, sSumFrames, sSumHitches[1], sSumHitches[0], (unsigned long)(sSumWorstUs / 1000u),
                      (unsigned long)((sSumWorstUs / 100u) % 10u), (unsigned long)(sClass[1].medianUs / 1000u),
                      (unsigned long)((sClass[1].medianUs / 100u) % 10u), (unsigned long)(sClass[0].medianUs / 1000u),
@@ -315,7 +330,9 @@ static void EmitSummary(unsigned long frame) {
                      sSumCause[CAUSE_LOAD], sSumCause[CAUSE_LOD], sSumCause[CAUSE_AUD], sSumCause[CAUSE_NONE], sSumTexBins[0],
                      sSumTexBins[1], sSumTexBins[2], sSumTexBins[3], (unsigned long)sSumTexMax,
                      now.asyncDeferred - sSumLogPrev.asyncDeferred, now.ringFullDrops - sSumLogPrev.ringFullDrops,
-                     now.receiptsThinned - sSumLogPrev.receiptsThinned, now.audioYields - sSumLogPrev.audioYields);
+                     now.receiptsThinned - sSumLogPrev.receiptsThinned, now.audioYields - sSumLogPrev.audioYields,
+                     now.flushDeferred - sSumLogPrev.flushDeferred,
+                     now.lastSyncSrc != NULL ? now.lastSyncSrc : "-");
     }
     if (n > 0) {
         HitchLog(line, n < (int)sizeof(line) ? n : (int)sizeof(line) - 1);

@@ -69,6 +69,9 @@ bool g_active = false;
 std::vector<DirtyRange> g_ranges; /* sorted by offset, non-overlapping */
 
 bool g_pendingFlush = false;
+/* A disk write the journal could not record (out of memory): flushing what it does hold would
+ * persist an MFS state the game never had, so the session stops flushing instead. */
+bool g_journalBroken = false;
 int g_idleFrames = 0;
 
 std::string g_gddPath;
@@ -84,7 +87,11 @@ bool g_formatRefusedThisBoot = false; /* MFS uninitialized AND format refused th
 
 /* CRC-32 (zlib polynomial 0xEDB88320), reflected, table-based. Same algorithm
  * as port/gdx_ghost_io.c's container CRC. */
-uint32_t crc32(const unsigned char* data, size_t length) {
+/* Running form: start from kCrc32Init, feed every span in order, finish with ^ kCrc32Init. The
+ * streaming flush CRCs the file it writes without ever holding it whole in memory. */
+constexpr uint32_t kCrc32Init = 0xFFFFFFFFu;
+
+uint32_t crc32Update(uint32_t crc, const unsigned char* data, size_t length) {
     static uint32_t table[256];
     static bool ready = false;
     if (!ready) {
@@ -97,11 +104,14 @@ uint32_t crc32(const unsigned char* data, size_t length) {
         }
         ready = true;
     }
-    uint32_t crc = 0xFFFFFFFFu;
     for (size_t i = 0; i < length; i++) {
         crc = table[(crc ^ data[i]) & 0xFFu] ^ (crc >> 8);
     }
-    return crc ^ 0xFFFFFFFFu;
+    return crc;
+}
+
+uint32_t crc32(const unsigned char* data, size_t length) {
+    return crc32Update(kCrc32Init, data, length) ^ kCrc32Init;
 }
 
 /* CRC-64/XZ (ECMA-182 polynomial, reflected form 0xC96C5795D7870F42), used as a
@@ -127,19 +137,6 @@ uint64_t crc64(const unsigned char* data, size_t length) {
 }
 
 /* --- little-endian pack/unpack ---------------------------------------------- */
-
-void putU32(std::vector<uint8_t>& buf, uint32_t v) {
-    buf.push_back((uint8_t)(v & 0xFFu));
-    buf.push_back((uint8_t)((v >> 8) & 0xFFu));
-    buf.push_back((uint8_t)((v >> 16) & 0xFFu));
-    buf.push_back((uint8_t)((v >> 24) & 0xFFu));
-}
-
-void putU64(std::vector<uint8_t>& buf, uint64_t v) {
-    for (int i = 0; i < 8; i++) {
-        buf.push_back((uint8_t)((v >> (8 * i)) & 0xFFu));
-    }
-}
 
 uint32_t getU32(const unsigned char* p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -267,6 +264,9 @@ void insertRange(uint32_t offset, const unsigned char* data, uint32_t len) {
     /* Overlay the freshly written bytes last so they win over stale content. */
     memcpy(&merged.data[offset - newStart], data, len);
 
+    /* Exception safety: the only allocations left are above (merged) and this reserve, both
+     * before g_ranges changes, so an out-of-memory throw leaves the journal exactly as it was. */
+    g_ranges.reserve(g_ranges.size() + 1);
     if (any) {
         g_ranges.erase(g_ranges.begin() + first, g_ranges.begin() + last + 1);
         g_ranges.insert(g_ranges.begin() + first, std::move(merged));
@@ -392,6 +392,95 @@ const char* statusText(LoadStatus s) {
     }
 }
 
+/* The sidecar is written as a stream: header (CRC filled in up front), then each record's
+ * offset/length/bytes straight out of g_ranges. Nothing here allocates on the heap -- the exit
+ * chain runs this with the heap at its lowest (card-5 Old 3DS: a 73 KB image assembly failed
+ * with 384 KB free in fragments, std::terminate, console hard-locked on HOME close). */
+/* fopen's stdio buffer, static so the flush never mallocs one; 8 KB keeps the header and the
+ * small records to a few FS writes and lets a record larger than it go out in one call. */
+unsigned char g_flushStreamBuf[8 * 1024];
+
+void putLe32(unsigned char* p, uint32_t v) {
+    p[0] = (unsigned char)(v & 0xFFu);
+    p[1] = (unsigned char)((v >> 8) & 0xFFu);
+    p[2] = (unsigned char)((v >> 16) & 0xFFu);
+    p[3] = (unsigned char)((v >> 24) & 0xFFu);
+}
+
+void putLe64(unsigned char* p, uint64_t v) {
+    putLe32(p, (uint32_t)(v & 0xFFFFFFFFu));
+    putLe32(p + 4, (uint32_t)(v >> 32));
+}
+
+/* The 24-byte header with its CRC field zeroed (offset 20), as the loader recomputes it. */
+void buildHeader(unsigned char header[kHeaderSize]) {
+    memcpy(header, "GDD1", 4);
+    putLe32(header + 4, kFormatVersion);
+    putLe64(header + 8, g_sourceHash);
+    putLe32(header + 16, (uint32_t)g_ranges.size());
+    putLe32(header + 20, 0);
+}
+
+void buildRecordHeader(unsigned char out[8], const DirtyRange& r) {
+    putLe32(out, r.offset);
+    putLe32(out + 4, (uint32_t)r.data.size());
+}
+
+/* CRC-32 of the whole file image (CRC field zeroed), computed over the journal in place. */
+uint32_t sidecarCrc(const unsigned char header[kHeaderSize]) {
+    uint32_t crc = crc32Update(kCrc32Init, header, kHeaderSize);
+    for (const DirtyRange& r : g_ranges) {
+        unsigned char rec[8];
+        buildRecordHeader(rec, r);
+        crc = crc32Update(crc, rec, sizeof(rec));
+        crc = crc32Update(crc, r.data.data(), r.data.size());
+    }
+    return crc ^ kCrc32Init;
+}
+
+bool writeSidecarStream(FILE* f, const unsigned char header[kHeaderSize]) {
+    if (fwrite(header, 1, kHeaderSize, f) != kHeaderSize) {
+        return false;
+    }
+    for (const DirtyRange& r : g_ranges) {
+        unsigned char rec[8];
+        buildRecordHeader(rec, r);
+        if (fwrite(rec, 1, sizeof(rec), f) != sizeof(rec)) {
+            return false;
+        }
+        if (!r.data.empty() && fwrite(r.data.data(), 1, r.data.size(), f) != r.data.size()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* .tmp written completely and closed, or removed. Returns true only for a complete file. */
+bool writeSidecarTmp() {
+    unsigned char header[kHeaderSize];
+    buildHeader(header);
+    putLe32(header + 20, sidecarCrc(header));
+
+    FILE* f = fopen(g_tmpPath.c_str(), "wb");
+    if (f == nullptr) {
+        gdx_port_logf("[disk-save] WARNING: could not open %s for writing; save not persisted\n", g_tmpPath.c_str());
+        return false;
+    }
+    setvbuf(f, reinterpret_cast<char*>(g_flushStreamBuf), _IOFBF, sizeof(g_flushStreamBuf));
+    bool ok = writeSidecarStream(f, header);
+    if (fflush(f) != 0) {
+        ok = false;
+    }
+    if (fclose(f) != 0) {
+        ok = false;
+    }
+    if (!ok) {
+        gdx_port_logf("[disk-save] WARNING: failed writing %s; save not persisted\n", g_tmpPath.c_str());
+        remove(g_tmpPath.c_str());
+    }
+    return ok;
+}
+
 } // namespace
 
 extern "C" {
@@ -458,6 +547,7 @@ void gdx_disk_save_init(const char* diskName, const unsigned char* pristine, uns
     g_active = false;
     g_ranges.clear();
     g_pendingFlush = false;
+    g_journalBroken = false;
     g_idleFrames = 0;
     g_sourceHash = 0;
     g_diskSize = size;
@@ -581,52 +671,30 @@ void gdx_disk_save_mark_dirty(unsigned int offset, const void* data, unsigned in
                       len);
         return;
     }
-    insertRange(offset, (const unsigned char*)data, len);
+    try {
+        insertRange(offset, (const unsigned char*)data, len);
+    } catch (...) {
+        if (!g_journalBroken) {
+            gdx_port_logf("[disk-save] WARNING: out of memory journaling a disk write (offset=%u len=%u); disk saves "
+                          "stop for this session, the previous sidecar is kept\n",
+                          offset, len);
+        }
+        g_journalBroken = true;
+        return;
+    }
     g_pendingFlush = true;
     g_idleFrames = 0;
 }
 
-void gdx_disk_save_flush(void) {
-    if (!g_active) {
+static void gdx_disk_save_flush_unchecked(void) {
+    if (g_journalBroken) {
+        g_lastFlushOk = false;
+        gdx_port_logf("[disk-save] WARNING: a disk write could not be journaled this session; flush skipped so "
+                      "the previous sidecar stays consistent\n");
         return;
     }
-
-    /* The file CRC is taken over the whole image with the CRC field zeroed, so the image
-     * has to be assembled in memory before the field can be filled in. */
-    std::vector<uint8_t> image;
-    image.insert(image.end(), { 'G', 'D', 'D', '1' });
-    putU32(image, kFormatVersion);
-    putU64(image, g_sourceHash);
-    putU32(image, (uint32_t)g_ranges.size());
-    putU32(image, 0); /* CRC placeholder at offset 20 */
-    for (const DirtyRange& r : g_ranges) {
-        putU32(image, r.offset);
-        putU32(image, (uint32_t)r.data.size());
-        image.insert(image.end(), r.data.begin(), r.data.end());
-    }
-    uint32_t crc = crc32(image.data(), image.size());
-    image[20] = (uint8_t)(crc & 0xFFu);
-    image[21] = (uint8_t)((crc >> 8) & 0xFFu);
-    image[22] = (uint8_t)((crc >> 16) & 0xFFu);
-    image[23] = (uint8_t)((crc >> 24) & 0xFFu);
-
-    FILE* f = fopen(g_tmpPath.c_str(), "wb");
-    if (f == nullptr) {
+    if (!writeSidecarTmp()) {
         g_lastFlushOk = false;
-        gdx_port_logf("[disk-save] WARNING: could not open %s for writing; save not persisted\n", g_tmpPath.c_str());
-        return;
-    }
-    bool ok = fwrite(image.data(), 1, image.size(), f) == image.size();
-    if (fflush(f) != 0) {
-        ok = false;
-    }
-    if (fclose(f) != 0) {
-        ok = false;
-    }
-    if (!ok) {
-        g_lastFlushOk = false;
-        gdx_port_logf("[disk-save] WARNING: failed writing %s; save not persisted\n", g_tmpPath.c_str());
-        remove(g_tmpPath.c_str());
         return;
     }
 
@@ -657,6 +725,22 @@ void gdx_disk_save_flush(void) {
     g_lastFlushOk = true;
     g_sidecarPresent = true;
     gdx_port_logf("[disk-save] flushed %zu record(s) to %s\n", g_ranges.size(), g_gddPath.c_str());
+}
+
+/* Never throws: the exit chain calls this, and an exception escaping it is std::terminate. A
+ * failure of any kind leaves the previous .gdd/.bak untouched (the .tmp is only promoted once it
+ * is complete) and is logged. */
+void gdx_disk_save_flush(void) {
+    if (!g_active) {
+        return;
+    }
+    try {
+        gdx_disk_save_flush_unchecked();
+    } catch (...) {
+        g_lastFlushOk = false;
+        remove(g_tmpPath.c_str());
+        gdx_port_logf("[disk-save] WARNING: flush failed (exception); save not persisted, previous sidecar intact\n");
+    }
 }
 
 void gdx_disk_save_tick(void) {

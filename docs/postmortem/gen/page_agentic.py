@@ -1,8 +1,10 @@
 from framework import *
+import pc_topology
+from pc_diagrams import STYLE as PC_STYLE
 
 
 def build(D):
-    b = []
+    b = [PC_STYLE]
     b.append('<p class="eyebrow">10 · Agentic workflow</p><h1>How the fleet was run, and how the ship was steered</h1>')
     b.append('<p class="lede">One human, one orchestrating Claude session that lived for the whole project. In the first '
              'phase (2026-08-11 to 09-03), ' + esc(D["subagents"]) + ' subagents worked in ' + esc(D["worktrees"]) + ' git '
@@ -26,17 +28,7 @@ def build(D):
              'file committed into <code>docs/research/</code>, and a progress file it had to write before it was allowed to finish. '
              'Agents never talked to the user; the orchestrator relayed. Agents never touched mainline; the orchestrator merged after '
              'an emulator smoke test and, for anything risky, after a hardware verdict.</p>')
-    b.append('<pre>user ──(prompt, screenshots, SD card)──▶ orchestrator session\n'
-             '                                            │  briefs, merges, memory, reports\n'
-             '                    ┌───────────────────────┼───────────────────────┐\n'
-             '                    ▼                       ▼                       ▼\n'
-             '            worktree A (lever)      worktree B (lever)      deep-research workflow\n'
-             '            branch feat/3ds-a       branch feat/3ds-b       5 search agents → fetch → verify → synth\n'
-             '            killswitch + receipt    killswitch + receipt\n'
-             '            progress.md + commits   progress.md + commits\n'
-             '                    └───────── merge into feat/3ds-hwtestN ─────────┘\n'
-             '                                            │\n'
-             '                                   .3dsx + .cia + TEST-PLAN.txt ──▶ SD card ──▶ New 3DS ──▶ log.txt back</pre>')
+    b.append(pc_topology.figure_html())
 
     b.append('<h2>The rules the fleet lived by</h2>')
     b.append('<p>These accreted from failures (see <a href="difficulties.html">Difficulties</a>) and were copied into every brief as a '

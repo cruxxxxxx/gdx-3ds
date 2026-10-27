@@ -28,6 +28,13 @@
 [submodule "decomp"]
 	path = decomp
 	url = https://github.com/Zorkats/fzerox.git
+# fzerox-expansion-kit is pinned to a history-rewritten copy of inspectredc's decomp
+# (via Zorkats' fork) with the accidentally committed retail disk image (baserom.jp.disk)
+# purged from every commit. The pinned commit's tree is identical to the old pin 6cd71e6
+# minus that one file. It must be a standalone repo, NOT a GitHub "Fork" of upstream: a
+# fork shares upstream's object network, so the purged blob would stay reachable.
+# >>> FORK URL: the url line below assumes the clean repo is pushed to
+# >>> github.com/cruxxxxxx/fzerox-expansion-kit. Change only that line if it lives elsewhere.
 [submodule "fzerox-expansion-kit"]
 	path = fzerox-expansion-kit
-	url = https://github.com/Zorkats/fzerox-expansion-kit.git
+	url = https://github.com/cruxxxxxx/fzerox-expansion-kit.git

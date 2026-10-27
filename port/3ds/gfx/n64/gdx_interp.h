@@ -551,6 +551,12 @@ class ProfScope {
     uint64_t mT0 = 0, mSnap = 0;
 };
 
+#ifdef EXPANSION_KIT
+struct EkPvMemo;  /* gdx_ekpreview.cpp */
+struct EkPvEntry; /* gdx_ekpreview.cpp */
+struct EkPvCap;   /* gdx_ekpreview.cpp */
+#endif
+
 class Interp {
   public:
     explicit Interp(Backend* backend);
@@ -653,22 +659,57 @@ class Interp {
         NC_COUNT = 7
     };
     static constexpr int kNcModes = 24; /* gGameMode 0..0x16, 0x17 = anything else */
-    static constexpr int kNcSubs = 6; /* 0 steady, 1 race intro, 2 racing, 3 post-finish, 4 mode change, 5 attract demo */
+    static constexpr int kNcSubs = 7; /* 0 steady, 1 race intro, 2 racing, 3 post-finish, 4 mode change, 5 attract demo,
+                                       * 6 a transition drawn ([debug] nicensus_wipe=1 only, menus-s4) */
     struct NcState; /* gdx_nicensus.cpp */
+    /* on: 0 off, 1 the engine + its [nicensus] dumps, 2 the engine only (no [nicensus] dumps: the
+     * [debug] ni_strict census runs on it without nicensus's own receipts). */
     void NcSet(int on);
+    /* --- [debug] ni_strict (gdx_nicensus.cpp; native-all-plan.md S7) ---
+     * The strict census rides the nicensus engine: every command an Exec site runs is filed by
+     * bucket (mode x sub-scope), context, tag (the marker / hook that opened the context), site (which
+     * Exec loop ran it) and opcode, with its per-frame persistence. Level 1 = COUNT: nothing is
+     * dropped and nothing drawn changes. Level 2 (drop) is not implemented: it counts like 1. */
+    enum NcSite {
+        NCS_WALK = 0,      /* the walker's own loop (Walk / WalkNicensus) */
+        NCS_NESTED = 1,    /* a recorded G_DL walked in place (WalkNestedList: kept HUD lists) */
+        NCS_NIEX = 2,      /* a span program's EX op: the compiler kept the stock handler */
+        NCS_NISTX = 3,     /* a span program's ST op whose precondition failed: the stock handlers */
+        NCS_NISEG = 4,     /* a span geometry segment the mesh path refused: the stock handlers */
+        NCS_NIRECOV = 5,   /* the stock walk after a span program bailed */
+        NCS_HUDRUN = 6,    /* a capture run on the HUD replay loop, stock handler */
+        NCS_HUDDIRECT = 7, /* a capture run's TEXRECT / LOADBLOCK on the direct emitter (native) */
+        NCS_HUDPLAIN = 8,  /* a MENU run the compiler refused / a kept-list run, word by word */
+        NCS_HOOKCMD = 9,   /* the G_DL hook re-running a list's own commands (finish mesh) */
+        NCS_COURSE = 10,   /* ni_course's leave: the last model's G_VTX re-run */
+        NCS_COUNT = 11
+    };
+    /* level 0 off; every = frames between the compact periodic [nistrict] receipts (0 = final only). */
+    void NsSet(int level, uint32_t every);
+    /* The tag the current context is attributed to (marker p, 0xC0|cat for an NRR marker, 0xDE for
+     * the G_DL hook); returns the previous one (pass it back to restore). */
+    int NcTag(int tag);
+    /* The cumulative [nistrict] tables; full = every entry line, else the per-bucket summary. */
+    void NsDump(const char* why, bool full);
+    /* menus-s2 [debug] nicensus_trace=N / nicensus_trace_mode=M / nicensus_trace_skip=K: after K walker
+     * commands of game mode M (-1 any), N [nctrace] lines, one per command the walker itself ran (the
+     * walkB / walkW residue): the list depth, list base, index and the two words. Measurement only. */
+    void NcTraceSet(int lines, int mode, int skip);
     bool NcOn() const {
         return mNc != nullptr;
     }
     /* Opens a rendered frame (one task) in bucket (mode * kNcSubs + sub). */
     void NcFrameBegin(int bucket);
+    /* menus-s4 [debug] nicensus_wipe: the open frame drew transition `type` (its bucket's histogram). */
+    void NcFrameWipe(int type);
     /* Closes it; the NRR core's per-category markers / draws / verts of the frame (nCats entries). */
     void NcFrameEnd(const uint32_t* nrrMarkers, const uint32_t* nrrDraws, const uint32_t* nrrVerts, int nCats);
     /* A task the owned walker refused (the LUS path drew it). */
     void NcLusTask(int bucket);
     /* Switches the attribution context; returns the previous one (pass it back to restore). */
     int NcSwitch(int ctx);
-    /* One interpreted command (after the legacy-F3D remap). */
-    void NcNote(const Cmd& c, bool f3d);
+    /* One interpreted command (after the legacy-F3D remap); site = the Exec loop that ran it. */
+    void NcNote(const Cmd& c, bool f3d, int site = NCS_WALK);
     /* Words consumed WITHOUT Exec in the current context (NRR HUD decoded / retained HUD runs). */
     void NcNoteWords(uint32_t words, int retained);
     /* The cumulative per-bucket tables ([nicensus] lines). */
@@ -702,6 +743,10 @@ class Interp {
      * invalidate) must reach it too. Render thread only, like every other cache mutation. */
     void TexCacheClear();
     void TexCacheDeleteAddress(const uint8_t* addr);
+    /* native-all S1 [native] atlas_race_reset: retire every entry whose texture is an atlas view
+     * (kept or not) and have the backend drop every view and page. Called right before the
+     * mode-change TexCacheClear when the new mode is a race. Returns the entries retired. */
+    unsigned TexCacheAtlasReset();
 
     /* N60TEX [debug] tex_keep: a clear keeps the most recently used CONTENT-KEYED, uploaded
      * entries (key.content_hash != 0: the key is a function of the bytes the decode reads, so a
@@ -1038,6 +1083,26 @@ class Interp {
     int NiMenuLevel() const {
         return mNiMenu;
     }
+    /* menus-s2 [debug] nimenu_voldiag=N: up to N lines naming the words a decoded MENU run changed
+     * since the same run ordinal's previous decode (diagnostic; allocates a copy store on first use). */
+    void NiMenuVolDiagSet(int lines) {
+        mNiVolDiag = lines > 0 ? lines : 0;
+    }
+    /* menus-s2b [native] ni_menu_split (default 0), bits: a MENU run with no program runs as segments,
+     * each through its own program (gdx_nrr_menu.inc NrrMenuSplit) -- 1 its FILLRECT chains (the tile
+     * wipe: a rectangle count that changes every frame) in power-of-two pieces, 2 when it took the
+     * decoder in the previous task too, one segment per texture load (the tile / strip transitions). */
+    void NiMenuSplitSet(int bits) {
+        mNiMenuSplit = static_cast<uint8_t>(bits & 3);
+    }
+    /* menus-s2b [native] ni_menu_keep=1 (default 0): a MENU run that was decoded in the previous task too
+     * (its ordinal's mNiMenuVol is non-zero: a transition's moving tiles, a run whose words change every
+     * frame) may not empty the NRR HUD's block memo or program pool when it finds them full -- its
+     * rectangle stays the stock one it just drew, its program is not stored. Every other run clears as
+     * before (gdx_nrr_hud.cpp NrrCaptureAfter / NrrProgStore). */
+    void NiMenuKeepSet(int on) {
+        mNiMenuKeep = on == 1;
+    }
     int NiMenuFormat(char* buf, size_t cap, uint32_t tasks, int gameMode);
     void NrrRunClockNote(uint32_t runInTask, const void* runWords, uint32_t n, uint64_t ticks);
     int NrrHudFormat(char* buf, size_t cap, uint32_t tasks);
@@ -1079,6 +1144,11 @@ class Interp {
     int SkyFormat(char* buf, size_t cap, int line);
     void SkyTaskEnd();
     void SkyClear();
+#ifdef EXPANSION_KIT
+    /* [native] ek_editmesh (gdx_ekpreview.cpp, o3dsek plan S5c): the course editor's preview, one
+     * output memo per element (ground-grid quad, course line). Per task: the receipt and the idle free. */
+    void EkPvTaskEnd();
+#endif
     /* --- [native] nrr_sky (gdx_nrr_sky.cpp; n60sky-progress.md): the NRR sky category. The game
      * side's p=0x64 LEARN markers bank the stock state blocks here (cold); the core's 0x63 marker
      * draws (NrrSkyHotDraw, a free function) read the walker through the NrrSkyHot* members. */
@@ -1336,6 +1406,10 @@ class Interp {
     uint8_t mNiMenuVol[kNiVolSlots] = {};
     uint32_t mNiMenuOrd = 0;
     bool mNiMenuRun = false; /* inside a MENU run (the decoder's MENU-only arms: NrrNoteLoadTile) */
+    int mNiVolDiag = 0;      /* menus-s2 [debug] nimenu_voldiag: lines left */
+    struct NiVolCopy;
+    NiVolCopy* mNiVolCopy = nullptr;
+    void NiMenuVolDiag(const GdxHudWord* w, uint32_t n, uint32_t ord);
     uint32_t mNrrRunInTask = 0;
     bool mNrrTmemLive = false;
     bool mNrrOpen = false;     /* the NRR core holds citro3d (between HUD runs too): anything else closes it */
@@ -1355,7 +1429,9 @@ class Interp {
     /* nimenu: the menu phase's runner (gdx_nrr_menu.inc; nrr_size.sh counts NrrMenuHot*) */
     bool NrrMenuHotRun(const void* runWords, uint32_t n);
     bool NrrMenuHotBody(const GdxHudWord* w, uint32_t n);
-    void NrrMenuDec(const GdxHudWord* w, uint32_t n);
+    bool NrrMenuDec(const GdxHudWord* w, uint32_t n);
+    int NrrMenuSplit(const GdxHudWord* w, uint32_t n);
+    bool NrrMenuSegment(const GdxHudWord* w, uint32_t n);
     bool NrrMenuRunCold(const GdxHudWord* w, uint32_t n);
     void NrrNoteLoadTile(const Cmd& c);
     void NrrHudHotBody(const GdxHudWord* w, uint32_t n);
@@ -1426,8 +1502,11 @@ class Interp {
     void NrrRecRect(uint32_t i, const Cmd& c, const NrrBlock* b, uint8_t tile, bool fill);
     void NrrRecRegWord(const Cmd& c, uint32_t i, const NrrRegFx* fx, bool plain);
     bool NrrColourOp(const Cmd& c, uint32_t col[3]) const;
+    bool NrrPrimDepthOp(uint32_t col[3]) const;
+    static uint32_t NrrColourHdr(uint8_t op);
     bool NrrRegFirstSight(const Cmd& c) const;
     bool NrrNoteNoProg(const GdxHudWord* w, uint32_t n);
+    void NrrNoHashDiag(const GdxHudWord* w, uint32_t n);
     void NrrDepDiag(const NrrProg& g, const GdxHudWord* w, uint32_t n);
     void NrrDepDiagTask();
     void NrrHudHotColour(uint32_t hdr, const uint32_t* op, const Cmd& c);
@@ -1558,6 +1637,14 @@ class Interp {
     void NrrRaceArm(bool on) {
         mNiOn = on && mNi != nullptr;
     }
+    /* menus-s2 [native] ni_menu_root: arm (or disarm) the programs for a menu frame's root -- a race
+     * arm with the menu flag (no geometry segments; an open NRR HUD hand-off at a span's start is
+     * closed so the span's program can run). false disarms either kind. */
+    void NrrRaceArmMenu(bool on);
+    /* native-vs: the task is a 2-4P race frame (armed with [native] ni_view's NRR_NI_VIEW_RACE bit):
+     * its spans are keyed on their occurrence after the same marker word instead of the frame's span
+     * ordinal (NrrRaceViewKey). Set by the glue before NrrRaceArm, cold. */
+    void NrrRaceSetMultiView(bool on);
     bool NrrRaceArmed() const {
         return mNiOn;
     }
@@ -1589,7 +1676,9 @@ class Interp {
     void NrrRaceTaskBegin(); /* the root's walk starts: the environment the compiled scissors rest on */
     void NrrRaceHotDrive(Frame& f, uint32_t marker);
     bool NrrRaceHotSpan(Frame& f, uint32_t marker);
+    uint32_t NrrRaceViewKey(uint32_t marker); /* native-vs: a multi-view span's key (cold) */
     bool NrrRaceMissRecover();
+    bool NrrRaceMenuReopen(); /* menus-s2 ni_menu_root: close the NRR HUD hand-off, run the span (cold) */
     bool NrrRaceHotRun(const uint32_t* op, Frame& f, NrrRaceSlot* slot);
     const uint32_t* NrrRaceGeoOp(const uint32_t* op, Frame& f, const ListRef& L, NrrRaceSlot* slot, size_t start);
     void NrrRaceHotCall(const Cmd& c, Frame& t);
@@ -1839,6 +1928,19 @@ class Interp {
     int mO3dsFast = 1;
     /* [native] trimemo (default 0): skip ResolveDrawState when nothing it reads has changed. */
     int mTriMemoOn = 0;
+#ifdef EXPANSION_KIT
+    /* [native] ek_editmesh (gdx_ekpreview.cpp): 0 off, 1 serve, 2 verify (stock draws, the memo is
+     * compared). mEkCap is non-null only while an element's stock draw is being recorded. */
+    int mEkPvOn = 0;
+    EkPvMemo* mEkPv = nullptr;
+    EkPvCap* mEkCap = nullptr;
+    bool EkPvVtx(const Cmd& c, Frame& f);
+    void EkPvStep(const Cmd& c, Frame& f);
+    void EkPvStock(const Cmd& vtx, Frame& f, int kind, EkPvCap* cap);
+    int EkPvServe(const EkPvEntry& e, int ctxSlot);
+    void EkPvCaptureTri(const float* out, const LoadedVertex* v0, const DrawState& ds);
+    void EkLatchAux(const DrawState& ds, const LoadedVertex& v0); /* gdx_tri.cpp: SpTri's latch */
+#endif
     /* Bumped by every span-store mutation (StoreLoadedTexture): LoadedTexAt is a function of
        the store, so the tri memo keys on this instead of trusting textures_changed alone. */
     uint32_t mSpanEpoch = 0;
@@ -2051,6 +2153,16 @@ class Interp {
     NoopHook mNoopHook = nullptr;
     void* mNoopHookUser = nullptr;
     uint32_t mUnknownLogged[8];
+    /* menus-s2b members sit last: a member added mid-class moves the offsets every hot loop after it
+     * encodes (the race / HUD hot sets change size with no code change). */
+    uint8_t mNiMenuSplit = 0;  /* [native] ni_menu_split bits */
+    bool mNiInSplit = false;   /* a split run's segments are running (NrrMenuSplit) */
+    bool mNiMenuKeep = false;  /* [native] ni_menu_keep */
+    bool NrrMenuKeepRefuse(); /* gdx_nrr_menu.inc: a full memo / pool is not cleared for this run */
+    struct NiSplitWin {
+        uint32_t runs, segs, prog; /* split runs, their segments, the segments that took a program */
+        uint32_t keepMemo, keepPool; /* ni_menu_keep: memo / pool clears refused */
+    } mNiSplitWin = {};
 };
 
 } // namespace gdxn

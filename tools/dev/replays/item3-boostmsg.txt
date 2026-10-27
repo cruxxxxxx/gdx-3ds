@@ -1,12 +1,27 @@
-# item3: storm2 timing, force_lap2=1, SHOTs at lap1->lap2.
-# Verifies top-screen boost msg in SPLIT/ALL_BOTTOM placement.
+# item3: storm2's menu walk, then the lap1->lap2 change.
+# Checks the top-screen boost msg (SPLIT/ALL_BOTTOM HUD).
+# NEEDS --ini debug.autodrive=1: unsteered, the racer retires
+# ~1100 ticks in. Under autodrive lap 2 starts at ~5930
+# (5900 still lap 1, 5960 lap 2). force_lap2=1 does not move
+# it. Taps walk the menus (a HOLD is one press, see README).
 ticks
-20 A 2980
-3000 A 2980
+100 A 10
+250 A 10
+400 A 10
+550 A 10
+2200 A 10
+2350 A 10
+2500 A 10
+2650 A 10
+2800 A 10
+2950 A 10
+3100 A 10
+3250 A 10
+3350 A 2630
 3400 SHOT card
-6000 A 2980
-6200 SHOT drive1
-6260 SHOT before_lap2
-6340 SHOT after_lap2
-6420 SHOT after_lap2b
-9000 A 2980
+5000 SHOT drive1
+5880 SHOT before_lap2
+5990 SHOT after_lap2
+6000 A 3000
+6080 SHOT after_lap2b
+6200 A 10

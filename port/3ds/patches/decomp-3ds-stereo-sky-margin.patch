@@ -1,0 +1,25 @@
+diff --git a/src/overlays/ovl_i3/background.c b/src/overlays/ovl_i3/background.c
+--- a/src/overlays/ovl_i3/background.c
++++ b/src/overlays/ovl_i3/background.c
+@@ -642,6 +642,21 @@ void Background_Update(void) {
+                                             (1.5f * 1.15f) * background->aspectRatio;
+             }
+         }
++        /* 3DS stereo: each eye's image of far geometry is shifted sideways by up to the
++           far-plane parallax (gdx3ds_stereo_edge_shift_ndc, NDC-x, 0 while the right-eye pass
++           is off). The skybox, venue floor and clouds reach only a few % past the screen edge,
++           so with the slider up one edge of each eye uncovered a band of clear colour. Widen
++           the quads horizontally by that shift -- after verticalRange is fixed, so the gradient
++           is unchanged. The floor and cloud textures are world-anchored and the skybox texture
++           is constant across x, so only the coverage grows. 0 = untouched: 2D is bit-identical. */
++        {
++            extern float gdx3ds_stereo_edge_shift_ndc(void) __attribute__((weak));
++            f32 gdxEyeShift = (&gdx3ds_stereo_edge_shift_ndc != NULL) ? gdx3ds_stereo_edge_shift_ndc() : 0.0f;
++
++            if (gdxEyeShift > 0.0f) {
++                background->horizontalRange *= 1.0f + gdxEyeShift;
++            }
++        }
+ #endif
+ 
+         /* NOTE (2026-08-20 night-verify): a `verticalRange *= factor` 3DS overscan was

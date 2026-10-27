@@ -51,6 +51,7 @@
 #include "gdx_input_script.h" // GDX_INPUT_SCRIPT: dev-only deterministic input playback (see file header)
 #include "gdx_input_rec.h"    // ORACLE: .gdxrec record/replay stage of the unified injector
 #include "gdx_hud_placement.h" // nibottom Phase 2: the HUD placement lever predicates below
+#include "gdx_snapshot.h"     // mp-snapshot: GDX_SNAP_STATE_BSS + the pad record/replay hooks
 #include "port_log.h"
 
 #include <stdbool.h>
@@ -87,6 +88,17 @@ extern int gdx_lus_read_pads(int capacity, u16* out_buttons, s8* out_stick_x, s8
 // port/3ds/os/gdx3ds_os_ctru.c); weak so the desktop build, which has real pads, links with
 // nothing here and never mirrors.
 extern int gdx_port_mirror_count(void) __attribute__((weak));
+// mp-spike: [net] mp lockstep hook (port/3ds/net/gdx3ds_mp.c). Weak: the desktop build has no
+// MP and the 3DS one returns 0 on its first int test with the lever off (the default).
+extern int gdx_mp_exchange(unsigned long long tick, u16* buttons, s8* stickX, s8* stickY, u8* connected,
+                           int capacity) __attribute__((weak));
+// mp-snapshot (port/gdx_snapshot.h, port/3ds/gdx_snapshot.c): record the tick's final pads while a
+// snapshot window is open, and feed them back to a resimulated tick. Weak: desktop has no module.
+extern void gdx_snap_note_pads(unsigned long long tick, const unsigned short* buttons, const signed char* stickX,
+                               const signed char* stickY, const unsigned char* connected, int count)
+    __attribute__((weak));
+extern int gdx_snap_recorded_pads(unsigned long long tick, unsigned short* buttons, signed char* stickX,
+                                  signed char* stickY, unsigned char* connected, int count) __attribute__((weak));
 
 // Zero exactly the input fields Controller_ClearInputs() clears (decomp/src/sys/controller.c:47-51)
 // without touching pfs / rumble bookkeeping. Used when a port goes away mid-session so a pad that
@@ -120,7 +132,13 @@ typedef struct GdxPortInputState {
     u8 prevGameStick;
 } GdxPortInputState;
 
-static GdxPortInputState sPortInput[MAXCONTROLLERS];
+// mp-snapshot: simulation state (the edge accumulators feed buttonPressed/Released), so it lives in
+// the snapshot block and a restore rewinds it with the decomp image.
+static GdxPortInputState sPortInput[MAXCONTROLLERS] GDX_SNAP_STATE_BSS;
+// gdx_sync_controller_ports' per-port presence latch and gdx_controller_apply's first-poll flag
+// (both were function statics; file scope so they can carry the snapshot section).
+static u8 s_prevConnected[MAXCONTROLLERS] GDX_SNAP_STATE_BSS;
+static int s_have_baseline GDX_SNAP_STATE_BSS;
 
 // ── Connected-port bookkeeping ───────────────────────────────────────────────────────────────────
 // Publishes the ControlDeck's per-port availability into the three decomp globals the game reads:
@@ -148,10 +166,10 @@ static GdxPortInputState sPortInput[MAXCONTROLLERS];
 // "please reconnect controller 1" screen to recover from, so letting player 1's slot ever become
 // PORT_DISCONNECTED would wedge the UI rather than degrade it.
 static void gdx_sync_controller_ports(const u8* connected) {
-    // Zero-initialised: every port starts out "was disconnected", so the first call runs every live
-    // port through the connect path in ascending order and produces exactly the compact assignment
-    // Controller_Init builds on hardware (controller.c:220-237).
-    static u8 s_prevConnected[MAXCONTROLLERS];
+    // s_prevConnected (file scope, above) is zero-initialised: every port starts out "was
+    // disconnected", so the first call runs every live port through the connect path in ascending
+    // order and produces exactly the compact assignment Controller_Init builds on hardware
+    // (controller.c:220-237).
     static int s_initialized = 0;
     int i;
     int j;
@@ -283,7 +301,7 @@ extern void gdx_request_frame_dump(const char* label);
 /* ORACLE: the input tick. Incremented exactly once per gdx_controller_poll() (the single call
    site in the host loop, one per VI tick), so it is the clock every scripted source, the .gdxrec
    line numbering and the [fh] receipt's tick= field share. Was autoinput's private s_tick. */
-static unsigned long long s_input_tick = 0;
+static unsigned long long s_input_tick GDX_SNAP_STATE_BSS; /* mp-snapshot: rewound by a restore */
 
 unsigned long long gdx_input_tick(void) {
     return s_input_tick;
@@ -471,7 +489,18 @@ int gdx_input_in_gameplay(void) {
     return gdx_gamemode_is_race(gGameMode);
 }
 
+#ifdef __3DS__
+extern int gdx3ds_mp_session_levers_forced(void) __attribute__((weak)); /* gdx3ds_autodrive.c (MP30) */
+#endif
+
 int gdx_photo_mode_active(void) {
+#ifdef __3DS__
+    /* MP30: photo mode moves camera 0 and skips the pause menu's draw (which draws RNG): never in
+     * a lockstep session. */
+    if ((&gdx3ds_mp_session_levers_forced != 0) && gdx3ds_mp_session_levers_forced()) {
+        return 0;
+    }
+#endif
     return CVarGetInteger("gEnhancements.Practice.PhotoMode", 0) && (gGamePaused != 0);
 }
 
@@ -646,6 +675,25 @@ void gdx_fixed_aspect_publish(void) {
     want = gdx_ek_fixed_aspect_resolve(effectiveMode, want); /* B11g, see above */
 #endif
     gdx_set_force_fixed_aspect(want);
+#if defined(GDX_PLATFORM_3DS)
+    /* [display] widescreen (port/3ds/gdx3ds_widescreen.h): the same destination-mode key, so a
+       race's widescreen switches flip with the mode under the transition wipe. No-op when off. */
+    {
+        extern void gdx3ds_widescreen_publish(int kind);
+        extern int gdx_fv_wide_single_view(void) __attribute__((weak)); /* game/gdx3ds_fullview_game.c */
+        extern s32 gNumPlayers;
+        int wideKind = 0;
+        if (gdx_gamemode_is_race(effectiveMode)) {
+            wideKind = (gNumPlayers > 1) ? 2 : 1;
+        }
+        /* mp-fullbleed: an MP fullview race shows ONE view full screen, so it is a 1P frame
+           (RemoveBorders, 5:3 at 1:1) rather than a split one; render-only. */
+        if (wideKind == 2 && &gdx_fv_wide_single_view != NULL && gdx_fv_wide_single_view()) {
+            wideKind = 1;
+        }
+        gdx3ds_widescreen_publish(wideKind);
+    }
+#endif
 }
 
 void gdx_fixed_aspect_tick(void) {
@@ -807,18 +855,47 @@ static void gdx_publish_shared_controller(const u8* connected) {
     gSharedController.sameInputsHeldCounter = gControllers[0].sameInputsHeldCounter;
 }
 
-void gdx_controller_poll(void) {
+// The half of a poll that turns one tick's FINAL pads into decomp controller state: the tick
+// counter, presence, the per-port edge accumulation (aligned to the game frame) and the shared
+// aggregate. A real poll and a resimulated tick (gdx_controller_poll_resim) both end here, so a
+// resim reaches the game through exactly the path the recorded tick took.
+static void gdx_controller_apply(const u16* buttons, const s8* stick_x, const s8* stick_y, const u8* connected) {
     // See the scheduler-counter comment below; declared here so the boundary predicate can be
     // evaluated once for every port.
     extern s32 D_800CCFB0, D_800CCFB4, D_800CCFB8;
+    s32 divider;
+    int gameBoundary;
+    int i;
 
+    s_input_tick++; /* exactly once per poll: the poll IS the tick */
+
+    // Publish presence BEFORE the per-port update: a port that just went away has its Controller
+    // cleared in here, and clearing it after the update would throw away the frame we just read.
+    gdx_sync_controller_ports(connected);
+
+    // The scheduler posts the game's frame tick this VI when (++D_800CCFB0 - D_800CCFB4) >=
+    // D_800CCFB8. gdx_controller_poll runs before that increment, so the predicate is
+    // (D_800CCFB0 + 1 - D_800CCFB4) >= D_800CCFB8. The first poll is forced to be a boundary so the
+    // controllers get a baseline before the game's first tick.
+    divider = (D_800CCFB8 > 0) ? D_800CCFB8 : 1;
+    gameBoundary = !s_have_baseline || ((D_800CCFB0 + 1 - D_800CCFB4) >= divider);
+    s_have_baseline = 1;
+
+    for (i = 0; i < MAXCONTROLLERS; i++) {
+        if (connected[i] == 0) {
+            continue; // gdx_sync_controller_ports() already neutralised the port on the way out.
+        }
+        gdx_update_port_inputs(i, buttons[i], stick_x[i], stick_y[i], gameBoundary);
+    }
+
+    gdx_publish_shared_controller(connected);
+}
+
+void gdx_controller_poll(void) {
     u16 buttons[MAXCONTROLLERS];
     s8 stick_x[MAXCONTROLLERS];
     s8 stick_y[MAXCONTROLLERS];
     u8 connected[MAXCONTROLLERS];
-    static int s_have_baseline = 0;
-    s32 divider;
-    int gameBoundary;
     int i;
 
     // The button field is already the N64 bitmask (identical layout to the decomp — see the file
@@ -866,26 +943,34 @@ void gdx_controller_poll(void) {
             stick_y[i] = stick_y[0];
         }
     }
-    s_input_tick++; /* exactly once per poll: the poll IS the tick */
-
-    // Publish presence BEFORE the per-port update: a port that just went away has its Controller
-    // cleared in here, and clearing it after the update would throw away the frame we just read.
-    gdx_sync_controller_ports(connected);
-
-    // The scheduler posts the game's frame tick this VI when (++D_800CCFB0 - D_800CCFB4) >=
-    // D_800CCFB8. gdx_controller_poll runs before that increment, so the predicate is
-    // (D_800CCFB0 + 1 - D_800CCFB4) >= D_800CCFB8. The first poll is forced to be a boundary so the
-    // controllers get a baseline before the game's first tick.
-    divider = (D_800CCFB8 > 0) ? D_800CCFB8 : 1;
-    gameBoundary = !s_have_baseline || ((D_800CCFB0 + 1 - D_800CCFB4) >= divider);
-    s_have_baseline = 1;
-
-    for (i = 0; i < MAXCONTROLLERS; i++) {
-        if (connected[i] == 0) {
-            continue; // gdx_sync_controller_ports() already neutralised the port on the way out.
-        }
-        gdx_update_port_inputs(i, buttons[i], stick_x[i], stick_y[i], gameBoundary);
+    // mp-spike ([net] mp, DEFAULT OFF): every console's ports become the session's exchanged
+    // pads for this tick (blocks until they are all in). Downstream of the injector and the
+    // mirror, so a replay drives the LOCAL player and every console feeds the game the same pads.
+    if (&gdx_mp_exchange != NULL) {
+        gdx_mp_exchange(s_input_tick, buttons, stick_x, stick_y, connected, MAXCONTROLLERS);
+    }
+    // mp-snapshot: the tick's final pads, for a later resim of this tick (one int test when off).
+    if (&gdx_snap_note_pads != NULL) {
+        gdx_snap_note_pads(s_input_tick, buttons, stick_x, stick_y, connected, MAXCONTROLLERS);
     }
 
-    gdx_publish_shared_controller(connected);
+    gdx_controller_apply(buttons, stick_x, stick_y, connected);
+}
+
+// mp-snapshot: a RESIMULATED tick's poll. No pad read, no injector (the replay cursor and the
+// autoinput SHOTs belong to the real ticks), no mirror, no lockstep exchange: the pads are the
+// ones gdx_controller_poll recorded for this tick. Returns 0 (and polls nothing) when the module
+// holds no pads for it.
+int gdx_controller_poll_resim(void) {
+    u16 buttons[MAXCONTROLLERS];
+    s8 stick_x[MAXCONTROLLERS];
+    s8 stick_y[MAXCONTROLLERS];
+    u8 connected[MAXCONTROLLERS];
+
+    if (&gdx_snap_recorded_pads == NULL ||
+        !gdx_snap_recorded_pads(s_input_tick, buttons, stick_x, stick_y, connected, MAXCONTROLLERS)) {
+        return 0;
+    }
+    gdx_controller_apply(buttons, stick_x, stick_y, connected);
+    return 1;
 }

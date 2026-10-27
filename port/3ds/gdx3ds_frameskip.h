@@ -176,6 +176,14 @@ typedef struct GdxSteadyCtl {
     int lastSpike;          /* the latest slot was a spike slot (receipts) */
     int lastExplained;      /* the latest slot missed and a spike explains it (receipts) */
     int skipStallRun;       /* consecutive skip samples kept out of skipAvg as stalls */
+    unsigned upPct;         /* a step up needs the p90 render to fit D-1 at this % (default 80) */
+    unsigned d1HoldPct;     /* o3ds60: D = 1 holds while this % of the last d1HoldSlots slots hit (0 = off) */
+    unsigned long d1Holds;  /* o3ds60: slots the D = 1 hold kept D = 1 the old rules would have left */
+    unsigned d1HoldSlots;   /* o3ds60: the hold's window, 16..64 slots (init = 16) */
+    uint64_t d1MissBits;    /* o3ds60: missBits over 64 slots (bit0 = the latest slot) */
+    unsigned long d1RetryTicks; /* o3ds60: D = 2 -> 1 dwell (0 = the stock up rule and backoff) */
+    unsigned d1RetryPct;    /* o3ds60: ...and the spike-free p90 render must fit this % of a vblank */
+    unsigned long d1Retries; /* o3ds60: steps up to D = 1 taken by the retry rule */
 } GdxSteadyCtl;
 
 enum {
@@ -194,12 +202,52 @@ int gdx_steady_note_slot(GdxSteadyCtl* ctl, uint64_t renderWork, int missed);
 int gdx_steady_note_slot_ex(GdxSteadyCtl* ctl, uint64_t renderWork, int missed, uint64_t skipMax);
 /* 1 (default) = the robust rules above; 0 = the round-2 rules (bisect lever). */
 void gdx_steady_set_robust(GdxSteadyCtl* ctl, int on);
+/* o3dsperf: the step-up fit percentage (50..100; init = 80). [debug] steady_lockstep_up_pct sets
+ * it while a lockstep race is on. */
+void gdx_steady_set_up_pct(GdxSteadyCtl* ctl, unsigned pct);
+/* o3ds60 [debug] steady_d1_hold_pct (default 80 on an Old 3DS, 0 = off on a New 3DS): at D = 1
+ * the step-down rules wait until fewer than this % of the last 16 slots hit (a missed slot repeats
+ * one frame; a step down halves the rate for the whole dwell). 0 = the rules as before. */
+void gdx_steady_set_d1_hold_pct(GdxSteadyCtl* ctl, unsigned pct);
+/* o3ds60 [debug] steady_d1_hold_slots (default 64 on an Old 3DS, 16 on a New 3DS; 16..64): the
+ * window of the D = 1 hold above. A stint younger than the window counts its unseen slots as hits,
+ * so a short burst of misses (one repeated frame each) does not leave D = 1; only a hit rate under
+ * steady_d1_hold_pct over the window does. hw 9088d3a (3D, 2 machines): stints at 93-97% hit left
+ * D = 1 on 4 misses in a row (the 16-slot window at 80% allows 3). */
+void gdx_steady_set_d1_hold_slots(GdxSteadyCtl* ctl, unsigned slots);
+/* o3ds60 [debug] steady_d1_retry_ms / steady_d1_retry_pct (default 2000 / 85 on an Old 3DS, 0 = off
+ * on a New 3DS): at D = 2 with D = 1 allowed, step up after this long (in ticks here; a failed try
+ * doubles it once, to 2x at most) when no hard miss is in the last 16 slots and the spike-free p90
+ * render fits pct% of a vblank. The stock up rule needs p90 + the 4 ms present margin to fit 80%
+ * (p90 <= ~9.3 ms) and backs off to 16 s: hw 9088d3a sat at D = 2 for whole windows with p90
+ * 8-12 ms. A miss at D = 1 repeats one frame, so a try that fails costs ~nothing against D = 2. */
+void gdx_steady_set_d1_retry(GdxSteadyCtl* ctl, unsigned long ticks, unsigned pct);
+/* o3ds3d [debug] stereo_mp_lock30: set the floor of D (clamped to 1..dMax). A D under the new floor
+ * moves up to it at once (its miss history cleared, no backoff); nothing steps below it until the
+ * floor is lowered again, so with dMin = 2 neither the stock up rule nor the D = 1 retry runs. */
+void gdx_steady_pin_min(GdxSteadyCtl* ctl, int dMin);
 /* Percentile of the ring with the isolated-spike renders left out. */
 uint64_t gdx_steady_rw_pct_clean(const GdxSteadyCtl* ctl, int pct);
 /* Percentile (0..100) of the render-work ring; 0 when empty. */
 uint64_t gdx_steady_rw_pct(const GdxSteadyCtl* ctl, int pct);
 /* Smallest D in [dMin, dMax] whose slot fits `rw` at margin num/den (dMax when none does). */
 int gdx_steady_pick(const GdxSteadyCtl* ctl, uint64_t rw, unsigned num, unsigned den);
+/* NETTICK: 1 when a slot start `late` ticks past its vblank would have made that vblank (within
+ * half a period, the start's own tolerance) had the lockstep pad wait `netWait` not held it: the
+ * peers held this console, its own work was on time ([debug] steady_lockstep_netmiss). */
+int gdx_steady_late_by_net(uint64_t late, uint64_t netWait, uint64_t period);
+/* o3ds-mp16 [debug] steady_d1_drift: the vblank a D = 1 slot's frame reaches the display -- the
+ * first vblank after the slot's own (slotVblank + period) that the present (`now`) still makes with
+ * `margin` to spare -- and whether that frame REPEATED the one before (it reached the display 2 or
+ * more vblanks after the previous slot's frame: one vblank showed the old frame again). A D = 1
+ * console whose slots cost a little over a vblank drifts: every start is later than the last, the
+ * start rule ("its vblank passed by half a period") calls ~7 slots in a row missed, yet only one
+ * vblank in ~14 repeats a frame. prevDisplay 0 = no previous slot (never a repeat). The margin is the
+ * present rule's conservative GPU allowance, so a present inside it counts as reaching the vblank
+ * after: repeats are an upper bound, and steady_d1_drift only ever forgives a start-rule miss that
+ * is not one (it never adds a miss). */
+uint64_t gdx_steady_d1_display(uint64_t slotVblank, uint64_t now, uint64_t margin, uint64_t period);
+int gdx_steady_d1_repeats(uint64_t prevDisplay, uint64_t display, uint64_t period);
 
 /* ---- RACE0: every tick in races, the other mode everywhere else (pure; host-tested) ----
  *
@@ -299,6 +347,17 @@ int gdx3ds_frameskip_game_post_finish(void);
  * refuses when rtMode != 0, emits the init receipt. */
 void gdx3ds_frameskip_init(int rtMode);
 
+/* NETTICK: a lockstep race starts / ends (gdx3ds_mp_online.c SetPhase). While on, the steady
+ * present hold is off ([debug] steady_lockstep_hold = 1 keeps it) and the cost samples leave out
+ * the pad wait reported below. */
+void gdx3ds_frameskip_set_lockstep(int on);
+/* NETTICK: this iteration's pad exchange waited `ticks` (ARM11 ticks) for a peer. Two callers,
+ * summed: WaitReady's wait for the peers' pads (gdx3ds_p2p_wait_rx: the socket service thread's
+ * rx event, or the inline / local-wireless 0.5 ms poll) and the mp-timesync pacing sleep before
+ * it (gdx3ds_mpts_pace: the console that is ahead stretches the tick). Neither is this console's
+ * cost. */
+void gdx3ds_frameskip_note_net_wait(uint64_t ticks);
+
 /* 1 when the lever is on (either mode). */
 int gdx3ds_frameskip_enabled(void);
 
@@ -334,6 +393,8 @@ void gdx3ds_frameskip_end_iteration(unsigned long frame);
  * before EndFrame: STEADY holds the present to its slot's vblank and scores the slot. A no-op
  * in every other mode. */
 void gdx3ds_frameskip_before_present(void);
+/* o3ds60: right after the paced render's EndFrame ([steadyd1] fe= : EndFrame's share of post). */
+void gdx3ds_frameskip_after_present(void);
 
 /* HITCH receipt: the steady slot's D (0 when steady is off) and whether the latest scored slot
  * missed its vblank. */

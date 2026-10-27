@@ -52,6 +52,13 @@ extern "C" void gdx3ds_filelog_write(const char* msg, size_t len) __attribute__(
 extern "C" {
 #include "gdx3ds_gfx_shader_shbin.h"
 }
+#include "gdx3ds_prewrite.h" /* o3ds3d: [debug] prewrite / gpumem */
+/* o3ds3d [prewrite]: a framebuffer clear or copy writes only if it queues a GX entry (a zclear_elide
+ * clear queues none), so it is bracketed by two polls instead of stamped at its entry. */
+struct GdxPwGxBracket {
+    GdxPwGxBracket() { GDX3DS_PW_POLL(); }
+    ~GdxPwGxBracket() { GDX3DS_PW_POLL(); }
+};
 
 /* nrr/gdx3ds_nrr_internal.h, defined below via gfx_citro3d_nrr.inc (included at the end of
  * namespace Fast): forward-declared here so StartFrame() can call it eagerly (nimenu W1/M2,
@@ -1812,6 +1819,27 @@ void DispModeFactors(int mode, float* sxScene, float* syScene, float* sxUi, floa
     }
 }
 
+/* [display] widescreen (port/3ds/gdx3ds_widescreen.h): the kind of race frame the game side
+ * published, latched at each StartFrame. 0 (lever off, menus) leaves every border mode exactly
+ * as above. 1 (1P race): the game already opened the full 320x240 frame (RemoveBorders) and the
+ * picture is 5:3, so nothing is scaled. 2 (VS race): each view keeps the N64 split frame and the
+ * mode's SCENE scale; the UI is never scaled, so edge-anchored HUD stays on screen. Weak: the DL
+ * harness links this backend without the port. */
+extern "C" int gdx3ds_widescreen_frame_kind(void) __attribute__((weak));
+int sDispWideKind = 0;
+/* This frame's factors {scene x, scene y, ui x, ui y}, computed once in StartFrame (the scissor
+ * expansion reads them instead of re-deriving the mode: ApplyScissorRect is NRR-hot). */
+float sDispFrameFx[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+
+void DispFrameFactors(float* sxScene, float* syScene, float* sxUi, float* syUi) {
+    DispModeFactors(sDispMode, sxScene, syScene, sxUi, syUi);
+    if (sDispWideKind == 1) {
+        *sxScene = *syScene = *sxUi = *syUi = 1.0f;
+    } else if (sDispWideKind == 2) {
+        *sxUi = *syUi = 1.0f;
+    }
+}
+
 /* out = base with the incoming clip-x column scaled by sx and clip-y by sy
  * (out_j = sum_i base[j][i] * in_i: scaling an INPUT axis scales its column). */
 void DispScaleMatrix(C3D_Mtx* out, const C3D_Mtx& base, float sx, float sy) {
@@ -1880,6 +1908,7 @@ static void GdxHwsFlush(const void* addr, u32 size, int kind = GDX3DS_HWFL_OTHER
 }
 
 static void GdxFlushDataCache(int kind, const void* addr, u32 size) {
+    GDX3DS_PW_NOTE(GDX3DS_PW_FLUSH); /* o3ds3d [prewrite] */
     const int hwfl = kind == GDX3DS_PROF_GSP_VBO ? GDX3DS_HWFL_VBO : GDX3DS_HWFL_TEX;
     if (gdx3ds_prof_active == 0) {
         GdxHwsFlush(addr, size, hwfl);
@@ -1956,6 +1985,10 @@ void GfxRenderingAPIC3D::StartFrame() {
         gdx3ds_replay_frame_begin(); /* C6: a self-contained command list, a fresh site table */
     }
     C3D_FrameDrawOn(mFramebuffers[0].target);
+    if (!mStereoEnabled && Gdx3dsStereo::WantInit()) {
+        mStereoEnabled = Gdx3dsStereo::Init(); /* o3ds60: the Home 3D button, in a 2D-booted session */
+        C3D_FrameDrawOn(mFramebuffers[0].target);
+    }
     if (mStereoEnabled) {
         // Slider poll + right-target frame queueing; re-binds the main target.
         Gdx3dsStereo::FrameBegin(mFramebuffers[0].target);
@@ -1987,13 +2020,19 @@ void GfxRenderingAPIC3D::StartFrame() {
     sDispProjLast = &mFixupMatrix;
     /* MENU DISP: derive this frame's scene/UI projection variants (live: a menu mode
      * flip lands here on the very next frame; trivial cost — 8 multiplies each). */
+    sDispWideKind = (&gdx3ds_widescreen_frame_kind != nullptr) ? gdx3ds_widescreen_frame_kind() : 0;
     if (DispModeLatched() > 0) {
         float sxS, syS, sxU, syU;
-        DispModeFactors(sDispMode, &sxS, &syS, &sxU, &syU);
+        DispFrameFactors(&sxS, &syS, &sxU, &syU);
+        sDispFrameFx[0] = sxS;
+        sDispFrameFx[1] = syS;
+        sDispFrameFx[2] = sxU;
+        sDispFrameFx[3] = syU;
         DispScaleMatrix(&sDispProjScene, mFixupMatrix, sxS, syS);
         DispScaleMatrix(&sDispProjUi, mFixupMatrix, sxU, syU);
     }
     mFrameActive = true;
+    gdx3ds_pw_startframe_done(); /* o3ds3d [prewrite]: StartFrame's own setup is the baseline */
 }
 
 /* Flush the not-yet-flushed tail of the frame's VBO appends in ONE svc, called
@@ -2006,6 +2045,12 @@ void GfxRenderingAPIC3D::FlushPendingVbo() {
                           (u32)((mVboOffsetFloats - mVboFlushedFloats) * sizeof(float)));
         mVboFlushedFloats = mVboOffsetFloats;
     }
+}
+
+/* o3ds3d [prewrite] (gdx3ds_prewrite.c): the VBO pool cursor, a first-write poll. */
+extern "C" uint32_t gdx3ds_c3d_vbo_used_floats(void) {
+    GfxRenderingAPIC3D* api = sGdxOracleApi;
+    return api != nullptr ? (uint32_t)api->DiagVboUsedFloats() : 0u;
 }
 
 /* C5 Stage 4 [overlap] (gdx3ds_overlap.c): before a mid-frame kick submits the command list built
@@ -2023,6 +2068,7 @@ void GfxRenderingAPIC3D::EndFrame() {
     if (!mInitialized || !mFrameActive) {
         return;
     }
+    gdx3ds_pw_frame_end((uint32_t)(mVboOffsetFloats * sizeof(float)), (uint32_t)kVboPoolBytes); /* o3ds3d */
     FlushPendingVbo();
     if (HsxGpuHashOn()) { /* [debug] hsx_gpuhash: this frame's draw command words */
         GFX_C3D_LOG("[hsxg] f=%lu h=%08lx d=%u wrap=%u lean=%lu runs=%lu\n", (unsigned long)mFrameIndex,
@@ -2058,6 +2104,7 @@ void GfxRenderingAPIC3D::EndFrame() {
     }
     gdx3ds_gpucensus_before_frame_end(); /* n60gpu: fill-count modes patch the lists here (else no-op) */
     C3D_FrameEnd((u8)gdx3ds_overlap_frame_end_flags()); /* 0 (stock) unless [debug] endflush_cmdlist */
+    gdx3ds_pw_after_frame_end(); /* o3ds3d [gpumem]: the frame's command-buffer words */
     if (gdx3ds_gputl_on()) { /* n60gpu: [debug] gputl classifies this frame's GX entries */
         const C3D_RenderTarget* mt = mFramebuffers[0].target;
         const C3D_RenderTarget* rt = mStereoEnabled ? Gdx3dsStereo::RightTarget() : nullptr;
@@ -2689,6 +2736,7 @@ unsigned long sAtlasPageLastUsed[kAtlasMaxPages] = {};
  * page's flipped row layout (same convention as UploadTexture: N64 row y -> padded row
  * pageH-1-y) and flush only the touched tile rows. */
 bool GfxRenderingAPIC3D::AtlasTryPlace(TextureC3D& t, const uint8_t* rgba32, uint32_t w, uint32_t h) {
+    GDX3DS_PW_NOTE(GDX3DS_PW_TEX); /* o3ds3d [prewrite] */
     const bool diag = AtlasDiagArmed() && (unsigned long)mFrameIndex >= sAtlasDiagFrom &&
                       (unsigned long)mFrameIndex <= sAtlasDiagTo;
     const uint32_t diagId = mBoundTextureIds[mLastSelectedTile];
@@ -2928,6 +2976,40 @@ void GfxRenderingAPIC3D::AtlasRelease(TextureC3D& t) {
     t.uOff = t.vOff = 0.0f;
 }
 
+/* native-all S1 [native] atlas_race_reset (gdx_texcache.cpp TexCacheAtlasReset): at the mode
+ * change into a race, every atlas view is released and every page deleted. Shelf packing places a
+ * view after whatever the previous screens left on the pages, so without this the race HUD's
+ * cells (page, position, neighbours, the stale texels around them) were a function of the menu
+ * path taken to reach the race, and any lever that changes menu texture traffic (ni_menu, tex_keep)
+ * moved them (nimenu-progress.md 4.1: 13 px of one race-gp-finish row). Pages are re-created on
+ * demand, zeroed (AtlasTryPlace), so the race always packs onto fresh pages in its own order.
+ * Mode-change only: the same deferred point ReclaimLinearForTexture deletes pages from. */
+GDX_COLD void GfxRenderingAPIC3D::AtlasResetAll() {
+    unsigned views = 0;
+    for (size_t id = 0; id < mTextures.size(); id++) {
+        TextureC3D& v = mTextures[id];
+        if (v.page < 0) {
+            continue;
+        }
+        v.page = -1;
+        v.ax = v.ay = 0;
+        v.uOff = v.vOff = 0.0f;
+        v.serial++; /* n60 nrr_trk: a cached state block naming this id is stale */
+        views++;
+    }
+    const unsigned pages = (unsigned)mAtlasPages.size();
+    for (size_t p = 0; p < mAtlasPages.size(); p++) {
+        if (mAtlasPages[p].inited) {
+            C3D_TexDelete(&mAtlasPages[p].tex);
+        }
+        sAtlasPageLastUsed[p] = 0;
+    }
+    mAtlasPages.clear();
+    mAtlasResets++;
+    GFX_C3D_LOG("[atlas] race reset: %u views released, %u pages freed (linfree %lu KiB)\n", views, pages,
+                (unsigned long)(linearSpaceFree() / 1024u));
+}
+
 void GfxRenderingAPIC3D::AtlasStats(unsigned long out[5]) const {
     out[0] = mAtlasPlaced;
     out[1] = mAtlasFull;
@@ -3092,6 +3174,7 @@ struct TexUploadTicksScope {
 } // namespace
 
 void GfxRenderingAPIC3D::UploadTexture(const uint8_t* rgba32Buf, uint32_t width, uint32_t height) {
+    GDX3DS_PW_NOTE(GDX3DS_PW_TEX); /* o3ds3d [prewrite] */
     GdxHwsScope hws(GDX3DS_HWS_TEXUP); /* hwprof [hwsite] texup */
     TexUploadTicksScope upTicks; /* N60TEX [texburst] upl= */
     {
@@ -3445,7 +3528,10 @@ void GfxRenderingAPIC3D::SetViewport(int x, int y, int width, int height) {
         /* The interpreter compresses clip x by the hor+ factor (4:3 content in the 5:3 window)
          * about the screen centre; the viewport's translation lives in the same compressed
          * space, so the offset takes the same factor (1.0 when widescreen is off / fixed). */
-        if (&gdx_get_widescreen_geometry_xscale != nullptr) {
+        /* [display] widescreen, VS race frames (kind 2): the views spread LINEARLY across the
+         * 5:3 frame, as the PC port's CalcAndSetViewport places them, each view's content hor+
+         * inside it; the split HUD anchors (WidescreenSplitUI) assume that layout. */
+        if (&gdx_get_widescreen_geometry_xscale != nullptr && sDispWideKind != 2) {
             mVpTx *= gdx_get_widescreen_geometry_xscale();
         }
         mVpSy = (float)height / 240.0f;
@@ -3503,8 +3589,7 @@ void GfxRenderingAPIC3D::ApplyScissorRect(int x, int y, int width, int height) {
          * so the game's safe-area scissor must open up by the same (scene) factors —
          * expansion only (factors >= 1), clamped to the screen: no draw that was
          * visible in authentic mode can be newly clipped. */
-        float sxS, syS, sxU, syU;
-        DispModeFactors(sDispMode, &sxS, &syS, &sxU, &syU);
+        const float sxS = sDispFrameFx[0], syS = sDispFrameFx[1];
         const float cx = 200.0f, cy = 120.0f;
         float x0 = ((float)x - cx) * sxS + cx;
         float y0 = ((float)y - cy) * syS + cy;
@@ -3612,10 +3697,15 @@ static int GdxStereoAnchorOn() {
 /* n60stereo frame replay: the draw is emitted ONCE for both eyes, with its stereo class as the
  * shader's stk row (the per-draw loop's classification: bridge override / ortho heuristic, [anchor]
  * prim-depth rects, texture-backed passes mono). citro3d uploads stk with the draw when it changed. */
-void GfxRenderingAPIC3D::StereoReplayRow(bool texBacked, float clsW, bool anchoredDraw) {
+int GfxRenderingAPIC3D::StereoReplayRow(bool texBacked, float clsW, bool anchoredDraw, const float* dst,
+                                        size_t numVerts) {
     int cls = Gdx3dsStereo::ClassifyDraw(clsW == 1.0f);
     if (texBacked) {
         cls = GDX3DS_STEREO_UI_ZERO_PARALLAX;
+    } else if (cls == GDX3DS_STEREO_UI_ZERO_PARALLAX && !anchoredDraw && Gdx3dsStereo::MenuFrame()) {
+        cls = StereoMenuUiClass(dst, numVerts); /* mstereo [stereo] menu_depth: the draw's layer */
+    } else if (cls == GDX3DS_STEREO_SCENE && Gdx3dsStereo::MenuFrame()) {
+        Gdx3dsStereo::MenuNoteModel(); /* mstereo: flat at the menu model layer (ClassRow) */
     } else if (anchoredDraw) {
         cls = GDX3DS_STEREO_ANCHORED;
         Gdx3dsStereo::SetAnchorDepth(mCurrentPrimDepth);
@@ -3637,9 +3727,232 @@ void GfxRenderingAPIC3D::StereoReplayRow(bool texBacked, float clsW, bool anchor
     if (!texBacked) {
         mFrameDrawsRightEye++;
     }
+    return cls;
+}
+
+/* mstereo [stereo] menu_depth: the layer of a screen-space draw of a menu frame. Its packed triangles
+ * are at `dst` (kOutStrideFloats, clip x y z w first); an indexed native draw or a gpuxf draw carries
+ * no plain triangle list there and stays at the screen plane. */
+GDX_COLD int GfxRenderingAPIC3D::StereoMenuUiClass(const float* dst, size_t numVerts) const {
+    if (mXf != nullptr || mNativeActive) {
+        return GDX3DS_STEREO_UI_ZERO_PARALLAX;
+    }
+    return Gdx3dsStereo::MenuUiClass(dst, (uint32_t)numVerts, (uint32_t)kOutStrideFloats);
+}
+
+static int GdxStereoCensusPeriod(); /* [debug] stereo_census, below */
+
+/* mstereo [stereo] menu_depth: a menu screen-space draw whose rectangles change layer class
+ * (Gdx3dsStereo::MenuUiRunEnd) is drawn run by run, each run at its own layer, both eyes, and the
+ * main target re-bound. False (nothing drawn) when the draw is one run: the caller draws it whole.
+ * Plain triangle lists only (no gpuxf, no indexed native draw). */
+GDX_COLD bool GfxRenderingAPIC3D::StereoMenuUiRuns(const float* dst, size_t numVerts, const C3D_Mtx* dispBase) {
+    if (mXf != nullptr || mNativeActive) {
+        return false;
+    }
+    const uint32_t n = (uint32_t)numVerts;
+    const uint32_t stride = (uint32_t)kOutStrideFloats;
+    uint32_t end = Gdx3dsStereo::MenuUiRunEnd(dst, n, stride, 0u);
+    if (end >= n) {
+        return false;
+    }
+    C3D_RenderTarget* back = mFramebuffers[mCurrentFramebuffer].target;
+    C3D_RenderTarget* mainTarget = back != nullptr ? back : mFramebuffers[0].target;
+    uint32_t first = 0u;
+    while (first < n) {
+        const float* run = dst + (size_t)first * stride;
+        const int cls = Gdx3dsStereo::MenuUiClass(run, end - first, stride);
+        if (GDX_UNLIKELY(GdxStereoCensusPeriod() != 0)) {
+            StereoCensusDraw(cls, run, end - first, dispBase, 'D');
+        }
+        StereoDrawRunBothEyes(cls, first, end - first, dispBase, mainTarget);
+        first = end;
+        if (first < n) {
+            end = Gdx3dsStereo::MenuUiRunEnd(dst, n, stride, first);
+        }
+    }
+    return true;
+}
+
+/* mstereo [stereo] menu_depth, stereo frame replay: a menu screen-space draw whose rectangles change
+ * layer class is drawn here run by run -- the projection uploaded once, each run with its own
+ * stk row -- and the caller skips its single emission. False (nothing drawn) when the draw is one
+ * run, or while a native replay records (its capture is per emission). */
+GDX_COLD bool GfxRenderingAPIC3D::StereoReplayMenuRuns(const float* dst, size_t numVerts, const C3D_Mtx* dispBase) {
+    if (mXf != nullptr || mNativeActive || gdx3ds_replay_rec) {
+        return false;
+    }
+    const uint32_t n = (uint32_t)numVerts;
+    const uint32_t stride = (uint32_t)kOutStrideFloats;
+    uint32_t end = Gdx3dsStereo::MenuUiRunEnd(dst, n, stride, 0u);
+    if (end >= n) {
+        return false;
+    }
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, mProjectionUniformLoc, dispBase);
+    sDispProjLast = nullptr; /* dispBase may be a stack temporary: the next draw re-uploads */
+    const int loc = Gdx3dsStereo::ReplayStkLoc();
+    uint32_t first = 0u;
+    while (first < n) {
+        const float* run = dst + (size_t)first * stride;
+        const int cls = Gdx3dsStereo::MenuUiClass(run, end - first, stride);
+        if (GDX_UNLIKELY(GdxStereoCensusPeriod() != 0)) {
+            StereoCensusDraw(cls, run, end - first, dispBase, 'R');
+        }
+        float row[4];
+        Gdx3dsStereo::ClassRow(cls, row);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER, loc, row[0], row[1], row[2], row[3]);
+        C3D_DrawArrays(GPU_TRIANGLES, (int)first, (int)(end - first));
+        first = end;
+        if (first < n) {
+            end = Gdx3dsStereo::MenuUiRunEnd(dst, n, stride, first);
+        }
+    }
+    return true;
+}
+
+/* One run [first, first + count) of the bound VBO range in both eyes at class `cls`'s eye matrices;
+ * leaves `mainTarget` bound. */
+GDX_COLD void GfxRenderingAPIC3D::StereoDrawRunBothEyes(int cls, uint32_t first, uint32_t count,
+                                                        const C3D_Mtx* dispBase, C3D_RenderTarget* mainTarget) {
+    C3D_Mtx eyeMtx;
+    Gdx3dsStereo::ComputeEyeMatrix(dispBase, -1, &eyeMtx, cls);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, mProjectionUniformLoc, &eyeMtx);
+    C3D_DrawArrays(GPU_TRIANGLES, (int)first, (int)count);
+    Gdx3dsStereo::BindTargetRaw(Gdx3dsStereo::RightTarget());
+    Gdx3dsStereo::ComputeEyeMatrix(dispBase, 1, &eyeMtx, cls);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, mProjectionUniformLoc, &eyeMtx);
+    C3D_DrawArrays(GPU_TRIANGLES, (int)first, (int)count);
+    Gdx3dsStereo::BindTargetRaw(mainTarget);
+}
+
+/* mstereo [debug] stereo_census = N (default 0 = off): on every N-th frame with the right-eye pass
+ * active, one `[stc]` receipt per legacy stereo draw -- what each menu element actually gets:
+ *   [stc] f=<frame> m=<gGameMode> i=<draw> p=<D per-draw loop | R frame replay> c=<class> xf=<0|1>
+ *         v=<verts> d=<NDC depth min>,<max> bb=<screen px x0>,<y0>,<x1>,<y1> s=<largest triangle extent px>
+ *         px=<disparity min>,<max>
+ * `px` is the on-screen disparity R - L in top-screen pixels (negative = in front of the screen) the
+ * draw's stk row produces at this frame's slider/iod/convergence, through the draw's own projection
+ * (DISP mode scale, a folded viewport). gpuxf draws are transformed on the CPU here (first 256
+ * vertices) exactly as shader.v.pica does. Cold, and only reached from the stereo branches. */
+static int GdxStereoCensusPeriod() {
+    static int sPeriod = -1;
+    if (sPeriod < 0) {
+        sPeriod = 0;
+        if (&gdx3ds_config_get_int != nullptr) {
+            const int n = gdx3ds_config_get_int("debug", "stereo_census", 0);
+            sPeriod = n > 0 ? n : 0;
+        }
+    }
+    return sPeriod;
+}
+
+extern "C" int gGameMode __attribute__((weak));
+
+GDX_COLD void GfxRenderingAPIC3D::StereoCensusDraw(int cls, const float* dst, size_t numVerts,
+                                                   const C3D_Mtx* dispBase, char path) {
+    const int period = GdxStereoCensusPeriod();
+    if (period == 0 || (mFrameIndex % (uint32_t)period) != 0) {
+        return;
+    }
+    static uint32_t sLastFrame = 0xFFFFFFFFu;
+    static unsigned sDrawNo = 0;
+    if (sLastFrame != mFrameIndex) {
+        sLastFrame = mFrameIndex;
+        sDrawNo = 0;
+    }
+    float row[4];
+    Gdx3dsStereo::ClassRow(cls, row);
+    float dMin = 1e30f, dMax = -1e30f, pMin = 1e30f, pMax = -1e30f;
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    float triSize = 0.0f; /* the largest extent of one triangle (the menu layer's size, screen draws) */
+    float tx0 = 0.0f, ty0 = 0.0f, tx1 = 0.0f, ty1 = 0.0f;
+    const bool xf = mXf != nullptr;
+    const size_t n = xf ? (mXf->nVerts < 256u ? mXf->nVerts : 256u) : (numVerts < 1024u ? numVerts : 1024u);
+    for (size_t v = 0; v < n; v++) {
+        float c[4];
+        if (xf) {
+            float ob[4];
+            if (mXfPosFloat) {
+                const float* fp = (const float*)((const uint8_t*)mXf->verts + v * 24u);
+                ob[0] = fp[0];
+                ob[1] = fp[1];
+                ob[2] = fp[2];
+            } else {
+                const int16_t* sp = (const int16_t*)((const uint8_t*)mXf->verts + v * 16u);
+                ob[0] = (float)sp[0];
+                ob[1] = (float)sp[1];
+                ob[2] = (float)sp[2];
+            }
+            ob[0] += mXf->off[0];
+            ob[1] += mXf->off[1];
+            ob[2] += mXf->off[2];
+            ob[3] = 1.0f;
+            float r1[4];
+            for (int i = 0; i < 4; i++) {
+                r1[i] = mXf->mvp[i][0] * ob[0] + mXf->mvp[i][1] * ob[1] + mXf->mvp[i][2] * ob[2] + mXf->mvp[i][3];
+            }
+            for (int i = 0; i < 4; i++) {
+                c[i] = r1[i] * mXf->conv[i] + r1[3] * mXf->convw[i];
+            }
+        } else {
+            const float* p = dst + v * kOutStrideFloats;
+            c[0] = p[0];
+            c[1] = p[1];
+            c[2] = p[2];
+            c[3] = p[3];
+        }
+        if (c[3] <= 1e-6f) {
+            continue; /* behind the eye: clipped */
+        }
+        const float d = c[2] / c[3];
+        const float ow = dispBase->r[3].x * c[0] + dispBase->r[3].y * c[1] + dispBase->r[3].z * c[2] +
+                         dispBase->r[3].w * c[3];
+        if (ow <= 1e-6f) {
+            continue;
+        }
+        const float o0 = dispBase->r[0].x * c[0] + dispBase->r[0].y * c[1] + dispBase->r[0].z * c[2] +
+                         dispBase->r[0].w * c[3];
+        const float o1 = dispBase->r[1].x * c[0] + dispBase->r[1].y * c[1] + dispBase->r[1].z * c[2] +
+                         dispBase->r[1].w * c[3];
+        const float sx = (-o1 / ow + 1.0f) * 200.0f;
+        const float sy = (1.0f - o0 / ow) * 120.0f;
+        const float skew = row[0] * c[0] + row[1] * c[1] + row[2] * c[2] + row[3] * c[3];
+        const float disp = 2.0f * 200.0f * (-dispBase->r[1].x) * skew / ow;
+        dMin = d < dMin ? d : dMin;
+        dMax = d > dMax ? d : dMax;
+        pMin = disp < pMin ? disp : pMin;
+        pMax = disp > pMax ? disp : pMax;
+        x0 = sx < x0 ? sx : x0;
+        x1 = sx > x1 ? sx : x1;
+        y0 = sy < y0 ? sy : y0;
+        y1 = sy > y1 ? sy : y1;
+        if (!xf && !mNativeActive) {
+            if (v % 3u == 0u) {
+                tx0 = tx1 = sx;
+                ty0 = ty1 = sy;
+            } else {
+                tx0 = sx < tx0 ? sx : tx0;
+                tx1 = sx > tx1 ? sx : tx1;
+                ty0 = sy < ty0 ? sy : ty0;
+                ty1 = sy > ty1 ? sy : ty1;
+            }
+            if (v % 3u == 2u) {
+                const float m = (tx1 - tx0) > (ty1 - ty0) ? (tx1 - tx0) : (ty1 - ty0);
+                triSize = m > triSize ? m : triSize;
+            }
+        }
+    }
+    if (dMin > dMax) {
+        dMin = dMax = pMin = pMax = x0 = y0 = x1 = y1 = 0.0f;
+    }
+    GFX_C3D_LOG("[stc] f=%lu m=%d i=%u p=%c c=%d xf=%d v=%u d=%.3f,%.3f bb=%d,%d,%d,%d s=%d px=%.1f,%.1f\n",
+                (unsigned long)mFrameIndex, (&gGameMode != nullptr) ? gGameMode : -1, sDrawNo++, path, cls,
+                xf ? 1 : 0, (unsigned)(xf ? mXf->nVerts : numVerts), (double)dMin, (double)dMax, (int)x0, (int)y0,
+                (int)x1, (int)y1, (int)triSize, (double)pMin, (double)pMax);
 }
 
 void GfxRenderingAPIC3D::DrawTriangles(float bufVbo[], size_t bufVboLen, size_t bufVboNumTris) {
+    GDX3DS_PW_NOTE(GDX3DS_PW_VBO); /* o3ds3d [prewrite] */
     /* [prof] DRW: repack loop + state application + C3D submission. RAII so the
      * early-outs (no shader / stride mismatch / VBO exhaustion) still close the
      * section; the parent TRI/RUN scope subtracts this via the child counter. */
@@ -4284,8 +4597,17 @@ void GfxRenderingAPIC3D::DrawTriangles(float bufVbo[], size_t bufVboLen, size_t 
         dispBase = &vpMtx;
         sDispProjLast = nullptr; /* never dedupe against a stack temporary */
     }
+    bool replayRunsDrawn = false; /* mstereo: a menu batch drawn run by run (StereoReplayMenuRuns) */
     if (mStereoEnabled && Gdx3dsStereo::ReplayActive()) {
-        StereoReplayRow(texBacked, clsW, anchoredDraw); /* n60stereo: one emission, the class row */
+        /* n60stereo: one emission, the class row */
+        const int replayCls = StereoReplayRow(texBacked, clsW, anchoredDraw, dst, numVerts);
+        if (GDX_UNLIKELY(replayCls == GDX3DS_STEREO_MENU_UI || replayCls == GDX3DS_STEREO_UI_ZERO_PARALLAX) &&
+            Gdx3dsStereo::MenuFrame() && !texBacked && !anchoredDraw) {
+            replayRunsDrawn = StereoReplayMenuRuns(dst, numVerts, dispBase);
+        }
+        if (GDX_UNLIKELY(GdxStereoCensusPeriod() != 0) && !replayRunsDrawn) {
+            StereoCensusDraw(replayCls, dst, numVerts, dispBase, 'R');
+        }
     }
     if (mStereoEnabled && Gdx3dsStereo::Active() && !Gdx3dsStereo::ReplayActive()) {
         if (gdx3ds_replay_rec) {
@@ -4297,6 +4619,9 @@ void GfxRenderingAPIC3D::DrawTriangles(float bufVbo[], size_t bufVboLen, size_t 
          * (texture-backed) passes render once, mono, at the center matrix. */
         C3D_Mtx eyeMtx;
         if (texBacked) {
+            if (GDX_UNLIKELY(GdxStereoCensusPeriod() != 0)) {
+                StereoCensusDraw(GDX3DS_STEREO_UI_ZERO_PARALLAX, dst, numVerts, dispBase, 'D');
+            }
             Gdx3dsStereo::ComputeEyeMatrix(&mFixupMatrix, 0, &eyeMtx);
             C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, mProjectionUniformLoc, &eyeMtx);
             IssueDraw();
@@ -4304,6 +4629,7 @@ void GfxRenderingAPIC3D::DrawTriangles(float bufVbo[], size_t bufVboLen, size_t 
             // Stereo class: bridge override, else ortho heuristic (clip w == 1
             // on vertex 0 -> HUD/menu content at zero parallax).
             int cls = Gdx3dsStereo::ClassifyDraw(clsW == 1.0f);
+            bool menuRunsDrawn = false;
             if (anchoredDraw) {
                 /* [anchor] a prim-depth ortho draw (race position markers: the game sets the
                  * machine's projected depth as prim depth before each marker rect) sits at that
@@ -4317,8 +4643,22 @@ void GfxRenderingAPIC3D::DrawTriangles(float bufVbo[], size_t bufVboLen, size_t 
                 if (mCurrentPrimDepth > sAnchorDMax) {
                     sAnchorDMax = mCurrentPrimDepth;
                 }
+            } else if (cls == GDX3DS_STEREO_UI_ZERO_PARALLAX && Gdx3dsStereo::MenuFrame()) {
+                /* mstereo [stereo] menu_depth: the draw's layer -- per run when its rectangles
+                 * change layer class (StereoMenuUiRuns draws it, run by run) */
+                menuRunsDrawn = StereoMenuUiRuns(dst, numVerts, dispBase);
+                if (!menuRunsDrawn) {
+                    cls = StereoMenuUiClass(dst, numVerts);
+                }
+            } else if (cls == GDX3DS_STEREO_SCENE && Gdx3dsStereo::MenuFrame()) {
+                Gdx3dsStereo::MenuNoteModel(); /* mstereo: flat at the menu model layer (ComputeEyeMatrix) */
             }
-            if (cls == GDX3DS_STEREO_UI_ZERO_PARALLAX) {
+            if (GDX_UNLIKELY(GdxStereoCensusPeriod() != 0) && !menuRunsDrawn) {
+                StereoCensusDraw(cls, dst, numVerts, dispBase, 'D');
+            }
+            if (menuRunsDrawn) {
+                /* drawn run by run, both eyes, the main target re-bound */
+            } else if (cls == GDX3DS_STEREO_UI_ZERO_PARALLAX) {
                 // HUD/2D at screen depth: one center matrix for both eyes —
                 // vertex uniforms survive the raw target switch, so upload once.
                 Gdx3dsStereo::ComputeEyeMatrix(dispBase, 0, &eyeMtx);
@@ -4342,7 +4682,7 @@ void GfxRenderingAPIC3D::DrawTriangles(float bufVbo[], size_t bufVboLen, size_t 
             mFrameDrawsRightEye++;
         }
         sDispProjLast = nullptr; // eye uploads overwrote the uniform: force re-upload
-    } else {
+    } else if (!replayRunsDrawn) {
         if (gdx3ds_replay_rec && mXf == nullptr && gdx3ds_replay_legacy_needs_proj(replayTag)) {
             sDispProjLast = nullptr; /* C6: a new pose re-emits the projection */
         } else if (gdx3ds_replay_rec && mXf != nullptr && gdx3ds_replay_xf_needs_proj()) {
@@ -4493,6 +4833,7 @@ GDX_COLD void GfxRenderingAPIC3D::CovNoteDraw(const ShaderProgramC3D& prg, bool 
 /* ------------------------------------------------------------------------------- */
 
 float* GfxRenderingAPIC3D::VboPackBegin(Gdx3dsVboPackParams* params, uint32_t* capTris) {
+    GDX3DS_PW_NOTE(GDX3DS_PW_VBO); /* o3ds3d [prewrite] */
     if (capTris != nullptr) {
         *capTris = 0;
     }
@@ -4618,6 +4959,7 @@ static inline size_t NativeIdxFloats(size_t nIndices) {
 
 float* GfxRenderingAPIC3D::NativeMeshBegin(Gdx3dsVboPackParams* params, uint32_t minVerts, uint32_t maxIndices,
                                            uint32_t* capVerts) {
+    GDX3DS_PW_NOTE(GDX3DS_PW_VBO); /* o3ds3d [prewrite] */
     if (!mInitialized || !mFrameActive || mCurrentShader == nullptr) {
         return nullptr;
     }
@@ -4788,6 +5130,7 @@ void GfxRenderingAPIC3D::XfRestore() {
 }
 
 void* GfxRenderingAPIC3D::NativeXfVertices(uint32_t nVerts) {
+    GDX3DS_PW_NOTE(GDX3DS_PW_VBO); /* o3ds3d [prewrite] */
     if (!mInitialized || !mFrameActive || mXfUnifLoc < 0 || nVerts == 0) {
         return nullptr;
     }
@@ -5174,6 +5517,7 @@ void GfxRenderingAPIC3D::StartDrawToFramebuffer(int fbId, float noiseScale) {
 
 void GfxRenderingAPIC3D::CopyFramebuffer(int fbDstId, int fbSrcId, int srcX0, int srcY0, int srcX1, int srcY1,
                                          int dstX0, int dstY0, int dstX1, int dstY1) {
+    const GdxPwGxBracket pwGx; /* o3ds3d [prewrite]: a queued fill / copy is seen by the polls around it */
     /* GX texture-copy path. Every 3DS surface (the screen target AND texture-backed
      * targets, since the portrait-allocation fix above) stores game content in the
      * same rotated tiled-RGBA8 convention: game-y along fb-x from 0, game-x along
@@ -5323,6 +5667,7 @@ extern "C" int gdx3ds_zclr_phase(void) {
 }
 
 void GfxRenderingAPIC3D::ClearFramebuffer(bool color, bool depth) {
+    const GdxPwGxBracket pwGx; /* o3ds3d [prewrite]: a queued fill / copy is seen by the polls around it */
     if (mCurrentFramebuffer >= (int)mFramebuffers.size()) {
         return;
     }
@@ -5629,6 +5974,9 @@ extern "C" int gdx3ds_tex_page(uint32_t texId) {
 extern "C" uint32_t gdx3ds_tex_bytes(uint32_t texId) { /* N60TEX [debug] tex_keep */
     return GdxCitro3dRendererSingleton().TexBytes(texId);
 }
+extern "C" void gdx3ds_atlas_reset_all(void) { /* native-all S1 [native] atlas_race_reset */
+    GdxCitro3dRendererSingleton().AtlasResetAll();
+}
 extern "C" void gdx3ds_atlas_stats(unsigned long out[5]) {
     GdxCitro3dRendererSingleton().AtlasStats(out);
 }
@@ -5715,6 +6063,7 @@ extern "C" int Gdx_NativeBatchOpen(void) {
 }
 
 extern "C" float* Gdx_NativeBatchCursor(void) {
+    GDX3DS_PW_NOTE(GDX3DS_PW_VBO); /* o3ds3d [prewrite] */
     if (!sNb.open) {
         return nullptr;
     }
@@ -5723,6 +6072,7 @@ extern "C" float* Gdx_NativeBatchCursor(void) {
 }
 
 extern "C" float* Gdx_NativeBatchVerts(uint32_t nVerts) {
+    GDX3DS_PW_NOTE(GDX3DS_PW_VBO); /* o3ds3d [prewrite] */
     if (!sNb.open) {
         return nullptr;
     }

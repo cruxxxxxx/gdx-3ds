@@ -1,0 +1,94 @@
+diff --git a/src/game/racer.c b/src/game/racer.c
+--- a/src/game/racer.c
++++ b/src/game/racer.c
+@@ -2294,8 +2294,14 @@ void func_8008DBB8(Racer* arg0, s32 arg1) {
+ 
+ #if defined(PORT) && defined(__3DS__)
+ /* port/3ds/gdx3ds_autodrive.c: machineLod is written by Racer_Draw (the LAST view drawn, skipped
+-   on a skipped frame); in a lockstep session the simulation must not read it. */
++   on a skipped frame); in a lockstep session the simulation must not read it. MP30: every sim
++   read of it (the damage floor, the spin-out debris, the crash explosion, the wall, pair and
++   random sparks) goes through gdx_sim_machine_visible: outside a session it is the stock
++   machineLod != 0, in one it is decided without draw state (port/3ds/gdx3ds_autodrive.c). */
+ extern int gdx_sim_machine_visible(s32 machineLod);
++#define GDX_SIM_RACER_VISIBLE(racer) gdx_sim_machine_visible((racer)->machineLod)
++#else
++#define GDX_SIM_RACER_VISIBLE(racer) ((racer)->machineLod != 0)
+ #endif
+ 
+ void Racer_ReceiveDamage(Racer* racer, f32 damageStrength) {
+@@ -2324,7 +2330,7 @@ void Racer_ReceiveDamage(Racer* racer, f32 damageStrength) {
+             if (gEnableRaceSfx) {
+                 Audio_PlayerTriggerSEStart(racer->id, NA_SE_8);
+             }
+-            if (racer->machineLod != 0) {
++            if (GDX_SIM_RACER_VISIBLE(racer)) {
+                 if (racer->unk_28C == NULL) {
+                     x = y = z = 0.0f;
+                 } else {
+@@ -2374,7 +2380,7 @@ void Racer_ReceiveDamage(Racer* racer, f32 damageStrength) {
+         racer->stateFlags |= RACER_STATE_RECEIVED_DAMAGE;
+         if (racer->energy < 0.0f) {
+ #if defined(PORT) && defined(__3DS__)
+-            if (!gdx_sim_machine_visible(racer->machineLod)) {
++            if (!GDX_SIM_RACER_VISIBLE(racer)) {
+ #else
+             if (racer->machineLod == 0) {
+ #endif
+@@ -2429,7 +2435,7 @@ void Racer_HitWall(Racer* racer, f32 lateralVelocity, f32 wallDirection, f32 edg
+     }
+ 
+     if (lateralVelocity * wallDirection > 0.01f) {
+-        if (racer->machineLod != 0) {
++        if (GDX_SIM_RACER_VISIBLE(racer)) {
+             Effects_SpawnCollisionSparks(
+                 racer->segmentPositionInfo.pos.x + ((wallDirection * 15.0f) * racer->segmentBasis.z.x),
+                 racer->segmentPositionInfo.pos.y + ((wallDirection * 15.0f) * racer->segmentBasis.z.y),
+@@ -4758,7 +4764,7 @@ void Racer_UpdateFromControls(Racer* racer, Controller* controller) {
+         racer->bodyWhiteTimer--;
+     }
+     if (racer->spinOutTimer != 0) {
+-        if (!((*(vu32*) &gGameFrameCount + (0, racer->id)) & 3) && (racer->machineLod != 0)) {
++        if (!((*(vu32*) &gGameFrameCount + (0, racer->id)) & 3) && GDX_SIM_RACER_VISIBLE(racer)) {
+             sp10C.x = (s32) ((Math_Rand1() % 32) - 16) + racer->segmentPositionInfo.pos.x;
+             sp10C.y = (s32) ((Math_Rand1() % 32) - 16) + racer->segmentPositionInfo.pos.y;
+             sp10C.z = (s32) ((Math_Rand1() % 32) - 16) + racer->segmentPositionInfo.pos.z;
+@@ -4796,7 +4802,7 @@ void Racer_UpdateFromControls(Racer* racer, Controller* controller) {
+             racer->unk_17C = 10.0f;
+             sSpunOutRacers++;
+             Racer_RetireRacer(racer);
+-            if (racer->machineLod != 0) {
++            if (GDX_SIM_RACER_VISIBLE(racer)) {
+                 Effects_SpawnExplosion2(racer->segmentPositionInfo.pos.x, racer->segmentPositionInfo.pos.y,
+                                         racer->segmentPositionInfo.pos.z, racer->velocity.x, racer->velocity.y,
+                                         racer->velocity.z, 80.0f, racer);
+@@ -4892,7 +4898,7 @@ void Racer_UpdateFromControls(Racer* racer, Controller* controller) {
+         racer->bodyR = racer->bodyRF;
+         racer->bodyG = racer->bodyGF;
+         racer->bodyB = racer->bodyBF;
+-        if (((Math_Rand1() & 0x1FFFF) < 0x444) && (racer->machineLod != 0)) {
++        if (((Math_Rand1() & 0x1FFFF) < 0x444) && GDX_SIM_RACER_VISIBLE(racer)) {
+             var_fs1 = (((f32) (Math_Rand1() & 0x1FFFF) / 131071.0f) * 3.0f) - 1.5f;
+             var_fs0 = (((f32) (Math_Rand2() & 0x1FFFF) / 131071.0f) * 1.5f) + 0.5f;
+             var_ft4 = (((f32) (Math_Rand2() & 0x1FFFF) / 131071.0f) * 3.0f) - 1.5f;
+@@ -5328,7 +5334,7 @@ void Racer_Update(void) {
+                         if (var_fs0 < 0.0f) {
+                             var_fs0 = -var_fs0;
+                         }
+-                        if ((racer2->machineLod != 0) &&
++                        if (GDX_SIM_RACER_VISIBLE(racer2) &&
+                             (Effects_SpawnCollisionSparks(
+                                  ((racer->segmentPositionInfo.pos.x + racer2->segmentPositionInfo.pos.x) * 0.5f) +
+                                      (6.0f * racer->trueBasis.y.x),
+diff --git a/src/overlays/ovl_i3/cpu.c b/src/overlays/ovl_i3/cpu.c
+--- a/src/overlays/ovl_i3/cpu.c
++++ b/src/overlays/ovl_i3/cpu.c
+@@ -1176,7 +1176,7 @@ void Cpu_GenerateInputs(Racer* racer, Controller* controller) {
+         return;
+     }
+     controller->buttonCurrent = controller->buttonPressed = controller->buttonReleased = 0;
+-    if (racer->machineLod != 0) {
++    if (GDX_SIM_VISIBLE(racer)) {
+         sp70 = true;
+     } else {
+         sp70 = false;

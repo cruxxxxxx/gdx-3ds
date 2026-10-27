@@ -11,6 +11,7 @@
  *   cpuclip       0/1   Sutherland-Hodgman fallback (M2)
  *
  * This is the only TU in n64/ that includes LUS/citro3d headers. */
+#include <atomic>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h> /* atexit: [debug] nicensus final dump */
@@ -45,6 +46,7 @@ extern "C" {
 extern "C" int gdx3ds_config_get_int(const char* section, const char* key, int fallback);
 extern "C" int gdx3ds_native_lever(const char* key, int fallback);
 extern "C" int gdx3ds_config_loaded(void);
+extern "C" void gdx3ds_nrr_hud_pd_set(int value); /* gdx_nrr_hud.cpp (o3ds-cpucuts) */
 extern "C" void gdx3ds_filelog_write(const char* s, size_t n);
 extern "C" int gdx3ds_trectbatch_enabled(void) __attribute__((weak));
 /* The bridge's two memo levers, RESOLVED, for the [native] receipt (n64_gfx_bridge.cpp). */
@@ -54,6 +56,7 @@ extern "C" int gdx_bridge_memoorder(void) __attribute__((weak));
 extern "C" void gdx3ds_atlas_arm(int on) __attribute__((weak));
 extern "C" int gdx3ds_tex_page(uint32_t texId) __attribute__((weak));
 extern "C" uint32_t gdx3ds_tex_bytes(uint32_t texId) __attribute__((weak)); /* N60TEX tex_keep */
+extern "C" void gdx3ds_atlas_reset_all(void) __attribute__((weak)); /* native-all S1 atlas_race_reset */
 extern "C" void gdx3ds_vbopack_refresh(Gdx3dsVboPackParams* params) __attribute__((weak));
 /* C5 STAGE 0 [c5cat] (port/3ds/gdx3ds_mainprof.h): scene-category timing of the walk. Weak: the
  * DL harness links this library without the main-thread clock. */
@@ -232,6 +235,9 @@ class BackendC3D final : public gdxn::Backend {
     const unsigned long* AtlasEpochPtr() override {
         return mR->AtlasResetCountPtr();
     }
+    void AtlasResetAll() override {
+        if (&gdx3ds_atlas_reset_all != nullptr) gdx3ds_atlas_reset_all();
+    }
     void VboPackRefresh(Gdx3dsVboPackParams* p) override {
         if (&gdx3ds_vbopack_refresh != nullptr) gdx3ds_vbopack_refresh(p);
     }
@@ -258,6 +264,9 @@ int sLatched = 0;   /* 0 = not yet read, 1 = read */
  * 0 restores the linear-only scissor box, i.e. restores the clipped drop-down. EK builds
  * only, so the shipped .3dsx never sees this TU change. */
 int sEkWidgetScissor = 1;
+/* [native] ek_editmesh (gdx_ekpreview.cpp, o3dsek plan S5c): the course editor's preview memo. 0 off
+ * (default), 1 serve, 2 verify ([native] ek_editmesh_verify=1: stock draws, the memo compared). */
+int sEkEditMesh = 0;
 #endif
 int sInterpOn = 0;
 int sVerifyOn = 0;
@@ -273,6 +282,14 @@ int sDspCensus = 0;
  * sNicensusEvery = [debug] nicensus_every, frames between cumulative dumps (default 1800). */
 int sNicensus = 0;
 int sNicensusEvery = 1800;
+int sNicensusWipe = 0; /* menus-s4 [debug] nicensus_wipe: transition frames get their own sub-scope */
+/* [debug] ni_strict (native-all-plan.md S7, gdx_nicensus.cpp): dev-only census of every command a
+ * stock handler still runs, by screen x context x site x opcode. Default 0. 1 = COUNT (nothing dropped,
+ * output identical); 2 = drop is a TODO and counts like 1. It runs on the nicensus engine (sNicensus
+ * is raised for it) without nicensus's own [nicensus] receipts unless [debug] nicensus=1 too.
+ * sNiStrictEvery = [debug] ni_strict_every, frames between the compact periodic receipts. */
+int sNiStrict = 0;
+int sNiStrictEvery = 3600;
 /* [native] palhash: fold the live TLUT contents into the CI texture-cache key. Both caches key
  * CI entries on the palette's DRAM ADDRESS, which cannot see a TLUT rewritten in place at that
  * same address, so an animated palette serves whatever decode the entry was born with. */
@@ -571,9 +588,19 @@ static void NiMenuLatch() {
     const int requested = gdx3ds_config_get_int("native", "ni_menu", 0);
     const int level = (requested < 0 || requested > 2) ? 0 : requested;
     sInterp->NiMenuSet(level);
-    char ml[200];
-    snprintf(ml, sizeof(ml), "[nimenu] init ni_menu=%d (requested %d) nrr_hud=%d kept=%d%s", level, requested, sNrrHud,
-             gdx3ds_config_get_int("native", "nrr_hud_kept", 0),
+    sInterp->NiMenuVolDiagSet(gdx3ds_config_get_int("debug", "nimenu_voldiag", 0)); /* menus-s2: diagnostic */
+    /* menus-s2b [native] ni_menu_split (default 0): bits 1 FILLRECT chains, 2 texture loads -- a MENU run
+     * with no program runs as segments (gdx_nrr_menu.inc) */
+    const int split = gdx3ds_config_get_int("native", "ni_menu_split", 0);
+    sInterp->NiMenuSplitSet(level == 1 ? split : 0);
+    /* menus-s2b [native] ni_menu_keep (default 0): a volatile MENU run never empties the memo / pool */
+    const int keep = gdx3ds_config_get_int("native", "ni_menu_keep", 0);
+    sInterp->NiMenuKeepSet(level == 1 ? keep : 0);
+    char ml[256];
+    snprintf(ml, sizeof(ml),
+             "[nimenu] init ni_menu=%d (requested %d) nrr_hud=%d kept=%d split=%d (requested %d) keep=%d (requested %d)%s",
+             level, requested, sNrrHud, gdx3ds_config_get_int("native", "nrr_hud_kept", 0),
+             level == 1 ? (split & 3) : 0, split, (level == 1 && keep == 1) ? 1 : 0, keep,
              (level != 0 && sNrrHud == 0) ? " (runner inert: needs nrr_hud; MENU runs replay stock)" : "");
     RtLog(ml);
 }
@@ -605,6 +632,8 @@ void NrrHudLatch() {
     sInterp->NrrHudSet(sNrrHud, census, gdx3ds_config_get_int("native", "nrr_hud_clock", 0), wide);
     sInterp->NrrHudMemoSet(sNrrHud == 1 ? gdx3ds_config_get_int("native", "nrr_hud_memo", 0) : 0); /* n60gp */
     sInterp->NrrHudDepDiagSet(gdx3ds_config_get_int("debug", "nrr_hud_depdiag", 0)); /* n60intro: diagnostic lines */
+    /* [native] nrr_hud_pd (o3ds-cpucuts, default 1): a prim-depth word is a COL op (gdx_nrr_hud.cpp) */
+    gdx3ds_nrr_hud_pd_set(gdx3ds_config_get_int("native", "nrr_hud_pd", 1));
     /* [native] nrr_hud_late (n60intro, default 0): programs that survive the race intro's sliding
      * boxes -- bit 1 a program rectangle takes the live scissor (a block variant), bit 2 a wide load's
      * pitch is checked when it runs instead of every other tile being an entry dependency, bit 4 an
@@ -652,11 +681,17 @@ GDX_COLD int NcMarkerCtx(uint32_t p) {
 }
 
 GDX_COLD void OwnedNoopHookCensus(void* user, uint32_t w0, uint32_t w1, gdxn::Interp* interp) {
-    const int ctx = NcMarkerCtx((w0 >> 16) & 0xFFu);
+    const uint32_t p = (w0 >> 16) & 0xFFu;
+    const int ctx = NcMarkerCtx(p);
     const int prev = ctx >= 0 ? interp->NcSwitch(ctx) : -1;
+    /* [debug] ni_strict: the context's tag is the marker (an NRR marker: 0xC0 | its category) */
+    const int prevTag = ctx >= 0 ? interp->NcTag(p == GDX3DS_NRR_MARKER_P ? static_cast<int>(0xC0u | (w0 & 0x0Fu))
+                                                                            : static_cast<int>(p))
+                                 : -1;
     OwnedNoopHookBody(user, w0, w1, interp);
     if (prev >= 0) {
         interp->NcSwitch(prev);
+        interp->NcTag(prevTag);
     }
 }
 
@@ -763,8 +798,10 @@ int OwnedDlHookBody(void* user, const void* listPtr, gdxn::Interp* interp);
 
 GDX_COLD int OwnedDlHookCensus(void* user, const void* listPtr, gdxn::Interp* interp) {
     const int prev = interp->NcSwitch(gdxn::Interp::NC_MESH); /* [debug] nicensus */
+    const int prevTag = interp->NcTag(0xDE);                    /* [debug] ni_strict: the G_DL hook */
     const int taken = OwnedDlHookBody(user, listPtr, interp);
     interp->NcSwitch(prev);
+    interp->NcTag(prevTag);
     return taken;
 }
 
@@ -850,16 +887,48 @@ uint32_t sHistMismatches = 0;    /* M0 opcode-histogram receipt only (the bridge
 /* nirace [native] ni_race (gdx_nirace.cpp; nirace-progress.md): 0 off (default), 1 the race frame's
  * inter-marker spans run as compiled span programs, 2 verify (each compiled register group checked
  * against its stock handlers; the stock result stays). Not Tier-2. Refused under interp_verify.
- * Armed per task in a 1P race scope (GP, practice, time attack, death race). [debug] nirace_rcpt=N:
+ * Armed per task in a 1P race scope (GP, practice, time attack, death race), and in VS 2P-4P with
+ * [native] ni_view's NRR_NI_VIEW_RACE bit (native-vs). [debug] nirace_rcpt=N:
  * the [nirace] receipt every N race-scope frames (default 256 with the lever on; on its own it
  * prints the walker's commands per frame with the lever off -- the "before" number). */
 int sNiRace = 0;
 int sNiRaceReq = 0;
+/* menus-s2 [native] ni_menu_root (native-all-plan.md S2(a)): 0 off (default), 1 the span programs also
+ * run the root list of a non-race MENU frame -- the frame root every screen walks (the segment table,
+ * the colour / z image, the setup lists and matrices between the MENU runs), the ~57-110 cmds/f the
+ * menus had left after ni_menu. Same programs, same exactness argument as ni_race (every op is the
+ * stock handler on the live word or a checked store set); the level (verify) is ni_race's when that is
+ * on. Needs [native] ni_menu (the MENU runs are the spans' markers). Expansion Kit editor modes stay
+ * walked (their own track). */
+int sNiMenuRoot = 0;
+int sNiMenuRootReq = 0;
+/* menus-s4 [native] ni_menu_xition (native-all-plan.md S4; default 0, read only with ni_menu=1, refused
+ * under interp_verify): the menu transitions. On the render side, the mode-change frames -- the hide
+ * half of every wipe runs while gGameModeChangeState != GAMEMODE_UPDATE, and so does the one
+ * GAMEMODE_CHANGE_INIT frame between hide and appear -- keep the ni_menu_root span programs (the
+ * root was armed on steady frames only, so every hide frame walked its ~57-67 root words and, under a
+ * tiled wipe, 64 tiles' matrix / vertex / triangle words). The game side (gdx3ds_hud_capture.c
+ * gdxmenu_capture_xition) reads the same key. [debug] xition_mask (default all) bisects the parts:
+ * 1 change-frame roots, 2 the INIT frame's capture (game side). Not here: the tiled whirl / spiral's
+ * 64 perspective tiles stay on the walker (VTX / TRI2 / their texture loads), and cutting a wipe's
+ * rectangles into segments of their own was tried and dropped -- the moving rectangles' words change
+ * every frame either way, so the cut segments decoded and replayed stock (records: 135 -> 412 / f). */
+int sNiMenuXition = 0;
+int sNiMenuXitionReq = 0;
+int sNiMenuXitionMask = 0;
+struct XitionWin {
+    uint32_t tasks, wipe[16]; /* tasks in the window; tasks that drew transition type t */
+    uint32_t changeRoot;      /* mode-change frames whose root ran as span programs */
+    uint64_t walkedWipe;      /* the walker's commands on the transition frames */
+};
+XitionWin sXitionWin = {};
 int sNiRaceMesh = 0; /* [native] ni_race_mesh (default 1): geometry segments drawn by the mesh path */
+int sNiRaceVs = 0;   /* native-vs: ni_view bit NRR_NI_VIEW_RACE -- the span programs in VS 2P-4P frames too */
+int sNiRaceFv = 0;   /* o3ds60: ni_fullview bit NRR_NI_VIEW_RACE -- the span programs in MP fullview frames */
 int sNiRcpt = 0;
 struct NiWin {
-    uint32_t frames[2];  /* [0] racing, [1] the rest of the race scope */
-    uint64_t walked[2];  /* the walker's commands (Counters::cmds) of those frames */
+    uint32_t frames[3];  /* [0] racing, [1] the rest of the race scope, [2] menu frames (ni_menu_root) */
+    uint64_t walked[3];  /* the walker's commands (Counters::cmds) of those frames */
 };
 NiWin sNiWin = {};
 uint32_t sNiWinFrames = 0;
@@ -877,13 +946,28 @@ GDX_COLD void NiRaceLatch() {
     if (sNiRace < 0 || sNiRace > 2 || sVerifyOn) {
         sNiRace = 0;
     }
-    sNiRcpt = gdx3ds_config_get_int("debug", "nirace_rcpt", sNiRace != 0 ? 256 : 0);
+    sNiMenuRootReq = gdx3ds_config_get_int("native", "ni_menu_root", 0);
+    sNiMenuRoot = (sNiMenuRootReq == 1 && !sVerifyOn && gdx3ds_config_get_int("native", "ni_menu", 0) != 0) ? 1 : 0;
+    sNiMenuXitionReq = gdx3ds_config_get_int("native", "ni_menu_xition", 0);
+    sNiMenuXition = (sNiMenuXitionReq == 1 && !sVerifyOn && gdx3ds_config_get_int("native", "ni_menu", 0) == 1) ? 1 : 0;
+    sNiMenuXitionMask = sNiMenuXition != 0 ? gdx3ds_config_get_int("debug", "xition_mask", 0xFF) : 0;
+    sNiRcpt = gdx3ds_config_get_int("debug", "nirace_rcpt", (sNiRace != 0 || sNiMenuRoot != 0) ? 256 : 0);
     /* round 7 (nirace-progress.md 4R7): default ON now that the stereo-replay refusal gates the
      * one known-unsafe case -- 2D matrix exact, ni_race=2 verify bad=0, 3D matrix byte-identical
      * to mesh=0, all under the fix. (The refusal itself moved from a per-task-begin latch,
      * `meshRefuseStereo`, to a live per-dispatch read of `gdx3ds_stereo_replay_frame` -- nimenu
      * W1, review finding H1; the field this comment used to name is gone.) */
     sNiRaceMesh = sNiRace != 0 ? (gdx3ds_config_get_int("native", "ni_race_mesh", 1) != 0 ? 1 : 0) : 0;
+    sNiRaceVs = (sNiRace != 0 && gdx3ds_nrr_ni_view_race() != 0) ? 1 : 0;
+    sNiRaceFv = (sNiRace != 0 && sNiRaceVs == 0 && gdx3ds_nrr_ni_fullview_race() != 0) ? 1 : 0;
+}
+
+/* o3ds60: the VS frame's race runs MP fullview (game/gdx3ds_fullview_game.c, read live like the race
+ * scope beside it). A frame at a fullview edge that reads the other way only runs span programs that
+ * check every word they were compiled from, so it stays exact. */
+extern "C" int gdx_fv_live_k(void) __attribute__((weak));
+static GDX_COLD bool NiRaceFullviewFrame() {
+    return sNiRaceFv != 0 && &gdx_fv_live_k != nullptr && gdx_fv_live_k() >= 0;
 }
 
 /* nirace [native] ni_race_mesh: a span program's geometry segment (G_VTX words + a triangle run, narrow
@@ -894,6 +978,20 @@ int NiSegHook(void* user, const void* seg, size_t cmds, const void* hint) {
     GdxInterpSeam* seam = static_cast<GdxInterpSeam*>(user);
     GdxOwnedSeamSetListHint(seam, hint);
     return gdx3ds_mesh_dress_hook_seam(*seam, seg, cmds, 8, 0, GdxOwnedSeamResolveVtx, seam);
+}
+
+/* [debug] ni_strict: 0 off (default), 1 count, 2 drop = TODO (counts). Raises the nicensus engine;
+ * sNicensusDumps keeps whether [nicensus]'s own receipts were asked for. */
+int sNicensusDumps = 0;
+int sNiStrictReq = 0;
+GDX_COLD void NiStrictLatch() {
+    sNicensusDumps = sNicensus;
+    sNiStrictReq = gdx3ds_config_get_int("debug", "ni_strict", 0);
+    sNiStrict = (sNiStrictReq == 1 || sNiStrictReq == 2) ? 1 : 0;
+    sNiStrictEvery = gdx3ds_config_get_int("debug", "ni_strict_every", 3600);
+    if (sNiStrict != 0) {
+        sNicensus = 1;
+    }
 }
 
 void Latch() {
@@ -913,6 +1011,8 @@ void Latch() {
     sNicensus = gdx3ds_config_get_int("debug", "nicensus", 0) != 0 ? 1 : 0;
     NiRaceLatch(); /* nirace [native] ni_race */
     sNicensusEvery = gdx3ds_config_get_int("debug", "nicensus_every", 1800);
+    sNicensusWipe = gdx3ds_config_get_int("debug", "nicensus_wipe", 0) != 0 ? 1 : 0; /* menus-s4 */
+    NiStrictLatch(); /* [debug] ni_strict */
     /* NOT Tier-2 (it is absent from kTier2Levers in gdx3ds_native_cfg.c), so `all=1` neither
        turns it on nor off -- it now defaults ON in its own right, and `all=1 interp=1` is one
        of the two configurations the corpus gate runs it in. An explicit `timgmemo = 0` is
@@ -976,6 +1076,10 @@ void Latch() {
     sTriMemo = gdx3ds_config_get_int("native", "trimemo", 0) != 0 ? 1 : 0;
 #ifdef EXPANSION_KIT
     sEkWidgetScissor = gdx3ds_config_get_int("debug", "ek_widget_scissor", 1) != 0;
+    sEkEditMesh = gdx3ds_config_get_int("native", "ek_editmesh", 0) != 0 ? 1 : 0;
+    if (sEkEditMesh != 0 && gdx3ds_config_get_int("native", "ek_editmesh_verify", 0) != 0) {
+        sEkEditMesh = 2;
+    }
 #endif
     /* ownfold IS Tier-2 (`all=1` turns it on, exactly as it turns on fx_hud -- they are the
        same fold, one per interpreter); an explicit `ownfold = 0` still wins. */
@@ -1532,8 +1636,36 @@ extern "C" void gdxn_logf(const char* fmt, ...) {
 /* The bridge's texture-cache drain broadcasts into the owned cache through these (weakly
  * referenced there, so desktop and the DL harness link nothing). Render thread: the drain is
  * only ever called from GdxGfxJobRun, the VI fallback present, or gdx_ninterp_job_run. */
+/* native-all S1 [native] atlas_race_reset (default 0 = the pre-S1 path until hardware S0 clears it; 1 = reset): gdx_rdram_mode_reset
+ * asks for it on the mode change into a race, before it queues the clear below; the clear
+ * consumes it. Atomic: under the render thread the clear is drained on core 2. */
+static std::atomic<int> sAtlasResetAsked{0};
+static int sAtlasRaceReset = -1;
+extern "C" void gdx_ninterp_atlas_reset_request(void) {
+    sAtlasResetAsked.store(1, std::memory_order_release);
+}
+
+GDX_COLD static void AtlasRaceResetIfAsked() {
+    if (sAtlasResetAsked.exchange(0, std::memory_order_acq_rel) == 0) {
+        return;
+    }
+    if (sAtlasRaceReset < 0) {
+        sAtlasRaceReset = gdx3ds_config_get_int("native", "atlas_race_reset", 0) != 0 ? 1 : 0;
+        char line[96];
+        snprintf(line, sizeof(line), "[atlas] init atlas_race_reset=%d", sAtlasRaceReset);
+        RtLog(line);
+    }
+    if (sAtlasRaceReset != 0) {
+        const unsigned retired = sInterp->TexCacheAtlasReset();
+        char line[96];
+        snprintf(line, sizeof(line), "[atlas] race entry: %u atlas-backed cache entries retired", retired);
+        RtLog(line);
+    }
+}
+
 extern "C" void gdx_ninterp_texcache_clear(void) {
     if (sInterp != nullptr) {
+        AtlasRaceResetIfAsked(); /* native-all S1: before the clear, so tex_keep keeps no view */
         sInterp->TexCacheClear();
         sInterp->HudMemoClear(); /* [native] hud_batch: the source/hash memos follow the cache */
         sInterp->HudDirectClear(); /* [native] hud_direct: so does the per-source hash memo */
@@ -1570,6 +1702,12 @@ extern "C" int gdx_ninterp_cpuclip(void) {
 extern "C" int gdx_ninterp_ekwidgetscissor(void) {
     Latch();
     return sEkWidgetScissor;
+}
+
+/* [native] ek_editmesh: read by the Interp constructor (gdx_ekpreview.cpp carries the design). */
+extern "C" int gdx_ninterp_ekeditmesh(void) {
+    Latch();
+    return sEkEditMesh;
 }
 #endif
 
@@ -1679,6 +1817,17 @@ GDX_COLD int NiMenuGameMode() {
     return mode;
 }
 
+/* menus-s4: the transition type the game's Transition_Draw drew this frame (decomp transition.c;
+ * 0 none, 10 instant). [debug] nicensus_wipe=1 files such frames under the "wipe" sub-scope. */
+extern "C" int32_t gGdxXitionDrawnType __attribute__((weak));
+static GDX_COLD int NcWipeNow() {
+    if (&gGdxXitionDrawnType == nullptr) {
+        return 0;
+    }
+    const int type = static_cast<int>(gGdxXitionDrawnType);
+    return (type > 0 && type < 10) ? type : 0;
+}
+
 static GDX_COLD int NcBucketNow() {
     if (&gdx3ds_frameskip_game_race_scope == nullptr) {
         return (gdxn::Interp::kNcModes - 1) * gdxn::Interp::kNcSubs;
@@ -1691,6 +1840,8 @@ static GDX_COLD int NcBucketNow() {
     int sub = 0;
     if (&gTitleDemoState != nullptr && gTitleDemoState != 0) {
         sub = 5; /* the attract demo: its races are not the player's */
+    } else if (sNicensusWipe != 0 && NcWipeNow() != 0) {
+        sub = 6; /* menus-s4: a transition drawn (mode change or not) */
     } else if (change != 0) {
         sub = 4;
     } else if (raceScope != 0) {
@@ -1718,6 +1869,7 @@ static GDX_COLD void NcNrrRead(uint32_t out[3][kNcNrrCats]) {
 static GDX_COLD void NcTaskBegin() {
     NcNrrRead(sNcNrr0);
     sInterp->NcFrameBegin(NcBucketNow());
+    sInterp->NcFrameWipe(NcWipeNow()); /* menus-s4: the bucket's transition-type histogram */
 }
 
 static GDX_COLD void NcTaskEnd() {
@@ -1735,26 +1887,64 @@ static GDX_COLD void NcTaskEnd() {
 static GDX_COLD void NcAtExit() {
     if (sInterp != nullptr) {
         sInterp->NcDump("final", 1.0 / CPU_TICKS_PER_MSEC);
+        sInterp->NsDump("final", true); /* [debug] ni_strict (no-op when off) */
     }
 }
 
+/* menus-s2 [native] ni_menu_root: a mode whose frame is a MENU region (gdxmenu_capture's set: not an
+ * on-track race mode) and not an Expansion Kit editor / the EAD demo (COURSE_EDIT 13, CREATE_MACHINE 16,
+ * EAD_DEMO 22: walked as before, their own track). */
+static GDX_COLD bool NiMenuRootMode(int mode) {
+    return mode >= 0 && mode != 13 && mode != 16 && mode != 22 && mode < gdxn::Interp::kNcModes - 1;
+}
+
+/* menus-s4 ni_menu_xition bit 1: a mode-change frame of a non-race mode keeps the menu root programs.
+ * The race draw modes (GP 1, practice 2, VS 3-5, time attack 14, death race 21) are not menu frames
+ * even while they change (the race scope reads 0 then, so `onTrack` alone cannot tell): gdxmenu_capture's
+ * own exclusion set. */
+static GDX_COLD bool NiXitionChangeRoot(int mode) {
+    if ((sNiMenuXitionMask & 1) == 0) {
+        return false;
+    }
+    return mode != 1 && mode != 2 && mode != 3 && mode != 4 && mode != 5 && mode != 14 && mode != 21;
+}
+
 /* nirace [native] ni_race: the task's race scope (-1 outside it: the programs are disarmed), 0 racing,
- * 1 the rest of a 1P race scope (intro, post-finish). Arms the programs for the task. */
+ * 1 the rest of a 1P race scope (intro, post-finish); 2 a menu frame under [native] ni_menu_root. Arms
+ * the programs for the task. */
 static GDX_COLD int NiRaceScope() {
     int scope = -1;
+    int multiView = 0;
     if (&gdx3ds_frameskip_game_race_scope != nullptr) {
         int mode = 0, change = 0;
         const int onTrack = gdx3ds_frameskip_game_race_scope(&mode, &change);
-        if (onTrack != 0 && change == 0 && mode != 3 && mode != 4 && mode != 5) { /* VS 2P-4P excluded by design */
+        multiView = (mode == 3 || mode == 4 || mode == 5); /* GAMEMODE_VS_2P..VS_4P */
+        /* VS: ni_view's race bit (native-vs), or ni_fullview's while the race runs MP fullview (o3ds60) */
+        if (onTrack != 0 && change == 0 && (!multiView || sNiRaceVs != 0 || NiRaceFullviewFrame())) {
             scope = (gdx3ds_frameskip_game_racing() && !gdx3ds_frameskip_game_post_finish()) ? 0 : 1;
+        } else if (onTrack == 0 && sNiMenuRoot != 0 && NiMenuRootMode(mode) &&
+                   (change == 0 || (sNiMenuXition != 0 && NiXitionChangeRoot(mode))) &&
+                   (&gTitleDemoState == nullptr || gTitleDemoState == 0)) {
+            scope = 2;
+            if (change != 0) {
+                sXitionWin.changeRoot++; /* menus-s4 */
+            }
         }
     }
-    sInterp->NrrRaceArm(scope >= 0 && sNiRace != 0); /* the walk's start runs NrrRaceTaskBegin */
+    if (sNiRaceVs != 0 || sNiRaceFv != 0) {
+        /* native-vs: per-view span keys -- race scopes only (0/1); a menu-root frame (2) keeps the ordinal key */
+        sInterp->NrrRaceSetMultiView(scope >= 0 && scope != 2 && multiView != 0);
+    }
+    if (scope == 2) {
+        sInterp->NrrRaceArmMenu(true); /* the walk's start runs NrrRaceTaskBegin; no geometry segments */
+    } else {
+        sInterp->NrrRaceArm(scope >= 0 && sNiRace != 0); /* the walk's start runs NrrRaceTaskBegin */
+    }
     return scope;
 }
 
 static GDX_COLD void NiRaceTaskEnd(int scope, uint32_t walked) {
-    sInterp->NrrRaceArm(false);
+    sInterp->NrrRaceArmMenu(false);
     sNiWin.frames[scope]++;
     sNiWin.walked[scope] += walked;
     if (sNiRcpt <= 0 || ++sNiWinFrames < static_cast<uint32_t>(sNiRcpt)) {
@@ -1763,14 +1953,51 @@ static GDX_COLD void NiRaceTaskEnd(int scope, uint32_t walked) {
     char buf[512];
     const double r0 = sNiWin.frames[0] != 0 ? static_cast<double>(sNiWin.walked[0]) / sNiWin.frames[0] : 0.0;
     const double r1 = sNiWin.frames[1] != 0 ? static_cast<double>(sNiWin.walked[1]) / sNiWin.frames[1] : 0.0;
+    const double r2 = sNiWin.frames[2] != 0 ? static_cast<double>(sNiWin.walked[2]) / sNiWin.frames[2] : 0.0;
     int n = snprintf(buf, sizeof(buf), "[nirace] frames=%u racing=%u walked/f racing=%.1f other=%.1f | ni_race=%d",
                      sNiWinFrames, sNiWin.frames[0], r0, r1, sNiRace);
-    if (sNiRace != 0 && n > 0 && n < static_cast<int>(sizeof(buf))) {
+    if (sNiMenuRoot != 0 && n > 0 && n < static_cast<int>(sizeof(buf))) {
+        n += snprintf(buf + n, sizeof(buf) - static_cast<size_t>(n), " menu=%u walked/f menu=%.1f", sNiWin.frames[2], r2);
+    }
+    if ((sNiRace != 0 || sNiMenuRoot != 0) && n > 0 && n < static_cast<int>(sizeof(buf))) {
         sInterp->NrrRaceReceipt(buf + n, static_cast<int>(sizeof(buf)) - n);
     }
     RtLog(buf);
     sNiWin = {};
     sNiWinFrames = 0;
+}
+
+/* menus-s4 [xition] receipt, every 64 tasks that drew a transition (none otherwise): the tasks of the
+ * window by transition type drawn (t1 small tiles .. t9 wipe), the mode-change frames whose root ran as
+ * span programs, and the walker's commands per transition frame. */
+static GDX_COLD void XitionTaskEnd(uint32_t walked) {
+    const int type = NcWipeNow();
+    sXitionWin.tasks++;
+    if (type == 0) {
+        return;
+    }
+    sXitionWin.wipe[type]++;
+    sXitionWin.walkedWipe += walked;
+    uint32_t wipes = 0;
+    for (int t = 1; t < 16; t++) {
+        wipes += sXitionWin.wipe[t];
+    }
+    if (wipes < 64) {
+        return;
+    }
+    char buf[400];
+    int n = snprintf(buf, sizeof(buf), "[xition] window tasks=%u wipe=%u", sXitionWin.tasks, wipes);
+    for (int t = 1; t < 16 && n > 0 && n < static_cast<int>(sizeof(buf)); t++) {
+        if (sXitionWin.wipe[t] != 0) {
+            n += snprintf(buf + n, sizeof(buf) - static_cast<size_t>(n), " t%d=%u", t, sXitionWin.wipe[t]);
+        }
+    }
+    if (n > 0 && n < static_cast<int>(sizeof(buf))) {
+        n += snprintf(buf + n, sizeof(buf) - static_cast<size_t>(n), " | changeroot=%u walked/f=%.1f",
+                      sXitionWin.changeRoot, static_cast<double>(sXitionWin.walkedWipe) / wipes);
+    }
+    RtLog(buf);
+    sXitionWin = {};
 }
 
 /* Called from gdx_gfx_job_run on the render thread with the job's segment view installed.
@@ -1816,16 +2043,24 @@ extern "C" int gdx_ninterp_job_run(GdxGfxJob* job) {
         sInterp->HudSetRetain(sHudRetain, gdx3ds_config_get_int("native", "hudretclock", 0));
         sInterp->HsxSetLevel(sHudSkyEmit); /* [native] hudsky_emit (hudsky) */
         NrrHudLatch(); /* [native] nrr_hud (n60hud) */
-        sInterp->NrrRaceSet(sNiRace, gdx3ds_config_get_int("debug", "nirace_log", 0)); /* nirace [native] ni_race */
+        sInterp->NrrRaceSet(sNiRace != 0 ? sNiRace : sNiMenuRoot,
+                            gdx3ds_config_get_int("debug", "nirace_log", 0)); /* nirace [native] ni_race / ni_menu_root */
         sInterp->NrrRaceRcptSet(sNiRcpt > 0); /* nimenu W4: kNiEnd's cold receipt tally, gated the same as the window */
         if (sNiRaceMesh != 0) {
             sInterp->NrrRaceSetSegHook(NiSegHook, sSeam);
         }
         {
-            char nl[160];
-            snprintf(nl, sizeof(nl), "[nirace] init ni_race=%d (requested %d) mesh=%d rcpt=%d%s", sNiRace, sNiRaceReq,
-                     sNiRaceMesh, sNiRcpt,
-                     (sNiRaceReq != 0 && sVerifyOn) ? " (REFUSED: interp_verify)" : "");
+            char nl[256];
+            snprintf(nl, sizeof(nl), "[nirace] init ni_race=%d (requested %d) mesh=%d rcpt=%d vs=%d fv=%d menu_root=%d (requested %d)%s%s",
+                     sNiRace, sNiRaceReq, sNiRaceMesh, sNiRcpt, sNiRaceVs, sNiRaceFv, sNiMenuRoot, sNiMenuRootReq,
+                     (sNiRaceReq != 0 && sVerifyOn) ? " (REFUSED: interp_verify)" : "",
+                     (sNiMenuRootReq != 0 && sNiMenuRoot == 0) ? " (menu_root REFUSED: needs ni_menu, not under interp_verify)" : "");
+            RtLog(nl);
+            snprintf(nl, sizeof(nl),
+                     "[xition] init ni_menu_xition=%d (requested %d) mask=0x%X menu_root=%d%s%s", sNiMenuXition,
+                     sNiMenuXitionReq, static_cast<unsigned>(sNiMenuXitionMask), sNiMenuRoot,
+                     (sNiMenuXitionReq != 0 && sNiMenuXition == 0) ? " (REFUSED: needs ni_menu=1, not under interp_verify)" : "",
+                     (sNiMenuXition != 0 && sNiMenuRoot == 0) ? " (change-frame roots inert: needs ni_menu_root=1)" : "");
             RtLog(nl);
         }
         DressLatch();
@@ -1835,19 +2070,33 @@ extern "C" int gdx_ninterp_job_run(GdxGfxJob* job) {
         sInterp->SetDlMemo(sVerifyOn ? 0 : gdx3ds_config_get_int("native", "dlmemo", 0));
         sInterp->SetDeadSetup(sVerifyOn ? 0 : gdx3ds_config_get_int("native", "deadsetup", 0));
         if (sNicensus != 0) {
-            /* [debug] nicensus: measurement only (counters + clocks; nothing drawn changes) */
-            sInterp->NcSet(1);
+            /* [debug] nicensus: measurement only (counters + clocks; nothing drawn changes). Engine only
+             * (2) when it is on for [debug] ni_strict alone. */
+            sInterp->NcSet(sNicensusDumps != 0 ? 1 : 2);
+            sInterp->NsSet(sNiStrict, static_cast<uint32_t>(sNiStrictEvery > 0 ? sNiStrictEvery : 0));
+            sInterp->NcTraceSet(gdx3ds_config_get_int("debug", "nicensus_trace", 0),
+                                gdx3ds_config_get_int("debug", "nicensus_trace_mode", -1),
+                                gdx3ds_config_get_int("debug", "nicensus_trace_skip", 0)); /* menus-s2 */
             if (!sInterp->NcOn()) {
                 sNicensus = 0;
+                sNicensusDumps = 0;
+                sNiStrict = 0;
             } else {
                 atexit(NcAtExit);
             }
         }
         {
             char nl[160];
-            snprintf(nl, sizeof(nl), "[nicensus] init nicensus=%d every=%d verify=%d", sNicensus, sNicensusEvery,
+            snprintf(nl, sizeof(nl), "[nicensus] init nicensus=%d every=%d verify=%d", sNicensusDumps, sNicensusEvery,
                      sVerifyOn ? 1 : 0);
             RtLog(nl);
+            snprintf(nl, sizeof(nl), "[nistrict] init ni_strict=%d (requested %d) mode=%s every=%d engine=%s",
+                     sNiStrict, sNiStrictReq, sNiStrict != 0 ? "count" : "off", sNiStrictEvery,
+                     sNiStrict != 0 ? "nicensus" : "-");
+            RtLog(nl);
+            if (sNiStrictReq == 2) {
+                RtLog("[nistrict] ni_strict=2 (drop) is not implemented (TODO S7): counting only, nothing dropped");
+            }
         }
     }
     /* The owned cache is the live one under interp=1 and GdxGfxJobRun -- where the LUS path
@@ -1993,18 +2242,24 @@ extern "C" int gdx_ninterp_job_run(GdxGfxJob* job) {
     if (GDX_UNLIKELY(sNicensus != 0)) {
         NcTaskBegin(); /* [debug] nicensus */
     }
-    const int niScope = (sNiRace != 0 || sNiRcpt > 0) ? NiRaceScope() : -1; /* nirace */
+    const int niScope = (sNiRace != 0 || sNiRcpt > 0 || sNiMenuRoot != 0) ? NiRaceScope() : -1; /* nirace */
     const uint32_t niCmds0 = sInterp->Stats().cmds;
     sInterp->DirectScope(0); /* C5 Stage 3b: a scope never outlives its task */
     sInterp->RunFrame(job, cfg, variant);
     if (GDX_UNLIKELY(niScope >= 0)) {
         NiRaceTaskEnd(niScope, sInterp->Stats().cmds - niCmds0); /* nirace receipt window */
     }
+    if (GDX_UNLIKELY(sNiMenuXition != 0)) {
+        XitionTaskEnd(sInterp->Stats().cmds - niCmds0); /* menus-s4 [xition] window */
+    }
     sInterp->DirectScope(0);
     sInterp->NrrHudTaskEnd();    /* [native] nrr_hud: the HUD's virtual loads into TMEM, the freshness sequence */
     sInterp->HudDirectTaskEnd(); /* [native] hud_direct: settle the TMEM the HUD still owes */
     sInterp->HudRetainTaskEnd(); /* [native] hudelem / hud_retain: the task's run table */
     sInterp->SkyTaskEnd();       /* [native] sky_retain / skyclock */
+#ifdef EXPANSION_KIT
+    sInterp->EkPvTaskEnd();    /* [native] ek_editmesh: the preview memo's receipt and idle free */
+#endif
     if (GDX_UNLIKELY(sNicensus != 0)) {
         NcTaskEnd(); /* [debug] nicensus (before the NRR window may reset its counters) */
     }

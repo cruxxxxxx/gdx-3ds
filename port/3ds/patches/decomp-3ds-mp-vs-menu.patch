@@ -1,0 +1,57 @@
+--- a/src/overlays/ovl_i6/main_menu.c
++++ b/src/overlays/ovl_i6/main_menu.c
+@@ -161,6 +161,20 @@
+ extern s32 gCourseIndex;
+ extern s32 gTransitionState;
+ extern s32 gLeoDriveConnectionState;
++
++#ifdef PORT
++/* mp-menus: with one pad, the VS icon opens the bottom screen's MULTIPLAYER menu (online and
++ * local wireless rooms; their races still run as stock VS) instead of the player-count step that
++ * needs a second controller. port/3ds/gdx3ds_bui.c defines both; weak so a build without the
++ * bottom-screen menus keeps the stock rule (the cursor skips VS). */
++extern int gdx_mp_vs_menu_available(void) __attribute__((weak));
++extern void gdx_mp_vs_menu_open(void) __attribute__((weak));
++
++static bool MainMenu_VsOpensMultiplayer(void) {
++    return gControllersConnected < 2 && gdx_mp_vs_menu_available != NULL && gdx_mp_vs_menu_open != NULL &&
++           gdx_mp_vs_menu_available();
++}
++#endif
+ 
+ const s32 kDefaultSubOptionLimits[] = { 2, 1, 0, 2, 0, 2, 0, 0 };
+ const s32 kMaxSubOptionLimits[] = { 3, 1, 0, 2, 0, 3, 0, 0 };
+@@ -202,7 +216,11 @@
+             }
+ #ifndef EXPANSION_KIT
+ #ifndef VERSION_JP
++#ifdef PORT
++            if ((gSelectedMode == MODE_VS_BATTLE) && (gControllersConnected < 2) && !MainMenu_VsOpensMultiplayer()) {
++#else
+             if ((gSelectedMode == MODE_VS_BATTLE) && (gControllersConnected < 2)) {
++#endif
+                 gSelectedMode = MODE_DEATH_RACE;
+             }
+ #endif
+@@ -222,7 +240,7 @@
+              * step and case 1's clamp bounced it straight back with the cancel sound. Same rule as
+              * the US arm. gControllersConnected counts every port the input bridge reports
+              * connected, so [debug] pads=N and a multiplayer session still reach VS. */
+-            if ((gSelectedMode == MODE_VS_BATTLE) && (gControllersConnected < 2)) {
++            if ((gSelectedMode == MODE_VS_BATTLE) && (gControllersConnected < 2) && !MainMenu_VsOpensMultiplayer()) {
+                 gSelectedMode = MODE_DEATH_RACE;
+             }
+ #endif
+@@ -265,6 +283,12 @@
+                 Audio_TriggerSystemSE(NA_SE_62);
+                 gAntiPiracyAddedDifficulty =
+                     (UNLOCK_EVERYTHING_ROMDATA(Object_Get(OBJECT_MAIN_MENU_UNLOCK_EVERYTHING)) & 0xFFFF) - 0x997A;
++#ifdef PORT
++                if ((gSelectedMode == MODE_VS_BATTLE) && MainMenu_VsOpensMultiplayer()) {
++                    gdx_mp_vs_menu_open(); /* the top screen stays on the grid */
++                    break;
++                }
++#endif
+                 switch (gSelectedMode) {
+                     case MODE_GP_RACE:
+                     case MODE_TIME_ATTACK:

@@ -47,6 +47,11 @@ static int sMaster = 0;
 static int sLevel[NRR_CAT_COUNT];
 static int sDirect = 0; /* [native] nrr_direct */
 static int sNiView = 0; /* [native] ni_view (niview): multi-view categories, bit (1 << cat) */
+/* o3ds60 [native] ni_fullview: category bits (ni_view's layout, NRR_NI_FULLVIEW_CATS only) that
+ * also apply while Race_Draw builds an MP fullview race (gdx_fv_k() >= 0: the one local view,
+ * full screen). Old 3DS preset 0x17A; 0 elsewhere. */
+static int sNiFullview = 0;
+extern int gdx_fv_k(void) __attribute__((weak)); /* game/gdx3ds_fullview_game.c: Race_Draw's latch */
 
 static NrrFrame sFrames[2];
 static int sFrameNext = 0;
@@ -118,6 +123,7 @@ static void LatchLevels(void) {
         sLevel[cat] = sMaster && gdx3ds_native_raw(kCatLever[cat], 0) != 0 ? 1 : 0;
     }
     sNiView = sMaster ? gdx3ds_native_raw("ni_view", 0) : 0;
+    sNiFullview = sMaster ? (gdx3ds_native_raw("ni_fullview", 0) & NRR_NI_FULLVIEW_BITS) : 0;
     sDirect = sMaster ? gdx3ds_native_raw("nrr_direct", 0) : 0;
     if (sDirect < 0 || sDirect > 2) {
         sDirect = 0;
@@ -176,6 +182,16 @@ int gdx3ds_nrr_level(int cat) {
  * unconditionally whenever gNumPlayers > 1 -- so at every real call site, if this check could ever
  * have fired, frame replay was already refused and the mismatch it guarded against could not occur.
  * Bit 0x200 (NRR_NI_VIEW_STEREO) and its branch were dead. */
+/* o3ds60: the ni_view bits in force for this build -- ni_view's, plus ni_fullview's while the
+ * race draws MP fullview. Every caller runs inside Race_Draw (the latch's scope), game side. */
+static int NiViewBits(void) {
+    int bits = sNiView;
+    if ((sNiFullview & NRR_NI_FULLVIEW_CATS) != 0 && &gdx_fv_k != NULL && gdx_fv_k() >= 0) {
+        bits |= sNiFullview & NRR_NI_FULLVIEW_CATS;
+    }
+    return bits;
+}
+
 int gdx3ds_nrr_ni_view(int cat) {
     if (!sLatched) {
         Latch();
@@ -183,7 +199,7 @@ int gdx3ds_nrr_ni_view(int cat) {
     if (cat < 0 || cat >= NRR_CAT_COUNT || !sLevel[cat]) {
         return 0;
     }
-    return (sNiView >> cat) & 1;
+    return (NiViewBits() >> cat) & 1;
 }
 
 extern int gNumPlayers __attribute__((weak));
@@ -193,6 +209,20 @@ int gdx3ds_nrr_scene_ok(void) {
         Latch();
     }
     return sMaster && (sNiView & NRR_NI_VIEW_RECORDS) != 0 && &gNumPlayers != NULL && gNumPlayers == 1;
+}
+
+int gdx3ds_nrr_ni_view_race(void) {
+    if (!sLatched) {
+        Latch();
+    }
+    return sMaster && (sNiView & NRR_NI_VIEW_RACE) != 0;
+}
+
+int gdx3ds_nrr_ni_fullview_race(void) {
+    if (!sLatched) {
+        Latch();
+    }
+    return sMaster && (sNiFullview & NRR_NI_VIEW_RACE) != 0;
 }
 
 int gdx3ds_nrr_view_ok(int cat, int view, int players) {
@@ -276,12 +306,12 @@ void gdx3ds_nrr_boot(void) {
         return;
     }
     InitCategories();
-    gdx3ds_nrr_log("[nrr] init nrr=1 hud=%d trk=%d mach=%d sky=%d dress=%d shd=%d fx=%d selftest=%d deco=%d direct=%d (%s) ni_view=0x%x | "
+    gdx3ds_nrr_log("[nrr] init nrr=1 hud=%d trk=%d mach=%d sky=%d dress=%d shd=%d fx=%d selftest=%d deco=%d direct=%d (%s) ni_view=0x%x ni_fullview=0x%x | "
                    "arena=%u x2 states=%d marker=0x%02x (hot bytes: tools/native/nrr_size.sh)",
                    sLevel[NRR_CAT_HUD], sLevel[NRR_CAT_TRK], sLevel[NRR_CAT_MACH], sLevel[NRR_CAT_SKY],
                    sLevel[NRR_CAT_DRESS], sLevel[NRR_CAT_SHD], sLevel[NRR_CAT_FX], sLevel[NRR_CAT_SELFTEST],
                    sLevel[NRR_CAT_DECO], sDirect, sDirect == 1 ? "direct words" : (sDirect == 2 ? "verify: citro3d words kept" : "citro3d"), (unsigned)sNiView,
-                   (unsigned)NRR_FRAME_ARENA_BYTES, NRR_STATE_MAX, (unsigned)GDX3DS_NRR_MARKER_P);
+                   (unsigned)sNiFullview, (unsigned)NRR_FRAME_ARENA_BYTES, NRR_STATE_MAX, (unsigned)GDX3DS_NRR_MARKER_P);
 }
 
 /* ------------------------------------------------------------------ snapshot frames ---- */

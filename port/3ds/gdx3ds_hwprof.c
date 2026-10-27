@@ -319,6 +319,11 @@ static void PmuWindowEnd(unsigned long frame, unsigned n, unsigned r) {
  * ============================================================================================ */
 
 int gdx3ds_hws_on = 0;
+/* onesubmit [debug] hwsite_every = N (default 1): the sites are timed in one [c5cat] window of
+ * every N (the others run the untimed call), so a card can carry [hwsite] at 1/N of its cost. */
+static int sHwsArmed = 0;
+static unsigned sHwsEvery = 1;
+static unsigned sHwsWindow = 0;
 
 static const char* const kSiteName[GDX3DS_HWS_COUNT] = {
     "draw", "texup", "import", "flush", "heapflush", "kick", "rplrec", "hudret", "hudrec",
@@ -471,12 +476,16 @@ int gdx3ds_hwprof_latch(void) {
         HwpLog("[c5pmu] c5pmu=%d unknown (1 = counters, 2 = dry run); off", pmu);
     }
     if (hws) {
+        const int every = gdx3ds_config_get_int("debug", "hwsite_every", 1);
+        sHwsEvery = every > 1 ? (unsigned)every : 1u;
         memset(sHwsTicks, 0, sizeof(sHwsTicks));
         memset(sHwsCalls, 0, sizeof(sHwsCalls));
+        sHwsArmed = 1;
         gdx3ds_hws_on = 1;
         HwpLog("[hwsite] init sites=draw,texup,import,flush,heapflush,kick,rplrec,hudret,hudrec tick read %.2f us "
-               "(debug.hwsite; per [c5cat] window, calls/us per rendered frame by open bucket)",
-               (double)sTickReadUs);
+               "(debug.hwsite; per [c5cat] window, calls/us per rendered frame by open bucket; timed in 1 window "
+               "of %u, debug.hwsite_every)",
+               (double)sTickReadUs, sHwsEvery);
     }
     return 1;
 }
@@ -485,8 +494,13 @@ void gdx3ds_hwprof_emit(unsigned long frame, unsigned iterations, unsigned rende
     if (gdx3ds_c5pmu_on) {
         PmuWindowEnd(frame, iterations, rendered);
     }
+    if (!sHwsArmed) {
+        return;
+    }
     if (gdx3ds_hws_on) {
         HwsEmit(frame, iterations, rendered);
         FlushEmit(frame, iterations, rendered);
     }
+    sHwsWindow++;
+    gdx3ds_hws_on = (sHwsWindow % sHwsEvery) == 0u ? 1 : 0; /* the next window's sampling */
 }

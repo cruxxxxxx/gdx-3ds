@@ -196,7 +196,15 @@ static void CaptureEye(int eye, const char* tag, int writeBmp, unsigned long fra
          * a frame rate until this number is small. */
         const u64 t0 = svcGetSystemTick();
         int writeMs;
-        snprintf(path, sizeof(path), "autotest/%s_%c.bmp", tag, eyeCh);
+        /* mstereo: the RIGHT EYE is `<tag>_RE.bmp`. `<tag>_R.bmp` is the bottom screen's (the
+         * touch menu / DASH write it from the main thread a tick later, gdx3ds_menu.c
+         * MenuServiceShot), so an `_R` eye file was silently overwritten by a 320-wide bottom
+         * capture on every --3d run. The left eye keeps `_L` (the top-screen name). */
+        if (eye == 1) {
+            snprintf(path, sizeof(path), "autotest/%s_RE.bmp", tag);
+        } else {
+            snprintf(path, sizeof(path), "autotest/%s_%c.bmp", tag, eyeCh);
+        }
         bytes = WriteBmp(path, sPixels, sScale != 0 ? (unsigned)sScale : ORACLE_W);
         writeMs = (int)((svcGetSystemTick() - t0) / CPU_TICKS_PER_MSEC);
         if (bytes < 0) {

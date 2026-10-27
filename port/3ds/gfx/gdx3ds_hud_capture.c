@@ -134,6 +134,7 @@ static int sPoolNext;
 /* Receipt window (64 captured frames), per kind. */
 typedef struct {
     uint32_t regions, scanned, recorded, dropped, runs, kept, cuts, keptDl, fits, grouped;
+    uint32_t ucodeKept; /* menus-s2b ni_menu_ucode: ucode loads kept in place instead of a cut */
     uint32_t aborts[HUD_AB_COUNT];
     GdxHudReplayStats rp;
 } HudWindow;
@@ -243,6 +244,16 @@ static uint8_t HudClassIn(const GdxHudWord* in, const GdxHudWord* begin, const G
 static uint8_t sFlowOp;
 static uint32_t sFlowAt;
 static int sFlowCut = -1; /* [native] hud_flowcut: -1 unread */
+/* menus-s2b [native] ni_menu_ucode (default 0; -1 unread): in a MENU region, a ucode load -- the
+ * gSPLoadUcode pair, G_RDPHALF_1 (the data segment) then G_LOAD_UCODE -- is a word the walker executes
+ * in place, like a G_DL, instead of a flow cut. The records flyby loads one after its table, before
+ * the scene's tail and Transition_Draw: everything from it on (the phased-strips wipe on entering the
+ * screen, ~560 words a frame for ~60 frames) was walked word by word. The load switches the port's
+ * microcode variant (F3DEX2 / F3DLX2_Rej / L3DEX2: one opcode set, gdx_dl.cpp OP_LOAD_UCODE), which
+ * only the triangle and lighting paths read: a MENU region keeps its triangles in place, so every word
+ * a run records means the same before and after it. Executed in place, it still runs between the
+ * same words. */
+static int sUcodeKeep = -1;
 static int sKept = -1;    /* [native] nrr_hud_kept: -1 unread */
 
 /* n60hudx: the game's scratch ranges (gdx3ds_c5tick_game.c): a G_DL into them names a list built
@@ -276,13 +287,21 @@ static int HudDlIntoRegion(const GdxHudWord* w, const GdxHudWord* begin, const G
  * from it on moves down unchanged (HudCutTail). The post-race records screen loads a ucode after
  * its text: its whole HUD went through the interpreter every frame. What the tail may not hold
  * is a pointer into the region (a G_DL, an RDPHALF operand): moving it would break that. */
-static int HudValidate(const GdxHudWord* begin, const GdxHudWord* end, const GdxHudWord** cut, uint32_t* nDl) {
+static int HudValidate(const GdxHudWord* begin, const GdxHudWord* end, const GdxHudWord** cut, uint32_t* nDl,
+                       int kind) {
     const GdxHudWord* w = begin;
     *cut = end;
     *nDl = 0;
     while (w < end) {
         const uint8_t op = HudOp(w);
         const uint8_t cls = kHudClass[op];
+        if (kind == GDXHUD_KIND_MENU && sUcodeKeep > 0 && op == HUD_OP_RDPHALF_1 && *cut == end && w + 1 < end &&
+            HudOp(w + 1) == HUD_OP_LOAD_UCODE && !HudDlIntoRegion(w, begin, end) &&
+            !HudDlIntoRegion(w + 1, begin, end)) {
+            sWin[kind].ucodeKept++; /* menus-s2b ni_menu_ucode: both words stay in place (HudCompact) */
+            w += 2;
+            continue;
+        }
         if (cls == HUD_RECT3 && *cut == end) {
             if (w + 2 >= end || HudOp(w + 1) != HUD_OP_RDPHALF_1 || HudOp(w + 2) != HUD_OP_RDPHALF_2) {
                 return -HUD_AB_RECT - 1;
@@ -339,13 +358,13 @@ GDX_COLD static void HudEmitKind(int kind, double inv) {
     const HudWindow* w = &sWin[kind];
     HudLog("%s frames=%u mode=%d | cap regions=%.2f scanned=%.1f rec=%.1f drop=%.1f kept=%.1f runs=%.2f "
            "abort flow=%u dlbr=%u dlself=%u rect=%u full=%u | rp markers=%.2f words=%.1f rects=%.1f loads=%.1f "
-           "src hit=%u miss=%u inel=%u hash hit=%u miss=%u fasttri=%.1f vfy ok=%u bad=%u badrec=%u flowop=%02x@%u cut=%u keptdl=%.2f fit=%u grouped=%.2f",
+           "src hit=%u miss=%u inel=%u hash hit=%u miss=%u fasttri=%.1f vfy ok=%u bad=%u badrec=%u flowop=%02x@%u cut=%u keptdl=%.2f fit=%u grouped=%.2f ucode=%.2f",
            kKindTag[kind], sWinFrames, sMode[kind], w->regions * inv, w->scanned * inv, w->recorded * inv,
            w->dropped * inv, w->kept * inv, w->runs * inv, w->aborts[HUD_AB_FLOW], w->aborts[HUD_AB_DLBRANCH],
            w->aborts[HUD_AB_DLSELF], w->aborts[HUD_AB_RECT], w->aborts[HUD_AB_FULL], w->rp.markers * inv,
            w->rp.words * inv, w->rp.rects * inv, w->rp.loads * inv, w->rp.srcHit, w->rp.srcMiss, w->rp.srcInel,
            w->rp.hashHit, w->rp.hashMiss, w->rp.fastTris * inv, w->rp.verifyOk, w->rp.verifyBad, w->rp.badRecord,
-           (unsigned)sFlowOp, (unsigned)sFlowAt, w->cuts, w->keptDl * inv, w->fits, w->grouped * inv);
+           (unsigned)sFlowOp, (unsigned)sFlowAt, w->cuts, w->keptDl * inv, w->fits, w->grouped * inv, w->ucodeKept * inv);
 }
 
 static void HudMaybeEmit(void) {
@@ -721,7 +740,11 @@ void* gdxhud_capture_kind(void* regionStart, void* regionEnd, int kind) {
         sFlowCut = gdx3ds_native_raw("hud_flowcut", 1) != 0 ? 1 : 0;
         HudLog("[hud] init hud_flowcut=%d", sFlowCut);
     }
-    v = HudValidate(begin, end, &cut, &nDl);
+    if (sUcodeKeep < 0) {
+        sUcodeKeep = gdx3ds_native_raw("ni_menu_ucode", 0) == 1 ? 1 : 0;
+        HudLog("[hud] init ni_menu_ucode=%d (a MENU region's ucode load stays in place, not a flow cut)", sUcodeKeep);
+    }
+    v = HudValidate(begin, end, &cut, &nDl, kind);
     if (v < 0) {
         w->aborts[-v - 1]++;
         return regionEnd;
@@ -812,4 +835,54 @@ void* gdxmenu_capture(void* regionStart, void* regionEnd, int mode) {
         return regionEnd;
     }
     return gdxhud_capture_kind(regionStart, regionEnd, GDXHUD_KIND_MENU);
+}
+
+/* [debug] xition_force=N (1..7, a kTransitionRandomSelection type; 0 = off): every RANDOM
+ * transition the game queues becomes type N. The RNG draws are unchanged, so a replay stays in
+ * step; only the wipe it shows changes. A test knob so one replay exercises each wipe type. */
+static int sXitionForce = -1;
+extern int gdx3ds_mp_session_levers_forced(void) __attribute__((weak)); /* gdx3ds_autodrive.c (MP30) */
+
+int gdxmenu_xition_force(void) {
+    if ((&gdx3ds_mp_session_levers_forced != 0) && gdx3ds_mp_session_levers_forced()) {
+        return 0; /* a lockstep session: the stock wipe everywhere */
+    }
+    if (sXitionForce < 0) {
+        if (!gdx3ds_native_ready() || &gdx3ds_config_get_int == NULL) {
+            return 0;
+        }
+        sXitionForce = gdx3ds_config_get_int("debug", "xition_force", 0);
+        if (sXitionForce < 0 || sXitionForce > 7) {
+            sXitionForce = 0;
+        }
+        if (sXitionForce != 0) {
+            HudLog("[menu] init xition_force=%d (every random transition is type %d)", sXitionForce, sXitionForce);
+        }
+    }
+    return sXitionForce;
+}
+
+/* menus-s4 [native] ni_menu_xition (default 0; only with ni_menu=1; [debug] xition_mask bit 2): called by
+ * decomp-native-menu-xition.patch on the frames the mode's draw function did NOT run (func_80069698
+ * skips it on the GAMEMODE_CHANGE_INIT frame between a wipe's hide and appear halves): the region is
+ * Transition_Draw's words alone (its black fill), compacted as a MENU region exactly as gdxmenu_capture
+ * compacts them when the mode's draw ran first. Off, the list is unchanged. -1 unread. */
+static int sXitionCapture = -1;
+
+void* gdxmenu_capture_xition(void* regionStart, void* regionEnd, int mode) {
+    if (sXitionCapture < 0) {
+        if (!gdx3ds_native_ready() || &gdx3ds_config_get_int == NULL) {
+            return regionEnd;
+        }
+        sXitionCapture = (gdx3ds_native_raw("ni_menu_xition", 0) == 1 && gdx3ds_native_raw("ni_menu", 0) == 1 &&
+                          (gdx3ds_config_get_int("debug", "xition_mask", 0xFF) & 2) != 0)
+                             ? 1
+                             : 0;
+        HudLog("[menu] init ni_menu_xition=%d (game side: a Transition_Draw without its mode's draw is a MENU region)",
+               sXitionCapture);
+    }
+    if (!sXitionCapture) {
+        return regionEnd;
+    }
+    return gdxmenu_capture(regionStart, regionEnd, mode);
 }

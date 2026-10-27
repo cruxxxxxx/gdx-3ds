@@ -1,0 +1,250 @@
+diff --git a/src/game/camera.c b/src/game/camera.c
+--- a/src/game/camera.c
++++ b/src/game/camera.c
+@@ -2741,6 +2741,16 @@
+     Camera_SettingsUpdate(cameraSettings, camera);
+     Camera_SettingsUpdateRaceIntroStart(camera, cameraSettings);
+     Camera_UpdateFromSettings(camera, cameraSettings);
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    {
++        /* mppolish (decomp-3ds-mp-polish.patch): a 2P MP session shows each view full screen,
++           so its race cameras take the 1P framing -- fov and frustum centre, the two projection
++           inputs just copied out of the settings; the settings themselves are untouched
++           (port/3ds/game/gdx3ds_fullview_game.c, gdx_fv_cam_reframe). */
++        extern void gdx_fv_cam_reframe(Camera * camera);
++        gdx_fv_cam_reframe(camera);
++    }
++#endif
+     func_8071315C(camera);
+     Camera_UpdateProjectionViewMtx(gGfxPool, camera);
+     if ((gGameMode == GAMEMODE_GP_RACE) || (gGameMode == GAMEMODE_PRACTICE) || (gGameMode == GAMEMODE_TIME_ATTACK) ||
+diff --git a/src/game/object.c b/src/game/object.c
+--- a/src/game/object.c
++++ b/src/game/object.c
+@@ -1182,7 +1182,19 @@
+         default:
+             break;
+     }
++}
++
++#if defined(PORT) && defined(__3DS__)
++/* mppolish (decomp-3ds-mp-polish.patch): the game frame whose machine-settings backdrop filled the
++   whole frame, so this frame's Transition_Draw (ovl_i2/transition.c) covers the whole frame too. */
++extern u32 gGameFrameCount;
++static u32 sGdxBackdropFullFrame = 0;
++static s32 sGdxBackdropFullValid = false;
++
++int gdx3ds_settings_backdrop_full_drawn(void) {
++    return sGdxBackdropFullValid && (sGdxBackdropFullFrame == gGameFrameCount);
+ }
++#endif
+ 
+ Gfx* Object_Draw(Gfx* gfx, Object* object) {
+ 
+@@ -1254,6 +1266,8 @@
+                     gDPSetScissor(gfx++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+                     gfx = func_8007AD44(gfx, 24, 24, 24, 0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1);
+                     gDPSetScissor(gfx++, G_SC_NON_INTERLACE, 12, 8, 308, 232);
++                    sGdxBackdropFullFrame = gGameFrameCount;
++                    sGdxBackdropFullValid = true;
+                     break;
+                 }
+             }
+diff --git a/src/game/racer.c b/src/game/racer.c
+--- a/src/game/racer.c
++++ b/src/game/racer.c
+@@ -21,6 +21,12 @@
+    marker. Runtime-gated on [native] fx_sink; inactive, every redefined macro emits the original
+    GBI via helpers compiled with this same gbi.h. The C bodies are unchanged. */
+ #include "gdx3ds_fx_shim.h"
++#endif
++
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++/* mppolish (decomp-3ds-mp-polish.patch): 1 when a voice line that belongs to `player` plays on this
++   console (port/3ds/game/gdx3ds_fullview_game.c; 1 off an MP session). */
++extern int gdx_fv_announce_se(int se, int player);
+ #endif
+ 
+ #if defined(PORT) && defined(GDX_PLATFORM_3DS)
+@@ -4544,11 +4550,31 @@
+                                     Audio_PlayerFinished(racer->id);
+                                 }
+                                 Racer_StopRacerSfx(racer);
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++                                {
++                                    /* mppolish (decomp-3ds-mp-polish.patch): a console that is one
++                                       MP player's speaker stops the BGM when THAT player finishes,
++                                       as a 1P race does; stock VS stops it when the first finisher
++                                       is a human. Audio only (func_8007E0CC stops the BGM). */
++                                    extern int gdx_fv_local_player(void);
++                                    const s32 gdxBgmOwner = (gNumPlayers == 1) ? -1 : gdx_fv_local_player();
++                                    if (gdxBgmOwner >= 0) {
++                                        if (racer->id == gdxBgmOwner) {
++                                            func_8007E0CC();
++                                        }
++                                    } else if (gNumPlayers == 1) {
++                                        func_8007E0CC();
++                                    } else if (gRacersFinished == 1) {
++                                        func_8007E0CC();
++                                    }
++                                }
++#else
+                                 if (gNumPlayers == 1) {
+                                     func_8007E0CC();
+                                 } else if (gRacersFinished == 1) {
+                                     func_8007E0CC();
+                                 }
++#endif
+                             }
+                         }
+                     }
+@@ -5685,7 +5711,14 @@
+                   (racer2->segmentBasis.x.z * racer2->velocity.z)) < -0.3f) &&
+                 !(racer2->stateFlags & (RACER_STATE_CRASHED | RACER_STATE_FALLING_OFF_TRACK))) {
+                 gPlayerReverseTimer[i]++;
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++                /* mppolish (decomp-3ds-mp-polish.patch): the wrong-way voice is player i's own cue, so
++                   a console that is one MP player's speaker plays it only for that player (audio only:
++                   the timer runs as stock). */
++                if ((gPlayerReverseTimer[i] == 100) && gdx_fv_announce_se(NA_SE_60, i)) {
++#else
+                 if (gPlayerReverseTimer[i] == 100) {
++#endif
+                     Audio_TriggerSystemSE(NA_SE_60);
+                 }
+             } else {
+@@ -5711,7 +5744,14 @@
+             if (var_fs0 > 4000.0f) {
+                 if (!(gRacersByPosition[0]->soundEffectFlags & RACER_SE_FLAGS_4000)) {
+                     gRacersByPosition[0]->soundEffectFlags |= RACER_SE_FLAGS_4000;
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++                    /* mppolish (decomp-3ds-mp-polish.patch): the "pulling away from the pack" voice
++                       belongs to the leader, so a console that is one MP player's speaker plays it
++                       only when its own player leads (audio only: the latch is set as stock). */
++                    if (gEnableRaceSfx && gdx_fv_announce_se(NA_SE_59, gRacersByPosition[0]->id)) {
++#else
+                     if (gEnableRaceSfx) {
++#endif
+                         Audio_TriggerSystemSE(NA_SE_59);
+                     }
+                 }
+diff --git a/src/overlays/ovl_i2/transition.c b/src/overlays/ovl_i2/transition.c
+--- a/src/overlays/ovl_i2/transition.c
++++ b/src/overlays/ovl_i2/transition.c
+@@ -539,6 +539,22 @@
+ /* menus-s4: the transition type this frame's Transition_Draw drew (0: none). Read by the port's
+    [debug] nicensus_wipe attribution (port/3ds/gfx/n64/gdx_rt_glue.cpp); written nowhere else. */
+ s32 gGdxXitionDrawnType = TRANSITION_TYPE_NONE;
++#endif
++
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++/* mppolish (decomp-3ds-mp-polish.patch): the machine settings' backdrop fill
++   (decomp-3ds-settings-backdrop-full.patch) reaches past the overscan frame, so a transition
++   drawn over it this frame covers the whole frame too, as with the borders removed; otherwise
++   the fade / blackout leaves a grey rim. Set at the top of each Transition_Draw. */
++static s32 sGdxBackdropFullFrame = false;
++
++static s32 Transition_GdxFullFrame(void) {
++    extern int gdx_remove_borders(void);
++    return gdx_remove_borders() || sGdxBackdropFullFrame;
++}
++#define GDX_TRANSITION_FULL_FRAME() Transition_GdxFullFrame()
++#elif defined(PORT)
++#define GDX_TRANSITION_FULL_FRAME() gdx_remove_borders()
+ #endif
+ 
+ Gfx* Transition_Draw(Gfx* gfx) {
+@@ -588,7 +604,15 @@
+ #endif
+ 
+     gfx = func_8006A00C(gfx, SCISSOR_BOX_FULL_SCREEN);
+-#ifdef PORT
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    {
++        extern int gdx3ds_settings_backdrop_full_drawn(void); /* decomp object.c, this frame */
++        sGdxBackdropFullFrame = gdx3ds_settings_backdrop_full_drawn();
++    }
++    if (gdxWideTransition || sGdxBackdropFullFrame) {
++        gDPSetScissor(gfx++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
++    }
++#elif defined(PORT)
+     if (gdxWideTransition) {
+         gDPSetScissor(gfx++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+     }
+@@ -601,7 +625,7 @@
+            too, or they show stale framebuffer contents for the wipe's duration. */
+         {
+             extern int gdx_remove_borders(void);
+-            if (gdx_remove_borders()) {
++            if (GDX_TRANSITION_FULL_FRAME()) {
+                 gDPFillRectangle(gfx++, 0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1);
+             } else {
+                 gDPFillRectangle(gfx++, TRANSITION_BORDER_WIDTH, TRANSITION_BORDER_HEIGHT,
+@@ -620,7 +644,7 @@
+        bands: a full-screen fill would black out the scene the APPEAR direction reveals. */
+     {
+         extern int gdx_remove_borders(void);
+-        if (gdx_remove_borders() &&
++        if (GDX_TRANSITION_FULL_FRAME() &&
+             (transition->activeTransitionType == TRANSITION_TYPE_SMALL_TILES) &&
+             !(transition->flags & TRANSITION_FLAG_FILL_BLACK)) {
+             gSPDisplayList(gfx++, aSetupFillBlackDL);
+@@ -1624,7 +1648,7 @@
+        fill must reach the true edges or the freed margins stay at scene brightness. */
+     {
+         extern int gdx_remove_borders(void);
+-        if (gdx_remove_borders()) {
++        if (GDX_TRANSITION_FULL_FRAME()) {
+             gDPFillRectangle(gfx++, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+         } else {
+             gDPFillRectangle(gfx++, TRANSITION_BORDER_WIDTH, TRANSITION_BORDER_HEIGHT,
+diff --git a/src/overlays/ovl_i3/hud.c b/src/overlays/ovl_i3/hud.c
+--- a/src/overlays/ovl_i3/hud.c
++++ b/src/overlays/ovl_i3/hud.c
+@@ -17,6 +17,14 @@
+ /* Fullview's VS rank sits 12 px left of the 1P slot. The 1P slot is sized for a two-digit place
+  * and "/30", but VS has one digit and "/4", so the stock x leaves the "/4" against the TIME label. */
+ #define GDX_FV_RANK_SHIFT_X 12
++/* mppolish (decomp-3ds-mp-polish.patch): a console that is one MP player's speaker plays the
++ * lap-2 / final-lap announcer lines for that player, not for whichever human reached the lap
++ * first (port/3ds/game/gdx3ds_fullview_game.c gdx_fv_announce_se: the decision + an [announce]
++ * receipt; 1 everywhere else). */
++extern int gdx_fv_announce_se(int se, int player);
++#define GDX_ANNOUNCE_FOR(se, player) gdx_fv_announce_se((se), (player))
++#else
++#define GDX_ANNOUNCE_FOR(se, player) 1
+ #endif
+ 
+ /* Anchor Set/Clear for the split-screen HUD; expands to nothing in a non-PORT build. Macros
+@@ -580,11 +588,13 @@
+         if ((gRacers[playerIndex].position != 1) || (gGameMode == GAMEMODE_TIME_ATTACK)) {
+             D_i3_80141EA8[playerIndex].lapIntervalCounter = 90;
+         }
+-        if ((lap == 2) && !sSecondLapStarted && gEnableRaceSfx && (gGameMode != GAMEMODE_PRACTICE)) {
++        if ((lap == 2) && !sSecondLapStarted && gEnableRaceSfx && (gGameMode != GAMEMODE_PRACTICE) &&
++            GDX_ANNOUNCE_FOR(NA_SE_17, playerIndex)) {
+             Audio_TriggerSystemSE(NA_SE_17);
+             sSecondLapStarted = true;
+         }
+-        if ((lap == gTotalLapCount) && !sFinalLapStarted && gEnableRaceSfx && (gGameMode != GAMEMODE_PRACTICE)) {
++        if ((lap == gTotalLapCount) && !sFinalLapStarted && gEnableRaceSfx && (gGameMode != GAMEMODE_PRACTICE) &&
++            GDX_ANNOUNCE_FOR(NA_SE_18, playerIndex)) {
+             Audio_TriggerSystemSE(NA_SE_18);
+             sFinalLapStarted = true;
+         }
+@@ -663,11 +673,13 @@
+         if ((gRacers[playerIndex].position != 1) || (gGameMode == GAMEMODE_TIME_ATTACK)) {
+             D_i3_80141EA8[playerIndex].lapIntervalCounter = 90;
+         }
+-        if ((lap == 2) && !sSecondLapStarted && gEnableRaceSfx && (gGameMode != GAMEMODE_PRACTICE)) {
++        if ((lap == 2) && !sSecondLapStarted && gEnableRaceSfx && (gGameMode != GAMEMODE_PRACTICE) &&
++            GDX_ANNOUNCE_FOR(NA_SE_17, playerIndex)) {
+             Audio_TriggerSystemSE(NA_SE_17);
+             sSecondLapStarted = true;
+         }
+-        if ((lap == gTotalLapCount) && !sFinalLapStarted && gEnableRaceSfx && (gGameMode != GAMEMODE_PRACTICE)) {
++        if ((lap == gTotalLapCount) && !sFinalLapStarted && gEnableRaceSfx && (gGameMode != GAMEMODE_PRACTICE) &&
++            GDX_ANNOUNCE_FOR(NA_SE_18, playerIndex)) {
+             Audio_TriggerSystemSE(NA_SE_18);
+             sFinalLapStarted = true;
+         }

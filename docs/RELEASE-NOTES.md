@@ -1,6 +1,299 @@
 # G-Diffuser 3DS — Release Notes
 
+## v1.1.0 — 2026-10-26
+
+The multiplayer release: race friends over local wireless, on the same Wi-Fi, or over the
+internet, with each console showing its own racer full screen. Also faster native-renderer menus
+on both consoles, optional true widescreen races, new bottom-screen menus with a SETTINGS button,
+more Old 3DS performance work, and a change to how the bottom-screen HUD art gets onto your
+console (it is now built from your own game files). Same three downloads (O3DS, N3DS, N3DS-EK)
+and the same SD card layout: install it over v1.0.0 and your ini, archives and saves carry over.
+
+### Highlights
+
+- **Multiplayer, 2–4 players, on by default.** Pick **VS** on the main menu and the bottom screen
+  opens MULTIPLAYER: play nearby (local wireless or the same Wi-Fi) or online with a room code.
+  No ini editing needed. Each console shows its own player full screen, and CPU machines can
+  fill the field. Player guide: [`MULTIPLAYER.md`](MULTIPLAYER.md).
+- **Faster menus.** The menus, menu transitions, course select and machine select now draw through
+  the game's native 3DS renderer on both consoles.
+- **SETTINGS on the bottom screen.** Home (the title and main menu) has a SETTINGS button for
+  display, 3D, controls and volume.
+- **True widescreen races (optional, experimental).** Shows more of the course at the top screen's
+  real shape, with nothing stretched.
+- **New bottom-screen menus**, a bigger speedometer on the DASH, your spare machines in Grand
+  Prix, and an FPS counter.
+- **HUD art from your own game files.** The DASH's fonts, digits, portraits and chrome are no
+  longer compiled into the app: the game builds them on first boot from your own `fzerox.o2r`
+  (see [HUD art](#hud-art-comes-from-your-own-game-files)).
+- **Closing from the HOME menu no longer hard-locks the Old 3DS.**
+- **A 3DS unlock-everything code** that works on any 3DS (see [`CHEATS.md`](CHEATS.md)).
+
+### Multiplayer
+
+**Getting in**
+- On the main menu (SELECT MODE), pick **VS** with one console: the bottom screen opens the
+  **MULTIPLAYER** menu, and the top screen stays put.
+- **PLAY NEARBY**: host or join over the 3DS's **local wireless** (no router needed) or on the
+  **same Wi-Fi**, with no internet or server. On by default (`[net] mp_lan = 0` turns it off).
+- **PLAY ONLINE**: the host gets a 5-character **room code** and friends type it to join.
+  Consoles connect directly where they can, and go through the server's relay when a router
+  blocks that. This release points at the project's hosted server by default, so online rooms
+  work out of the box. **That default is temporary**: a later release will drop it. Set
+  `[net] rendezvous` to use your own server, or `off` to turn online rooms off (see "For
+  self-hosters").
+- **JOIN BY ADDRESS**: race over the internet with no server, when the host's router forwards one
+  UDP port (`[net] mp_direct`).
+- Nothing opens at boot: the radio and sockets come up only when you open the MULTIPLAYER menus
+  or a room. The developer log link (`[net] enabled`) stays off and isn't needed.
+- Your name comes from your 3DS profile and can be changed in the MULTIPLAYER menu.
+
+**In the room**
+- Everyone picks a machine on the normal machine select screen and the host picks the course.
+  Timers keep things moving (60 s for machines, 30 s for the course).
+- The host sets laps, room size (2–4) and how many CPU machines fill the field: up to 30, or up to
+  16 when an Old 3DS is in the room.
+- After the race: rematch, change the course, or pick machines again.
+- **START WITHOUT** starts the race without a player who isn't ready. START RACE and leaving the
+  room are held to confirm.
+
+**During the race**
+- Each console shows only its own racer, full screen, with the race HUD laid out for one player.
+- If someone drops out, a CPU driver takes over their machine and the race goes on.
+- Pausing pauses everyone and shows who paused. Ending the race from the pause menu is confirmed
+  for everyone.
+- Going to the HOME menu or closing the lid takes you out of that race, but you stay in the room.
+- If the consoles ever disagree about the race, it stops cleanly and saves a report to the SD
+  card.
+- Online, if the host leaves a race of three or more, the race carries on for the others. A
+  player whose connection drops rejoins the room automatically.
+- On Old 3DS, multiplayer races run in 2D by default, aiming for 60 fps. Set `[stereo] mp_3d = 1`
+  for 3D, which is locked to 30 fps there.
+
+**Version checks**
+- Everyone in a room needs the **same release download**, and the same edition: Expansion Kit and
+  non-Expansion-Kit builds can't share a room. If a console doesn't match, the bottom screen says
+  which side needs to update. Archives prebaked on different PCs from the same ROM match (the
+  check covers what's in the archives, not how the PC compressed them).
+- An online server that's newer than your game shows **UPDATE REQUIRED**. One that's older shows
+  **SERVER NEEDS AN UPDATE**.
+
+### Old 3DS performance
+
+- The menus, menu transitions, course select and machine select now use the native renderer, as
+  they do on New 3DS.
+- 3D races ride out short slowdowns instead of dropping straight to 30 fps.
+- The DASH is cheaper to draw during races: it updates on a budget and spreads its work across
+  frames.
+- Multiplayer races draw the local view through the native renderer, and CPU rivals use the
+  lowest detail level while a session is live. Neither affects the race itself.
+- One GPU timing change that measured slower on Old 3DS is now off there.
+- 3D sends both eyes of the scene to the GPU in one submission (`[stereo] onesubmit`,
+  `onesubmit_narrow`, on by default on both consoles): 3D menus run at about 45 fps instead of
+  40, and 3D races gain about 1.5–1.8 ms of headroom a frame (the upper figure with both levers on, as shipped). No change on New 3DS, which already
+  had the headroom.
+- **Memory**: about 320 KB has moved off the main heap. The bottom-screen HUD art now lives in a
+  single block of linear memory, and the course track data uses one buffer reserved at boot
+  (see Fixes).
+
+### Native renderer
+
+These are on by default, as part of the tuned settings every console gets (`[perf] preset = auto`):
+
+- On both consoles: the native menus listed above (`ni_menu*`, `ni_course`, `ni_mach`), the 1P
+  race between checkpoints (`ni_race`), the HUD atlas reset on race entry (`atlas_race_reset`),
+  the 3D frame's GPU overlap (`stereo_fold`, `[stereo] head_kick`, `[stereo] resume_fold`), and,
+  on Expansion Kit builds, the course editor's 3D preview (`ek_editmesh`, `ek_editmesh_track`),
+  its test drive (`nrr_testdrive`) and machine select (`ek_nimach`).
+- New 3DS also runs VS split-screen and the records flyby on the native renderer (`ni_view`).
+- As before, `[perf] preset = off` goes back to the plain, untuned defaults, and any key you set
+  yourself wins. Lever by lever: [`NATIVE-RENDERER.md`](NATIVE-RENDERER.md).
+
+### Bottom screen
+
+- **New bottom-screen menus**: a Home screen at the title and main menu, the MULTIPLAYER flow
+  (lobby, room code keypad, clear dialogs for every failure), key hints, D-pad navigation in the
+  host and race-settings sheets, and hold-to-confirm on actions you can't undo.
+- **SETTINGS**: Home's SETTINGS button (or SELECT on Home) opens the player settings: display
+  (border mode, rival detail, widescreen), 3D depth, controls and button remapping, and volume.
+  Changes are saved to `gdiffuser.ini` as you make them. **EXIT** (black on yellow, always the
+  first tab) takes you back; **B** also exits when you're not in a race.
+- **The old DEBUG button is gone.** The developer console (status, log viewer, diagnostics) opens
+  when you hold **L+R+SELECT for 1.5 seconds**, or its tabs appear inside SETTINGS with
+  `[debug] dev_console = 1`.
+- **DASH layout pass**: the speedometer is bigger, uses the top screen's own digits and no longer
+  sits on top of the map. LAP, TIME, BEST and GAP share one box, and long times and long track
+  names are fitted so nothing is cut off. The KO stars move to the bottom of the dashboard.
+- **Spare machines (Grand Prix)**: shown under ENERGY. Up to 5 show as one row, 6–10 as two rows,
+  and more than that as one icon with a count.
+- **FPS counter** in the top-right corner of the DASH map. `[debug] bottom_fps = 0` hides it.
+
+### HUD art comes from your own game files
+
+The DASH's art is no longer compiled into the app: the fonts, the timer, lap, speed and position
+digits, all 30 character portraits, the KO star and spare-machine icons, and the dashboard
+chrome. On first boot the game builds them from **your own `fzerox.o2r`**, using recipes that
+reproduce the old art byte for byte.
+
+- **First boot** takes about 0.5 s extra on Old 3DS and about 0.4 s on New 3DS.
+- **Later boots** load the result from `sdmc:/3ds/gdiffuser/hudbake.cache` (about 100 KB) in
+  about 40 ms.
+- **If the archive is missing or wrong**, those elements are left blank and a line is written to
+  the log. Nothing crashes.
+- **Optional, on your PC**: the `gdx-extract` download now includes **`gdx-hudpack`**. When it
+  sits next to `gdx-extract`, `prebake.py` uses it to write `hudbake.cache` for you, so even the
+  first boot skips the bake. A cache from a different archive or a different game build is
+  ignored, and the console rebuilds it.
+- The track index templates (18 small tables) are now read from your archive at boot in the same
+  way.
+
+### Display and 3D
+
+- **True widescreen (experimental, off by default)**: the DSP tab's WIDESCREEN row in SETTINGS (or
+  `[display] widescreen = 1`), applied the next time you start the game, makes races fill the top
+  screen at its real 5:3 shape. You see more of the course to the sides, the HUD moves to the
+  screen edges, and VS split-screen and multiplayer views widen too. It draws about a fifth more
+  per frame, so expect a lower frame rate in crowded races on Old 3DS. If scenery at the far
+  edges pops, try `widescreen_cull_pct`. Ported from the PC port's widescreen options.
+- **Menu depth**: with the 3D slider up, the menus get layered depth: backgrounds slightly behind
+  the screen, panels and machine models on it, text slightly in front. On by default on New 3DS
+  (part of its tuned settings), off on Old 3DS; `[stereo] menu_depth` sets it either way. Races
+  aren't affected.
+
+### Audio
+
+- New 3DS: two crackle fixes that v1.0.0 only applied on Old 3DS are now on by default (a clamp
+  for loud sound-effect samples, and a short fade instead of a click when audio runs dry). Turn
+  them off with `[debug] adpcm_scale_clamp = 0` / `audio_declick = 0`. We haven't yet confirmed
+  they remove the reported crackle; if you still hear it, please report it (see
+  `3DS-HARDWARE.md` §13).
+- Expansion Kit (built from source for Old 3DS, still unreleased): disk music and sound load in
+  fewer, larger SD reads, off the audio thread.
+
+### Expansion Kit
+
+- The Expansion Kit build is still New 3DS only (N3DS-EK). You need your own dump of the retail
+  Japanese disk, `baserom.jp.ek.ndd`. Fan-translated images are still not supported.
+- Old 3DS EK (`o3ds-ek`) is still an experimental build you make from source, and isn't released.
+- Building from source: the `fzerox-expansion-kit` submodule now points at
+  `github.com/cruxxxxxx/fzerox-expansion-kit` (see [Assets and licensing](#assets-and-licensing)).
+  In an existing clone, run
+  `git submodule sync fzerox-expansion-kit && git submodule update --init fzerox-expansion-kit`.
+
+### Fixes
+
+- **Closing from the HOME menu no longer hard-locks the Old 3DS.** Saving the 64DD data at exit
+  used to ask for one 73 KB block of memory, and when that wasn't available the app crashed and
+  locked the console. The save now streams out without allocating anything and leaves the
+  previous save untouched if it fails, and a fatal error during shutdown now exits the app
+  instead of locking the console. Seen on an Expansion Kit test build; confirmed fixed on Old
+  3DS hardware.
+- **3D sky edges**: with the 3D slider high, a strip of plain colour could show at the left and
+  right edges of the top screen. The sky, venue floor and cloud layers are now drawn wide enough
+  to cover each eye's shift. 2D and slider-down frames don't change.
+- Expansion Kit: VS BATTLE no longer does nothing with only one controller (it now opens
+  multiplayer).
+- Expansion Kit build with no disk image: no more boot hang, and no stuck music waits.
+- Machine settings: the backdrop fills the screen with menu depth on.
+- The 3DS unlock-everything code (SELECT MODE: L, R, D-Up, D-Down, D-Left, D-Right, START) no
+  longer also picks a mode on its last START, and each D-pad press counts once.
+- After several course loads in one session (about six on Old 3DS), a course could lose its fast
+  track drawing path because memory had become fragmented. The track data now uses one buffer
+  reserved at boot and reused for every course.
+- `docs/3DS-HARDWARE.md` said 3D was off by default; it has been on (with the auto preset) since
+  v1.0.0.
+
+### Assets and licensing
+
+Before this release we audited the repository and the release binaries. That audit showed that
+**the v1.0.0 binaries and source contained some ROM-derived data**, which the project had said it
+did not ship: the bottom-screen HUD art (generated from the game's textures and committed as C
+arrays) and about 12 KB of track index data taken from the game. The upstream Expansion Kit
+decompilation pinned as a submodule also had a retail 64DD disk image committed to it, most
+likely by accident, so recursive clones and our CI downloaded it.
+
+In v1.1.0:
+
+- **HUD art and track data** are built on your console from your own archive (see
+  [HUD art](#hud-art-comes-from-your-own-game-files)). Nothing ROM-derived is compiled into the
+  binaries.
+- **Disk image**: the EK submodule now points at a standalone copy with that file removed from
+  its entire history. Its tree is otherwise identical to the old pin.
+- **License files**: every release zip, including the `gdx-extract` zip, now includes `LICENSE`,
+  `THIRD_PARTY_NOTICES.md` and `LICENSES/`.
+- **README and notices** now say exactly what ships: no ROM, disk image or game assets. The
+  binaries contain code compiled from the community decompilation, and you dump your own
+  cartridge (and disk).
+
+The v1.0.0 downloads contained some ROM-derived HUD art; v1.1.0 removes it and builds the HUD
+from your own files.
+
+The v1.0.0 downloads have been withdrawn from the releases page. v1.1.0 replaces them: use the
+[latest release](https://github.com/cruxxxxxx/gdx-3ds/releases/latest).
+
+### Upgrading from v1.0.0
+
+1. Replace the `.3dsx`, or install the new `.cia` over the old one. Your `gdiffuser.ini`, both
+   `.o2r` archives and your saves carry over, so you don't need to prebake again.
+2. On the first boot the HUD art is built once, then cached. An old `hudbake.cache`, from a test
+   build or from another archive, is detected and rebuilt automatically.
+3. No ini keys were removed or renamed. Some defaults changed, and every key below is still
+   honoured if you set it:
+   - **Multiplayer**: NEARBY and the hosted online server are on out of the box.
+     `[net] mp_lan = 0` or `[net] rendezvous = off` opts out.
+   - **New tuned defaults (`[perf] preset = auto`)**: native menus, course select and machine
+     select; one-submission 3D (`[stereo] onesubmit`, `onesubmit_narrow`); menu depth on New
+     3DS; the New 3DS audio clamps (`[debug] adpcm_scale_clamp`, `audio_declick`).
+     `[perf] preset = off` still returns to the plain defaults, and any key you set yourself
+     still wins.
+   - **Developer console**: `[debug] dev_console = 1` used to put a DEBUG button on Home. It now
+     adds the developer tabs to SETTINGS instead.
+4. For online play, everyone should update. A v1.0.0 console has no multiplayer, and v1.1.0
+   consoles only join rooms with the same release.
+
+### Known issues in v1.1.0
+
+- Everything in the [v1.0.0 known issues](#known-issues) still applies, including the tight
+  memory on Old 3DS and the rare ~826 KPH speed readout at the finish line.
+- Widescreen and the fixed track buffer have been tested in the emulator but not yet on
+  hardware.
+- Multiplayer hasn't been soak-tested on every console pairing. If a race stops with RACE
+  STOPPED, please attach the saved report and `log.txt` to a bug report.
+- Old 3DS multiplayer in 3D is capped at 30 fps.
+- New 3DS audio crackle: the fixes above are on, but not yet confirmed to cure it.
+- The hosted online server is temporary. A later release will require you to set
+  `[net] rendezvous` yourself.
+
+### For self-hosters
+
+- **The rendezvous server** (`tools/mp-rendezvous/gdx_rendezvous.py`, server 2.1.0, client
+  protocol 9): one Python 3.8+ file using only the standard library. It needs one inbound UDP
+  port (27200), keeps no accounts and writes nothing to disk. Run it with plain Python, Docker
+  Compose (Linux, host networking) or the hardened systemd unit (`gdx-rendezvous.service`).
+  Guide: `tools/mp-rendezvous/SELF-HOST.md`. Players point at it with `[net] rendezvous`.
+- **Optional monitoring**: `docker compose --profile monitoring up -d` adds Prometheus, Loki,
+  Grafana (a dashboard plus alert rules) and a UDP probe, all bound to 127.0.0.1. Settings are in
+  `.env` (copy `.env.example`).
+- **Version gating**: consoles send their client protocol. `--min-client-proto` and
+  `--max-client-proto` (both default to this release's) decide who gets UPDATE REQUIRED or SERVER
+  NEEDS AN UPDATE. `--update-url` (up to 40 characters) appears on the console's UPDATE REQUIRED
+  screen. When a later release changes the protocol, run the new server with
+  `--min-client-proto <previous>` to give players time to update.
+- **Anti-spoofing**: CREATE and JOIN use a return-routability cookie (GXRV v2). `--allow-v1`
+  admits pre-cookie development builds and should normally stay off.
+- **Restarts**: `SIGUSR1` drains the server (no new rooms; it exits with code 75 when the last
+  room closes). A plain restart drops every room.
+- **Privacy**: the log holds player IP addresses. Use `--log-ip hash` or `none`, and keep logs
+  short-lived.
+- **No server at all**: NEARBY rooms are hosted by a console, and JOIN BY ADDRESS (`mp_direct`)
+  works across the internet when the host forwards UDP 27300.
+
+---
+
 ## v1.0.0 — 2026-10-19
+
+> The v1.0.0 downloads have been withdrawn and replaced by v1.1.0 (see
+> [Assets and licensing](#assets-and-licensing)). These notes are kept for reference.
 
 The first release to support the **Old 3DS / 2DS** family, and the first to include the
 **64DD Expansion Kit** (Course Edit, Create Machine, and the DD cups) on console.

@@ -1,0 +1,107 @@
+# ek-testdrive: build a 4-point course in the 64DD COURSE EDIT mode
+# and TEST DRIVE it twice (S5b, o3dsek-plan.md section 6).
+#
+# EXPANSION-KIT-ONLY AND DISK-ONLY, exactly as ek-courseedit.gdxs explains:
+# main_menu.c:222's EK arm bounces the cursor off MODE_COURSE_EDIT (4)
+# whenever gLeoDriveConnectionState == 0. NOT a corpus replay; SHOTs are
+# hand-placed. Menu walk = ek-widgetdrop.gdxs (the editor is up by 1100).
+#
+# Derivation (decomp/src/overlays/course_edit/, all at editor init):
+#  - cursor starts at (160, 120)                          188850.c:47
+#  - the stick is remapped every tick (func_xk2_800D6D90, 188850.c:75):
+#    radius - 16.97 deadzone, clamp 49, x 64/49. Raw 48 on ONE axis ->
+#    40, and 40^2 = 1600 is not > 1600, so the speed stays 0.15 and the
+#    step is 0.15 * 40 / 2 = 3 px/tick exactly (188850.c:877-1010).
+#    +X right, +Y up (y - 3). Never diagonal.
+#  - gCreateOption COURSE + gPointOption SET at init: A in the 3D view
+#    (y >= 56, off the icon box) places a point after the current one
+#    (func_xk2_800DC67C, 188850.c:2073); the ring closes by itself.
+#  - A reads LAST tick's world position (func_xk2_800F1938), so the
+#    cursor rests >= 1 tick before every A.
+#  - corners (100,75) (220,75) (220,165) (100,165) ~ (+-8750, 0, +-6550):
+#    length ~61000 (3000..250000), no edge within 150, inside +-15000.
+#  - icon 0 = TEST RUN, x [232,248) y [204,220) (191080.c:2989); A on
+#    it starts the run one tick after the hover (func_xk2_800DEE20).
+#  - in the run: hold A to accelerate (racer.c:4173); control ~60 ticks
+#    after the start (gRaceIntroTimer 100 -> 40). START pauses; DOWN + A
+#    on QUIT returns to the editor (func_xk2_800EC91C). The cursor stays
+#    on icon 0, so A runs the same course again: Course_Init re-bakes.
+build native-ek-testdrive
+seed1 0x1234abcd
+seed2 0x0fedcba9
+pins det=1
+note four corners at 3 px/tick, then two test runs of the course.
+at 350
+wait 1
+at 400
+press START 15 0
+at 600
+wait 1
+shot menu_before
+at 660
+press DOWN 12 0
+at 760
+wait 1
+shot menu_cursor
+at 820
+press A 12 0
+at 1100
+wait 1
+shot editor
+at 1200
+stick -48 0 48
+stick 0 48 36
+wait 8
+press A 6 20
+shot point_1
+stick 48 0 96
+wait 8
+press A 6 20
+shot point_2
+stick 0 -48 72
+wait 8
+press A 6 20
+shot point_3
+stick -48 0 96
+wait 8
+press A 6 30
+shot point_4
+stick 0 -48 100
+stick 48 0 170
+stick -48 0 44
+wait 10
+shot hover_testrun
+press A 6 0
+wait 40
+shot run1_intro
+wait 30
+hold A 100
+shot run1_drive_0
+hold A 100
+shot run1_drive_1
+hold A 100
+shot run1_drive_2
+hold A 100
+shot run1_drive_3
+hold A 100
+shot run1_drive_4
+hold A 100
+press START 6 20
+shot run1_paused
+press DOWN 6 10
+press A 6 60
+shot back_editor
+wait 20
+press A 6 0
+wait 40
+shot run2_intro
+wait 30
+hold A 100
+shot run2_drive_0
+hold A 100
+shot run2_drive_1
+hold A 100
+shot run2_drive_2
+hold A 60
+wait 1
+len 3900

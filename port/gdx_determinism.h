@@ -35,6 +35,9 @@ int gdx_det_active(void);
 // niview: tick-driven attract demo under the audio pin ([debug] det_title_demo, default 0 = off).
 void gdx_det_set_title_demo(int armTicks, int demoTicks);
 int gdx_det_title_demo_step(int gameModeIsTitle, int state);
+/* bottom-ui: 1 = a bottom-screen menu flow is open on the title; the attract demo is not armed. */
+void gdx_title_demo_set_held(int held);
+int gdx_title_demo_held(void);
 
 #ifdef __cplusplus
 }

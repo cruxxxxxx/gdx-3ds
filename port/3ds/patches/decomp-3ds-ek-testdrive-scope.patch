@@ -1,0 +1,83 @@
+diff --git a/src/game/racer.c b/src/game/racer.c
+--- a/src/game/racer.c
++++ b/src/game/racer.c
+@@ -5747,6 +5747,9 @@
+ #include "nrr/gdx3ds_nrr_mach.h" /* N60MACH (decomp-3ds-nrr-mach.patch): the machines' NRR snapshot */
+ #include "gdx3ds_prewarm.h" /* N60PREWARM (decomp-3ds-prewarm.patch): [native] prewarm in the opaque appear frame */
+ extern int gdx_rival_lod6_skip(void);
++#ifdef EXPANSION_KIT
++extern int gdx3ds_c5tick_testdrive_scope(void); /* S5b: the course editor's test drive in race scope */
++#endif
+ 
+ /* N60MACH: Racer_Draw's body section ([native] nrr_mach, n60mach-progress.md), as the BODY
+  * consumer's stub (gdx3ds_c5tick_consume): it makes every game-state write the section makes --
+@@ -5988,7 +5991,10 @@
+      * declines here -- its racers are placed by the same Racer_Init/Course_Init path a real race
+      * uses (EndingCutscene_Init calls both), so this section's snapshot is exactly as valid as
+      * it is mid-race. The course editor still has no racers in the sense this section expects. */
+-    if (gGameMode == GAMEMODE_COURSE_EDIT) {
++    if (gGameMode == GAMEMODE_COURSE_EDIT && !gdx3ds_c5tick_testdrive_scope()) {
++        /* S5b: the editor's TEST DRIVE is a race (Racer_Init + Course_Init placed its racer, see
++         * func_xk2_800DEE20), and with [native] nrr_testdrive its draw opens the race scope
++         * (decomp-3ds-ek-testdrive-scope.patch); every other course-edit draw still declines. */
+         return NULL;
+     }
+ #endif
+diff --git a/src/overlays/course_edit/191080.c b/src/overlays/course_edit/191080.c
+--- a/src/overlays/course_edit/191080.c
++++ b/src/overlays/course_edit/191080.c
+@@ -201,22 +201,51 @@
+ 
+ extern u8 D_xk2_80104CA0[];
+ 
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++/* S5b [native] nrr_testdrive (port/3ds/gdx3ds_c5tick.c, o3dsek-plan.md section 6): the test drive
++ * draws a race -- sky, course, gadgets, the one racer -- from here, outside Race_Draw, so the c5tick
++ * race scope never opened for it and every NRR category drew it on the legacy interpreter. The
++ * scope call opens that scope (a no-op with the lever off) and the section markers below are
++ * Race_Draw's own 1P ones, so each consumed section's stub replaces its call exactly as it does in
++ * a race. game.c's TRANS marker closes the scope after the mode's draw. With the lever off no
++ * section ever skips here (no scope) and the display list is the stock one. */
++#include "gdx3ds_dlb_shim.h"
++extern void gdx_dl_testdrive_scope(void);
++#define GDX_EK_TESTDRIVE_SCOPE() gdx_dl_testdrive_scope()
++#else
++#define GDX_DLB(sec)
++#define GDX_DL_SKIP(sec, view) 0
++#define GDX_EK_TESTDRIVE_SCOPE()
++#endif
++
+ Gfx* func_xk2_800DF6FC(Gfx* gfx) {
+ 
+     gSPDisplayList(gfx++, D_30004A8);
+     gSPDisplayList(gfx++, D_9014AA0);
+ 
+     if (gInCourseEditTestRun) {
++        GDX_EK_TESTDRIVE_SCOPE();
+         gSPMatrix(gfx++, D_2000000, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
+         gDPPipeSync(gfx++);
+         gDPPipelineMode(gfx++, G_PM_1PRIMITIVE);
+         gDPSetTextureFilter(gfx++, G_TF_BILERP);
+-        gfx = Background_Draw(gfx, 0, SCISSOR_BOX_FULL_SCREEN);
+-        gfx = Course_Draw(gfx, 0);
+-        gfx = Course_GadgetsDraw(gfx, 0);
++        GDX_DLB(SKY);
++        if (!GDX_DL_SKIP(SKY, 0)) {
++            gfx = Background_Draw(gfx, 0, SCISSOR_BOX_FULL_SCREEN);
++        }
++        GDX_DLB(TRK);
++        if (!GDX_DL_SKIP(TRK, 0)) {
++            gfx = Course_Draw(gfx, 0);
++        }
++        GDX_DLB(DRESS);
++        if (!GDX_DL_SKIP(DRESS, 0)) {
++            gfx = Course_GadgetsDraw(gfx, 0);
++        }
++        GDX_DLB(RMID);
+         gSPLoadUcodeL(gfx++, gspF3DFLX2_Rej_fifo);
+         func_xk2_800E1FC0(&gfx);
+         gfx = Racer_Draw(gfx, 0);
++        GDX_DLB(RMID);
+         gSPLoadUcodeL(gfx++, gspF3DEX2_fifo);
+         gSPMatrix(gfx++, D_2000000, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
+         func_xk2_800E1FC0(&gfx);

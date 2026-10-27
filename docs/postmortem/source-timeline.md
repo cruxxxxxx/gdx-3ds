@@ -290,12 +290,12 @@ a quoted session.
   for track, machines, sky, HUD and effects. Source: the post-mortem's own `native.html` ("Why fork the
   renderer" and the Tier 1 / Tier 2 table).
 - **Phase 1, the Old 3DS campaign (09-24 → 10-08):** see `source-perf-data.md` §3 and the post-mortem's
-  `old-3ds.html` for the full per-card numbers; this addendum does not repeat them.
+  `native.html` (Old 3DS part) for the full per-card numbers; this addendum does not repeat them.
 - **Phase 2, shipping it (10-08 → 10-19):** Expansion Kit save/title separation (own CIA title
   `000400000FF3D600`, own save `saves/fzerox-ek.sav`); the bottom-screen dashboard (see the post-mortem's
   `native.html`, "The bottom screen: DASH" — three placement modes shipped, a fourth fully-custom layout
   editor designed and shelved 10-18); a measured Old 3DS memory ceiling (see `native.html`'s known-issues
-  table and `old-3ds.html`, 10-16); an audio-crackle hypothesis tested and refuted (see `native.html`'s
+  table and `native.html` (Old 3DS part), 10-16); an audio-crackle hypothesis tested and refuted (see `native.html`'s
   known-issues table, 10-16); a New 3DS title-screen freeze root-caused and fixed on real hardware, not the
   emulator (see `native.html`, "The New 3DS freeze", commits `14eccfe2` through `403c241a`, 10-18); disk
   streaming and Japanese-input defaults for every 3DS build (commit `c99682f3`, 10-19).

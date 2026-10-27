@@ -30,10 +30,12 @@
  * error, errno, cwd) so a bad path is diagnosable from the Azahar log.
  */
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #ifdef __3DS__
@@ -42,6 +44,7 @@
 
 #include "zip.h"
 #include "miniz.h"
+#include "../../gdx3ds_hudbake.h" /* gdx3ds_hudbake_fingerprint_entry: the cache key's per-archive mix */
 
 /* libzip zip_stat.valid bits (only the ones the surface exposes). */
 #define GDX_ZIP_STAT_NAME 0x0001u
@@ -56,12 +59,30 @@
 #define GDX_ZIP_ER_MEMORY 14
 #define GDX_ZIP_ER_READ 5
 
+/* HEAPFIX I/O: each handle reads its archive through its own unbuffered descriptor with a
+ * small read-ahead window instead of miniz's stdio FILE. With a FILE every record cost several
+ * SD requests (newlib refills its buffer in fixed small chunks, and every seek drops it): ~6 ms
+ * per small record on an Old 3DS, 820 ms for the HUD bake's 138. Now a read that fits the
+ * window costs one request for the window and the next reads near it are free; a read larger
+ * than the window goes straight into the caller's buffer in one request. */
+#define GDX_ZIPSHIM_WINDOW (8u * 1024u)
+
+typedef struct GdxZipIo {
+    int fd;
+    mz_uint64 fdPos;     /* the descriptor's offset (skips a redundant lseek) */
+    unsigned char* win;  /* GDX_ZIPSHIM_WINDOW bytes */
+    mz_uint64 winOfs;
+    size_t winLen;       /* 0 = empty */
+} GdxZipIo;
+
 struct zip {
     mz_zip_archive mz;
+    GdxZipIo io;
     int readable;    /* 1: mz is an initialized reader */
     char** names;    /* stable storage for zip_get_name/zip_stat */
     mz_uint numEntries;
     zip_error_t err;
+    char* path;      /* the archive this handle reads (the fingerprint registry dedupes on it) */
 };
 
 struct zip_file {
@@ -103,6 +124,282 @@ static void gdx_zipshim_set_error(zip_t* archive, int code) {
         archive->err.zip_err = code;
         archive->err.sys_err = 0;
     }
+}
+
+/* ---- open-handle registry: lets a caller fingerprint an entry without reading it ----------
+ *
+ * gdx3ds_zipshim_entry_fingerprint() answers "what are the CRC-32 and size of entry NAME in the
+ * archives mounted right now", straight from the central directories miniz already holds in RAM:
+ * no file I/O, no inflate. The bottom-screen HUD bake keys its SD cache on it (gdx3ds_hudbake.h).
+ * Every readable handle registers at zip_open and leaves at zip_close; LUS pools several handles
+ * per archive, so lookups dedupe on the archive path. */
+#define GDX_ZIPSHIM_REGISTRY_MAX 16
+
+static zip_t* sRegistry[GDX_ZIPSHIM_REGISTRY_MAX];
+#ifdef __3DS__
+static LightLock sRegistryLock;
+static int sRegistryLockReady = 0;
+#endif
+
+static void gdx_zipshim_registry_lock(void) {
+#ifdef __3DS__
+    if (!sRegistryLockReady) {
+        LightLock_Init(&sRegistryLock);
+        sRegistryLockReady = 1;
+    }
+    LightLock_Lock(&sRegistryLock);
+#endif
+}
+
+static void gdx_zipshim_registry_unlock(void) {
+#ifdef __3DS__
+    LightLock_Unlock(&sRegistryLock);
+#endif
+}
+
+static void gdx_zipshim_registry_add(zip_t* archive) {
+    gdx_zipshim_registry_lock();
+    for (int i = 0; i < GDX_ZIPSHIM_REGISTRY_MAX; i++) {
+        if (sRegistry[i] == NULL) {
+            sRegistry[i] = archive;
+            break;
+        }
+    }
+    gdx_zipshim_registry_unlock();
+}
+
+static void gdx_zipshim_registry_remove(zip_t* archive) {
+    gdx_zipshim_registry_lock();
+    for (int i = 0; i < GDX_ZIPSHIM_REGISTRY_MAX; i++) {
+        if (sRegistry[i] == archive) {
+            sRegistry[i] = NULL;
+        }
+    }
+    gdx_zipshim_registry_unlock();
+}
+
+static int gdx_zipshim_registry_seen_path(int upto, const char* path) {
+    for (int i = 0; i < upto; i++) {
+        if (sRegistry[i] != NULL && sRegistry[i]->path != NULL && strcmp(sRegistry[i]->path, path) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Case-sensitive lookup in O(log n): miniz only binary-searches its sorted index for a
+ * case-INsensitive lookup (a case-sensitive one scans every entry), so search that way and
+ * accept the hit only if the stored name matches exactly; on a mismatch (names differing only in
+ * case) fall back to the exact scan. */
+static int gdx_zipshim_locate_exact(zip_t* archive, const char* name, mz_uint32* index) {
+    if (!mz_zip_reader_locate_file_v2(&archive->mz, name, NULL, 0, index)) {
+        /* No case-insensitive match means no exact one either: a miss costs O(log n) too. */
+        return 0;
+    }
+    if (*index < archive->numEntries && archive->names != NULL && strcmp(archive->names[*index], name) == 0) {
+        return 1;
+    }
+    return mz_zip_reader_locate_file_v2(&archive->mz, name, NULL, MZ_ZIP_FLAG_CASE_SENSITIVE, index) ? 1 : 0;
+}
+
+/* For every distinct mounted archive holding `name`: its CRC-32 and uncompressed size, mixed
+ * order-independently into *fingerprint (FNV-1a per archive, summed). Returns how many archives
+ * hold it (0: none, *fingerprint = 0). */
+int gdx3ds_zipshim_entry_fingerprint(const char* name, unsigned int* fingerprint) {
+    unsigned int sum = 0;
+    int found = 0;
+    if (name == NULL) {
+        if (fingerprint != NULL) {
+            *fingerprint = 0;
+        }
+        return 0;
+    }
+    gdx_zipshim_registry_lock();
+    for (int i = 0; i < GDX_ZIPSHIM_REGISTRY_MAX; i++) {
+        zip_t* archive = sRegistry[i];
+        mz_uint32 index = 0;
+        mz_zip_archive_file_stat st;
+        if (archive == NULL || !archive->readable || archive->path == NULL) {
+            continue;
+        }
+        if (gdx_zipshim_registry_seen_path(i, archive->path)) {
+            continue;
+        }
+        if (!gdx_zipshim_locate_exact(archive, name, &index)) {
+            continue;
+        }
+        if (!mz_zip_reader_file_stat(&archive->mz, index, &st)) {
+            continue;
+        }
+        sum += gdx3ds_hudbake_fingerprint_entry((unsigned int)st.m_crc32, (unsigned long long)st.m_uncomp_size);
+        found++;
+    }
+    gdx_zipshim_registry_unlock();
+    if (fingerprint != NULL) {
+        *fingerprint = sum;
+    }
+    return found;
+}
+
+/* Where `name` sits in the mounted archives: its local-header offset and uncompressed size in
+ * the archive where it is LARGEST (an upper bound for a buffer whichever archive serves it).
+ * Returns how many archives hold it (0: none). The HUD bake sorts its prefetch on the offset. */
+int gdx3ds_zipshim_entry_locate(const char* name, unsigned long long* offset, unsigned long long* size) {
+    int found = 0;
+    unsigned long long bestSize = 0;
+    unsigned long long bestOfs = 0;
+    if (name == NULL) {
+        return 0;
+    }
+    gdx_zipshim_registry_lock();
+    for (int i = 0; i < GDX_ZIPSHIM_REGISTRY_MAX; i++) {
+        zip_t* archive = sRegistry[i];
+        mz_uint32 index = 0;
+        mz_zip_archive_file_stat st;
+        if (archive == NULL || !archive->readable || archive->path == NULL) {
+            continue;
+        }
+        if (gdx_zipshim_registry_seen_path(i, archive->path)) {
+            continue;
+        }
+        if (!gdx_zipshim_locate_exact(archive, name, &index) || !mz_zip_reader_file_stat(&archive->mz, index, &st)) {
+            continue;
+        }
+        if (found == 0 || (unsigned long long)st.m_uncomp_size > bestSize) {
+            bestSize = (unsigned long long)st.m_uncomp_size;
+            bestOfs = (unsigned long long)st.m_local_header_ofs;
+        }
+        found++;
+    }
+    gdx_zipshim_registry_unlock();
+    if (offset != NULL) {
+        *offset = bestOfs;
+    }
+    if (size != NULL) {
+        *size = bestSize;
+    }
+    return found;
+}
+
+/* ---- archive I/O (see GdxZipIo) ---------------------------------------------------------- */
+
+static volatile unsigned long sIoReads = 0;          /* read() requests issued, every handle */
+static volatile unsigned long long sIoBytes = 0;
+
+void gdx3ds_zipshim_io_stats(unsigned long* reads, unsigned long long* bytes) {
+    if (reads != NULL) {
+        *reads = sIoReads;
+    }
+    if (bytes != NULL) {
+        *bytes = sIoBytes;
+    }
+}
+
+/* n bytes at ofs straight from the descriptor; returns the bytes read. */
+static size_t gdx_zipshim_pread(GdxZipIo* io, mz_uint64 ofs, void* buf, size_t n) {
+    size_t done = 0;
+    if (io->fdPos != ofs) {
+        if (lseek(io->fd, (off_t)ofs, SEEK_SET) != (off_t)ofs) {
+            io->fdPos = (mz_uint64)-1;
+            return 0;
+        }
+        io->fdPos = ofs;
+    }
+    while (done < n) {
+        const ssize_t got = read(io->fd, (unsigned char*)buf + done, n - done);
+        sIoReads++;
+        if (got <= 0) {
+            break;
+        }
+        done += (size_t)got;
+        sIoBytes += (unsigned long long)got;
+    }
+    io->fdPos = ofs + done;
+    return done;
+}
+
+/* miniz's mz_file_read_func over a GdxZipIo. */
+static size_t gdx_zipshim_read_func(void* opaque, mz_uint64 ofs, void* buf, size_t n) {
+    zip_t* archive = (zip_t*)opaque;
+    GdxZipIo* io = &archive->io;
+    const mz_uint64 size = archive->mz.m_archive_size;
+    size_t avail;
+    if (n == 0 || ofs >= size) {
+        return 0;
+    }
+    if (io->winLen != 0 && ofs >= io->winOfs && ofs + n <= io->winOfs + io->winLen) {
+        memcpy(buf, io->win + (size_t)(ofs - io->winOfs), n);
+        return n;
+    }
+    if (io->win == NULL || n >= GDX_ZIPSHIM_WINDOW) {
+        return gdx_zipshim_pread(io, ofs, buf, n);
+    }
+    avail = (size_t)((size - ofs) < GDX_ZIPSHIM_WINDOW ? (size - ofs) : GDX_ZIPSHIM_WINDOW);
+    io->winLen = gdx_zipshim_pread(io, ofs, io->win, avail);
+    io->winOfs = ofs;
+    if (io->winLen < n) {
+        const size_t got = io->winLen;
+        memcpy(buf, io->win, got);
+        io->winLen = 0;
+        return got;
+    }
+    memcpy(buf, io->win, n);
+    return n;
+}
+
+/* The window lives in the linear heap on the console (megabytes spare there; the regular heap
+ * is the Old 3DS's scarce one), plain malloc on the host. */
+static unsigned char* gdx_zipshim_window_alloc(void) {
+#ifdef __3DS__
+    return (unsigned char*)linearAlloc(GDX_ZIPSHIM_WINDOW);
+#else
+    return (unsigned char*)malloc(GDX_ZIPSHIM_WINDOW);
+#endif
+}
+
+static void gdx_zipshim_window_free(unsigned char* win) {
+    if (win == NULL) {
+        return;
+    }
+#ifdef __3DS__
+    linearFree(win);
+#else
+    free(win);
+#endif
+}
+
+static void gdx_zipshim_io_close(GdxZipIo* io) {
+    if (io->fd >= 0) {
+        close(io->fd);
+    }
+    gdx_zipshim_window_free(io->win);
+    io->fd = -1;
+    io->win = NULL;
+    io->winLen = 0;
+}
+
+/* Opens `path` as a miniz USER-type reader over GdxZipIo. 1 on success. */
+static int gdx_zipshim_reader_open(zip_t* archive, const char* path) {
+    struct stat st;
+    archive->io.fd = open(path, O_RDONLY);
+    archive->io.fdPos = 0;
+    archive->io.win = NULL;
+    archive->io.winLen = 0;
+    if (archive->io.fd < 0) {
+        return 0;
+    }
+    if (fstat(archive->io.fd, &st) != 0 || st.st_size <= 0) {
+        gdx_zipshim_io_close(&archive->io);
+        return 0;
+    }
+    archive->io.win = gdx_zipshim_window_alloc(); /* NULL: every read goes direct */
+    archive->mz.m_pRead = gdx_zipshim_read_func;
+    archive->mz.m_pIO_opaque = archive;
+    if (!mz_zip_reader_init(&archive->mz, (mz_uint64)st.st_size, 0)) {
+        gdx_zipshim_io_close(&archive->io);
+        return 0;
+    }
+    return 1;
 }
 
 static void gdx_zipshim_free_names(zip_t* archive) {
@@ -166,17 +463,21 @@ zip_t* zip_open(const char* path, int flags, int* errorp) {
     }
 
     mz_zip_zero_struct(&archive->mz);
+    archive->io.fd = -1;
     errno = 0;
-    if (mz_zip_reader_init_file(&archive->mz, path, 0)) {
+    if (gdx_zipshim_reader_open(archive, path)) {
         archive->readable = 1;
         if (!gdx_zipshim_index_names(archive)) {
             mz_zip_reader_end(&archive->mz);
+            gdx_zipshim_io_close(&archive->io);
             free(archive);
             if (errorp != NULL) {
                 *errorp = GDX_ZIP_ER_MEMORY;
             }
             return NULL;
         }
+        archive->path = strdup(path);
+        gdx_zipshim_registry_add(archive);
         gdx_zipshim_logf("[zipshim] open ok path=%s entries=%u", path, (unsigned)archive->numEntries);
         return archive;
     }
@@ -208,7 +509,9 @@ zip_int64_t zip_name_locate(zip_t* archive, const char* fname, zip_flags_t flags
         return -1;
     }
     mz_uint32 index = 0;
-    if (!mz_zip_reader_locate_file_v2(&archive->mz, fname, NULL, MZ_ZIP_FLAG_CASE_SENSITIVE, &index)) {
+    /* Case-sensitive, as libzip's default: through the sorted index (O(log n)) instead of
+     * miniz's case-sensitive linear scan over all ~3600 entries per lookup. */
+    if (!gdx_zipshim_locate_exact(archive, fname, &index)) {
         gdx_zipshim_set_error(archive, GDX_ZIP_ER_NOENT);
         return -1;
     }
@@ -297,10 +600,13 @@ int zip_close(zip_t* archive) {
     if (archive == NULL) {
         return -1;
     }
+    gdx_zipshim_registry_remove(archive);
     if (archive->readable) {
         mz_zip_reader_end(&archive->mz);
     }
+    gdx_zipshim_io_close(&archive->io);
     gdx_zipshim_free_names(archive);
+    free(archive->path);
     free(archive);
     return 0;
 }

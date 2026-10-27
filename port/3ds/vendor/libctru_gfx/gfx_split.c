@@ -15,6 +15,9 @@
  *   - gdx3ds_gfx_move_screen_to_linear(): re-home one screen's framebuffers in the linear
  *     heap at run time (the VRAM guard's repair, gdx3ds_vram_guard.c).
  *   - Brace style reformatted to the project's (K&R).
+ *   - o3ds60: an optional THIRD top framebuffer (gdx3ds_gfx_top_triple_request): the back buffer
+ *     is then the one that is neither on screen nor waiting for its vblank, so a frame never has
+ *     to wait for the previous swap to latch before its display transfer (the pace end guard).
  *
  * Linked into G-Diffuser-3DS as an object, so every gfx* symbol resolves here and libctru.a's
  * gfx.o is never pulled (a missing symbol would pull it and fail the link on duplicates). */
@@ -45,6 +48,30 @@ static bool gfxIsVram[2]; /* n60boot: per screen (upstream: one bool) */
 static bool gfxInited;    /* upstream used screenFree != NULL */
 static u8 gfxCurBuf[2];
 static u8 gfxIsDoubleBuf[2];
+
+/* ---- o3ds60 top-screen triple buffering ------------------------------------------------------
+ * gfxCurBuf[GFX_TOP] is the latest presented buffer (0..2) while the rotation is on. The swap runs
+ * on the GSP event thread (citro3d's onQueueFinish); gfxGetFramebuffer on the main thread reads
+ * the latched back index, which only a swap changes. Mode changes are requested from the main
+ * thread and applied at a swap:
+ *   OFF  -> ON   the third buffer joins: the next back is the one neither shown nor pending.
+ *   ON   -> LEAVE the next backs are picked from buffers 0 and 1 only;
+ *   LEAVE -> OFF once the latest present and the buffer on screen are both 0 / 1: upstream
+ *               double buffering again (cur ^ 1), the pace end guard covers the latch. */
+enum { TOP_TRIPLE_OFF = 0, TOP_TRIPLE_ON = 1, TOP_TRIPLE_LEAVE = 2 };
+static u8* gfxTopThird = NULL;
+static volatile int gfxTopTripleWant = 0;
+static volatile int gfxTopTripleState = TOP_TRIPLE_OFF;
+static volatile u8 gfxTopBack = 1;  /* the back buffer while the state is not OFF */
+static u8 gfxTopShown = 0;          /* the buffer known to be on screen */
+static u8 gfxTopSel = 0;            /* the register set (0/1) of the latest top present */
+static volatile u32 gfxTopTriplePresents = 0;
+static volatile u32 gfxTopTripleReplaced = 0; /* presents that replaced a pending one (a frame never shown) */
+static volatile u32 gfxTopTripleEdges = 0;
+
+static u8* TopBuffer(unsigned id) {
+    return id < 2u ? gfxTopFramebuffers[id] : gfxTopThird;
+}
 
 static void FreeFramebuffer(void* mem);
 
@@ -124,14 +151,14 @@ void gfxSetDoubleBuffering(gfxScreen_t screen, bool enable) {
     gfxIsDoubleBuf[screen] = enable ? 1 : 0; // make sure they're the integer values '1' and '0'
 }
 
-static void gfxPresentFramebuffer(gfxScreen_t screen, u8 id, bool hasStereo) {
+static void gfxPresentFramebufferSel(gfxScreen_t screen, u8 id, u8 sel, bool hasStereo) {
     u32 stride = GSP_SCREEN_WIDTH * gspGetBytesPerPixel(gfxFramebufferFormats[screen]);
     u32 mode = gfxFramebufferFormats[screen];
 
     const u8* fb_a;
     const u8* fb_b;
     if (screen == GFX_TOP) {
-        fb_a = gfxTopFramebuffers[id];
+        fb_a = TopBuffer(id);
         switch (gfxTopMode) {
             default:
             case MODE_2D:
@@ -157,7 +184,14 @@ static void gfxPresentFramebuffer(gfxScreen_t screen, u8 id, bool hasStereo) {
         mode |= 3 << 8;
     }
 
-    gspPresentBuffer(screen, id, fb_a, fb_b, stride, mode);
+    gspPresentBuffer(screen, sel, fb_a, fb_b, stride, mode);
+}
+
+static void gfxPresentFramebuffer(gfxScreen_t screen, u8 id, bool hasStereo) {
+    if (screen == GFX_TOP) {
+        gfxTopSel = id;
+    }
+    gfxPresentFramebufferSel(screen, id, id, hasStereo);
 }
 
 void gdx3ds_gfx_init_split(GSPGPU_FramebufferFormat topFormat, GSPGPU_FramebufferFormat bottomFormat, bool topInVram,
@@ -210,6 +244,10 @@ void gfxExit(void) {
     FreeFramebuffer(gfxTopFramebuffers[1]);
     FreeFramebuffer(gfxBottomFramebuffers[0]);
     FreeFramebuffer(gfxBottomFramebuffers[1]);
+    FreeFramebuffer(gfxTopThird); /* o3ds60 */
+    gfxTopThird = NULL;
+    gfxTopTripleWant = 0;
+    gfxTopTripleState = TOP_TRIPLE_OFF;
     gfxTopFramebuffers[0] = gfxTopFramebuffers[1] = NULL;
     gfxBottomFramebuffers[0] = gfxBottomFramebuffers[1] = NULL;
     gfxTopFramebufferMaxSize = gfxBottomFramebufferMaxSize = 0;
@@ -227,7 +265,10 @@ u8* gfxGetFramebuffer(gfxScreen_t screen, gfx3dSide_t side, u16* width, u16* hei
     u8* fb;
 
     if (screen == GFX_TOP) {
-        fb = gfxTopFramebuffers[id];
+        if (gfxTopTripleState != TOP_TRIPLE_OFF) {
+            id = gfxTopBack;
+        }
+        fb = TopBuffer(id);
         scr_height = GSP_SCREEN_HEIGHT_TOP;
         switch (gfxTopMode) {
             default:
@@ -270,7 +311,62 @@ void gfxFlushBuffers(void) {
     GSPGPU_FlushDataCache(gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL), bottomSize);
 }
 
+/* The buffer that is neither `a` nor `b`, preferring 0 / 1 when `lowOnly` (two may qualify). */
+static u8 OtherTopBuffer(u8 a, u8 b, bool lowOnly) {
+    u8 i;
+    for (i = 0; i < (lowOnly ? 2u : 3u); i++) {
+        if (i != a && i != b) {
+            return i;
+        }
+    }
+    return 2u; /* lowOnly with {a, b} = {0, 1}: the third is the only free one */
+}
+
+/* o3ds60: one top present under the rotation (state ON or LEAVE), then the next back. */
+static void TopTripleSwap(bool hasStereo) {
+    const u8 b = gfxTopBack;
+    const bool pending = gspIsPresentPending(GSP_SCREEN_TOP);
+    u8 sel;
+    if (!pending) {
+        gfxTopShown = gfxCurBuf[GFX_TOP]; /* the previous present has latched */
+        sel = gfxTopSel ^ 1u;
+    } else {
+        sel = gfxTopSel; /* replaces the pending present: the shown buffer keeps the other set */
+        gfxTopTripleReplaced++;
+    }
+    gfxCurBuf[GFX_TOP] = b;
+    gfxTopSel = sel;
+    gfxPresentFramebufferSel(GFX_TOP, b, sel, hasStereo);
+    gfxTopTriplePresents++;
+    if (gfxTopTripleWant && gfxTopThird != NULL) {
+        gfxTopTripleState = TOP_TRIPLE_ON;
+    } else if (gfxTopTripleState == TOP_TRIPLE_ON) {
+        gfxTopTripleState = TOP_TRIPLE_LEAVE;
+        gfxTopTripleEdges++;
+    }
+    if (gfxTopTripleState == TOP_TRIPLE_LEAVE && b < 2u && gfxTopShown < 2u) {
+        /* both in use are 0 / 1: upstream double buffering from here (back = cur ^ 1, which the
+           end guard keeps off the screen until this present latches) */
+        gfxTopTripleState = TOP_TRIPLE_OFF;
+        return;
+    }
+    gfxTopBack = OtherTopBuffer(b, gfxTopShown, gfxTopTripleState == TOP_TRIPLE_LEAVE);
+}
+
 void gfxScreenSwapBuffers(gfxScreen_t scr, bool hasStereo) {
+    if (scr == GFX_TOP && gfxIsDoubleBuf[GFX_TOP]) {
+        if (gfxTopTripleState == TOP_TRIPLE_OFF && gfxTopTripleWant && gfxTopThird != NULL) {
+            /* OFF -> ON: this present is the double-buffer back (cur ^ 1); afterwards the rotation */
+            gfxTopTripleState = TOP_TRIPLE_ON;
+            gfxTopBack = gfxCurBuf[GFX_TOP] ^ 1u;
+            gfxTopShown = gspIsPresentPending(GSP_SCREEN_TOP) ? (u8)(gfxCurBuf[GFX_TOP] ^ 1u) : gfxCurBuf[GFX_TOP];
+            gfxTopTripleEdges++;
+        }
+        if (gfxTopTripleState != TOP_TRIPLE_OFF) {
+            TopTripleSwap(hasStereo);
+            return;
+        }
+    }
     gfxCurBuf[scr] ^= gfxIsDoubleBuf[scr];
     gfxPresentFramebuffer(scr, gfxCurBuf[scr], hasStereo);
 }
@@ -337,4 +433,33 @@ bool gdx3ds_gfx_move_screen_to_linear(gfxScreen_t screen) {
     FreeFramebuffer(old0);
     FreeFramebuffer(old1);
     return true;
+}
+
+/* ---------------------------------------------------------------- o3ds60 additions ---- */
+
+bool gdx3ds_gfx_top_triple_request(bool on) {
+    if (on && gfxTopThird == NULL && gfxInited && gfxTopFramebufferMaxSize != 0) {
+        u8* third = gfxIsVram[GFX_TOP] ? (u8*)vramAlloc(gfxTopFramebufferMaxSize) : (u8*)linearAlloc(gfxTopFramebufferMaxSize);
+        if (third == NULL) {
+            return false;
+        }
+        memset(third, 0, gfxTopFramebufferMaxSize);
+        GSPGPU_FlushDataCache(third, gfxTopFramebufferMaxSize);
+        gfxTopThird = third;
+    }
+    gfxTopTripleWant = (on && gfxTopThird != NULL) ? 1 : 0;
+    return !on || gfxTopThird != NULL;
+}
+
+bool gdx3ds_gfx_top_triple_active(void) {
+    return gfxTopTripleState != TOP_TRIPLE_OFF;
+}
+
+void gdx3ds_gfx_top_triple_stats(GdxGfxTripleStats* out) {
+    out->presents = gfxTopTriplePresents;
+    out->replaced = gfxTopTripleReplaced;
+    out->edges = gfxTopTripleEdges;
+    out->state = gfxTopTripleState;
+    out->bytes = gfxTopThird != NULL ? gfxTopFramebufferMaxSize : 0u;
+    out->inVram = gfxTopThird != NULL && gdx3ds_gfx_addr_in_vram(gfxTopThird);
 }

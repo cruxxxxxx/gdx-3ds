@@ -522,7 +522,10 @@ void Interp::HudReplayRunOne(void* record, uint32_t runIndex) {
         f.idx++;
         const uint8_t op = Opcode(c.w0);
         if (GDX_UNLIKELY(mNc != nullptr)) {
-            NcNote(c, false); /* [debug] nicensus */
+            /* [debug] nicensus; ni_strict files the direct emitter's rectangles / loads apart */
+            const bool directOp = (direct && (op == OP_TEXRECT || op == OP_TEXRECTFLIP || op == OP_LOADBLOCK)) ||
+                                  (fxshdDirect && op == OP_LOADBLOCK);
+            NcNote(c, false, directOp ? NCS_HUDDIRECT : NCS_HUDRUN);
         }
         if (mHudRec) {
             HudRecOpPre(wordIndex, op);
@@ -655,7 +658,7 @@ GDX_COLD void Interp::HudReplayRunPlain(const GdxHudWord* w, uint32_t n) {
         const Cmd c = ReadCmd(f.list, f.idx);
         f.idx++;
         if (GDX_UNLIKELY(mNc != nullptr)) {
-            NcNote(c, false); /* [debug] nicensus */
+            NcNote(c, false, NCS_HUDPLAIN); /* [debug] nicensus */
         }
         if (Opcode(c.w0) == OP_DL) {
             HudNestedDl(c);

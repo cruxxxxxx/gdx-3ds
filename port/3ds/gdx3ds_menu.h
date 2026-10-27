@@ -66,6 +66,19 @@ int gdx3ds_menu_lcd_session_open(void);
  * two; a no-op unless [menu] enabled is on. */
 void gdx3ds_menu_note_shot(const char* label);
 
+/* release: the PLAYER SETTINGS (Home's SETTINGS button, gdx3ds_bui.c). Opens this console UI with
+ * only the player tabs -- DSP (display, widescreen, detail), 3D, AUD (volume), IN (controls,
+ * remapping) -- and a HOME tab back; no developer tab (STAT, LOG, DBG, MAP, MP, AB, CRS). The
+ * developer console stays behind L+R+SELECT / [debug] dev_console. Returns 0 when the console UI
+ * is off ([menu] enabled = 0), so Home hides the button. */
+int gdx3ds_menu_settings_available(void);
+void gdx3ds_menu_open_settings(void);
+/* 1 while the player settings (not the developer console) are open. */
+int gdx3ds_menu_settings_open(void);
+/* uipolish: 1 while B leaves the console (SETTINGS / the developer pages, outside a race): the
+ * product menus hide that B from the game (gdx3ds_bui_game_key_mask). */
+int gdx3ds_menu_b_exits(void);
+
 #ifdef __cplusplus
 }
 #endif

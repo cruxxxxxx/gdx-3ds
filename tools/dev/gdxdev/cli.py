@@ -320,6 +320,11 @@ def build_parser():
                          "([debug] replay_quit=0). For diagnostics that watch post-replay "
                          "behaviour (wobble, dynlod). Same as --ini debug.replay_quit=0")
     rr.add_argument("--build-dir", default=buildmod.DEFAULT_BUILD_DIR)
+    rr.add_argument("--bare-ini", dest="bare_ini", action="store_true",
+                    help="start the instance ini EMPTY instead of seeding it from the Qt SD's "
+                         "user sections ([display] [stereo] [input] [net] [hud] ...): the run "
+                         "sees only the measurement keys and its own --ini, i.e. the no-ini "
+                         "player's built-in defaults (preset-fix parity)")
     _add_3d(rr)
     _add_model(rr)
     rr.set_defaults(func=_retro_dispatch)
@@ -337,8 +342,8 @@ def build_parser():
     _common(rp2)
     rp2.add_argument("--prune", action="store_true",
                      help="also delete idle instance dirs older than --days")
-    rp2.add_argument("--days", type=int, default=2,
-                     help="age threshold for --prune (default 2)")
+    rp2.add_argument("--days", type=float, default=2,
+                     help="age threshold for --prune, in days; fractions allowed (0.05 = 72 min) (default 2)")
     rp2.set_defaults(func=_retro_dispatch)
 
     rst = rtsub.add_parser("status", help="which instances are running, stale or orphaned")

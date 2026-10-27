@@ -93,6 +93,12 @@ void gdx_dl_scene(int on);
  * caller is ending.c's EndingCutscene_Draw, kept apart from gdx_dl_scene so the two never leak into
  * each other's scenes. */
 void gdx_dl_scene_mach(int on);
+/* S5b, Expansion Kit builds only: [native] nrr_testdrive (default 0). The course editor's test drive
+ * draws its race outside Race_Draw; its draw calls gdx_dl_testdrive_scope (decomp-3ds-ek-testdrive-
+ * scope.patch) to open the race scope, never hollow. gdx3ds_c5tick_testdrive_scope: 1 while the build
+ * is inside it (the categories that refuse GAMEMODE_COURSE_EDIT accept that one scope). */
+void gdx_dl_testdrive_scope(void);
+int gdx3ds_c5tick_testdrive_scope(void);
 
 /* Decomp-facing (gdx3ds_dlb_shim.h). */
 void gdx_dlb_mark(int sec);

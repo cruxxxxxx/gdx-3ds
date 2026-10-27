@@ -16,6 +16,12 @@ if(NINTENDO_3DS)
     )
     # gdx_fiber_3ds.c implements the existing desktop contract port/gdx_fiber.h verbatim.
     target_include_directories(gdx3ds_os PRIVATE ../..)
+    # [ek] course_share's SCAN view hides the buttons from the game (gdx3ds_cshare_game_key_mask,
+    # port/3ds/gdx3ds_course_share.h). Expansion Kit builds only, so the shipped build's object is
+    # unchanged.
+    if(GDX_3DS_EXPANSION_KIT)
+        set_property(SOURCE gdx3ds_os_ctru.c APPEND PROPERTY COMPILE_DEFINITIONS GDX3DS_COURSE_SHARE=1)
+    endif()
 else()
     add_library(gdx3ds_os STATIC
         gdx3ds_os_stub.c

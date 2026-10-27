@@ -254,6 +254,23 @@ void Interp::TexCacheClear() {
     }
 }
 
+/* native-all S1 [native] atlas_race_reset: the race starts on an empty atlas. Every atlas-backed
+ * entry is retired here, before the clear, so tex_keep cannot keep a view the backend is about to
+ * drop (a kept view's next hit would bind a released cell). Standalone textures keep their
+ * tex_keep treatment. The views are small HUD-sized textures; the menus re-import theirs once,
+ * after the race. */
+GDX_COLD unsigned Interp::TexCacheAtlasReset() {
+    unsigned retired = 0;
+    for (unsigned i = 0; i < kTexCacheSize; i++) {
+        if (mTex[i].used && mBackend->TexPage(mTex[i].texture_id) >= 0) {
+            TexCacheRetireSlot(static_cast<int16_t>(i));
+            retired++;
+        }
+    }
+    mBackend->AtlasResetAll();
+    return retired;
+}
+
 /* What a retire tells the rest of the interpreter: the nrr state blocks naming the slot are
  * stale, and a live binding of it is dropped (re-arming the import pipeline). */
 void Interp::TexCacheSignalRetire(int16_t slot) {

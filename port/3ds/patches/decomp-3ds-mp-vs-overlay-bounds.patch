@@ -1,0 +1,21 @@
+diff --git a/src/overlays/ovl_i3/menus.c b/src/overlays/ovl_i3/menus.c
+--- a/src/overlays/ovl_i3/menus.c
++++ b/src/overlays/ovl_i3/menus.c
+@@ -6261,7 +6261,17 @@
+         }
+     } else { // VS MODE
+         if (!D_80141D6C) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++            /* MP30: a VS field can hold up to 30 racers, but every per-player array this loop feeds
++             * (sPlayerWinnerLoserFinishGameoverTimer, sPlayerShowFinishedTimeTimer, sPlayerRetireTimer,
++             * sPlayerGameoverState, ...) is [4], as in the stock game, where a VS field is at most 4.
++             * Past 4 the race-over overlays wrote into whatever followed: index 15 put 600 into
++             * sCourseMinimapTex and the bottom-screen map faulted on hardware (test-combined 90049af). */
++            const s32 gdxVsOverlayRacers = (gTotalRacers < 4) ? gTotalRacers : 4;
++            for (i = 0; i < gdxVsOverlayRacers; i++) {
++#else
+             for (i = 0; i < gTotalRacers; i++) {
++#endif
+ #if defined(PORT) && defined(GDX_PLATFORM_3DS)
+                 Gfx* gdxFvRacerMark = gfx; /* fullview: only the local player's messages stay */
+ #endif

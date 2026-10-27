@@ -1,0 +1,48 @@
+diff --git a/src/game/racer.c b/src/game/racer.c
+--- a/src/game/racer.c
++++ b/src/game/racer.c
+@@ -2291,6 +2291,12 @@
+         Audio_TriggerSystemSE(NA_SE_57);
+     }
+ }
++
++#if defined(PORT) && defined(__3DS__)
++/* port/3ds/gdx3ds_autodrive.c: machineLod is written by Racer_Draw (the LAST view drawn, skipped
++   on a skipped frame); in a lockstep session the simulation must not read it. */
++extern int gdx_sim_machine_visible(s32 machineLod);
++#endif
+ 
+ void Racer_ReceiveDamage(Racer* racer, f32 damageStrength) {
+     s32 pad[7];
+@@ -2367,7 +2373,11 @@
+ #endif
+         racer->stateFlags |= RACER_STATE_RECEIVED_DAMAGE;
+         if (racer->energy < 0.0f) {
++#if defined(PORT) && defined(__3DS__)
++            if (!gdx_sim_machine_visible(racer->machineLod)) {
++#else
+             if (racer->machineLod == 0) {
++#endif
+                 racer->energy = 0.1f;
+                 return;
+             }
+diff --git a/src/overlays/ovl_i3/cpu.c b/src/overlays/ovl_i3/cpu.c
+--- a/src/overlays/ovl_i3/cpu.c
++++ b/src/overlays/ovl_i3/cpu.c
+@@ -1078,8 +1078,15 @@
+     func_i3_80117A4C(racer, sKateAlenRacerId);
+ }
+ 
++#if defined(PORT) && defined(__3DS__)
++extern int gdx_sim_machine_visible(s32 machineLod); /* port/3ds/gdx3ds_autodrive.c */
++#define GDX_SIM_VISIBLE(racer) gdx_sim_machine_visible((racer)->machineLod)
++#else
++#define GDX_SIM_VISIBLE(racer) ((racer)->machineLod != 0)
++#endif
++
+ void Cpu_BehaviorBilly(Racer* racer, Controller* controller) {
+-    if ((racer->machineLod != 0) && (sPlayerRacer->raceDistance < racer->raceDistance) &&
++    if (GDX_SIM_VISIBLE(racer) && (sPlayerRacer->raceDistance < racer->raceDistance) &&
+         (racer->stateFlags & RACER_STATE_AIRBORNE)) {
+         controller->buttonPressed |= BTN_R_Z_COMBO;
+     }

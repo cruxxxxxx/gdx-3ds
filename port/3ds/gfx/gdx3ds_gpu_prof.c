@@ -26,6 +26,7 @@
  */
 #include "gdx3ds_gpu_prof.h"
 #include "gdx3ds_pace.h"                /* n60gp: [debug] pace_swapgate */
+#include "gdx3ds_prewrite.h"            /* o3ds3d: [debug] prewrite */
 
 #include <stdarg.h>
 #include <stdint.h>
@@ -653,6 +654,7 @@ void gdx3ds_gpuprof_frame_begin(int reentry) {
         }
         sCadPrevFreshBeginTick = svcGetSystemTick();
         gdx3ds_hitch_add(GDX_HITCH_EV_GSP_WAIT_TICKS, (uint32_t)(sCadPrevFreshBeginTick - tw0)); /* HITCH */
+        gdx3ds_pw_begin(tw0); /* o3ds3d [prewrite] */
         return;
     }
     /* [prof] hot-path gate: latched here (render thread, never mid-frame) so the
@@ -674,6 +676,7 @@ void gdx3ds_gpuprof_frame_begin(int reentry) {
     }
     const u64 t2 = svcGetSystemTick();
     gdx3ds_hitch_add(GDX_HITCH_EV_GSP_WAIT_TICKS, (uint32_t)(t2 - t0)); /* HITCH */
+    gdx3ds_pw_begin(t0); /* o3ds3d [prewrite] */
     sWaitVblMs = TicksToMs(tVbl); /* ~0 on frames where the adaptive skip fired */
     sWaitP3dMs = TicksToMs(tP3d);
     sFrameStartTick = t2;

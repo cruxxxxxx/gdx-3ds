@@ -77,6 +77,10 @@ interp = 1
 | `fx_sprites` | `0` | With `fx_sink`: fold prim/env colour changes into the vertex colour where the backend carries that input per vertex, so a colour change stops splitting the draw. |
 | `fx_hud` | `0` | The same fold rule inside **libultraship's** 2D batches — HUD digits, stars, markers stop splitting on every prim colour. Inert under `interp=1`; `ownfold` is its counterpart there. |
 | `ownfold` | `0` | The same prim/env fold inside the **owned** interpreter's own batches. Tier-2, so `all=1` turns it on; an explicit `ownfold = 0` still wins. |
+| `ek_editmesh` | `0` | Expansion Kit builds only, `interp=1`. The course editor's preview (the 30x30 ground grid and the selected segment's highlight lines; the coloured course line is recorded and verified but held stock until a replay reaches it) keeps each element's packed output and re-emits it while its commands, vertex bytes, matrix and draw state are unchanged, instead of transforming and packing it again every frame (`gfx/n64/gdx_ekpreview.cpp`). Same bits as stock; about 0.8 MiB of linear memory while the editor is open, released after 120 tasks without the preview. Receipt `[ekpv]`. On in both auto presets (§4; compiled-in default `0` under `[perf] preset = off`). |
+| `ek_editmesh_verify` | `0` | With `ek_editmesh`: draw stock and compare every cached element with a fresh recording (`[ekpv] ... vfy ok= bad=`). |
+| `ek_editmesh_track` | `0` | Expansion Kit builds only, needs `track=1`. Once the edited course has chunks, the editor's course-surface preview (`func_800A95B4`) walks through the track pipeline and draws from the resident bake, re-baked when the chunks are rebuilt and have settled for 4 walks (`game/gdx3ds_ek_editmesh_game.c`, `decomp-3ds-ek-editmesh.patch`). Receipt `[ekmesh]`. On in both auto presets (§4; compiled-in default `0` under `[perf] preset = off`). |
+| `ek_nimach` | `0` | Expansion Kit builds only, needs `ni_mach` (its bits pick the screens) and `nrr_mach`. `ni_mach` is compiled out of the EK's machine.c; this turns on the EK version: the machine select grid and the machine settings / GP next machine bodies + reflection model drawn from the NRR's recorded meshes, with the EK loop's render mode, grey env colour (`gGreyscaleMachinePart`) and player-designed machines kept stock (`game/gdx3ds_ek_nimach_game.c`, `decomp-3ds-ek-nimach.patch`). Emulator (Old 3DS, ek-ta-dd): machine select mach 13.7 -> 0 ms, misc 7.9 -> 5.4 ms per rendered frame; gstate identical every tick, 16/16 SHOTs identical; nrr_tol 3d for the "OK?" prompt's 3 frames below y=232 (the non-EK `ni_mach` has the same 3 frames). Receipt `[eknimach]` (+ `[nimach]`). On in both auto presets (§4; compiled-in default `0` under `[perf] preset = off`). |
 
 ### 2.2 Interpreter semantics (defaults are libultraship parity)
 
@@ -93,6 +97,7 @@ interp = 1
 | `timgmemo` | `1` | Memoise `G_SETTIMG` operand resolution. Not Tier-2: `all` has no say over it. |
 | `dlfacts` | `1` | Memoise display-list facts in the bridge. Not Tier-2. |
 | `machines_defer_free` | `1` | Retire retained mesh buffers on a deferred queue rather than freeing them under the draw. |
+| `atlas_race_reset` | `0` (`1` in both auto presets) | On the mode change into a race (GP, practice, time attack, VS, death race, attract demos), retire every cache entry that lives in the HUD texture atlas and free the atlas pages, so the race HUD packs onto fresh pages. Without it the race HUD's atlas cells depended on which menus came before, and a lever that changes menu texture traffic (`ni_menu`, `tex_keep`) moved a few edge pixels of scaled HUD sprites. `[atlas] race entry:` receipt. Owned interpreter (`interp = 1`) only. |
 
 Each of these defaults **is** the fix. They are killswitches kept so a regression can be bisected
 from an ini file on the console, not tuning knobs.
@@ -125,6 +130,7 @@ and the native replay is hash-compared against it in-process.
 | `ncensus` | `0` | `[ncensus]` batch-split attribution on the owned interpreter. |
 | `dspcensus` | `0` | Per-opcode dispatch census on the owned interpreter. |
 | `fxceiling` | `0` | Measurement lever: report the draw count an ideal effect batching would reach. |
+| `[debug] ni_strict` | `0` | Development only. `1` = **count**: every display-list command a stock interpreter handler still runs (the walker, a span program's kept stock op or bail, a capture run's stock replay, a first-sight record pass) is filed by screen (game mode and race sub-scope), context, the marker or hook that opened it, the loop that ran it and opcode, with how many frames it appeared in. Nothing is dropped, so the output is unchanged. `[nistrict] init` at boot, a compact `[nistrict] sum` every `[debug] ni_strict_every` frames (default 3600) and the full table as `[nistrict] final` at exit; `tools/native/nistrict_report.py` ranks it. `2` (drop the counted commands) is not implemented yet and counts like `1`. Runs on the `nicensus` counters, so it costs nothing when off. |
 
 ### 2.5 Boot receipt
 
@@ -175,6 +181,130 @@ Build options that go with them, all defaulting to the shipped value:
 | `GDX_3DS_EXPANSION_KIT` | `OFF` | Compile the 64DD Expansion Kit. **Not additive** — it swaps the ROM subsystems for the disk ones and changes `#ifdef EXPANSION_KIT` behaviour across dozens of translation units in both `decomp/` and `port/`, so an Expansion Kit build and the shipped build are two different binaries, not two settings. Needs your own ~64.9 MB `.ndd` at runtime. |
 | `GDX_ALLOW_JP_INPUTS` | `ON` on 3DS | Accepts Japanese-region game data — specifically the retail Japanese 64DD Expansion Kit disk, the only retail EK disk that exists. On 3DS this is on by default (the desktop port defaults it off, since there it also gates a cartridge ROM path with a known audio bug that the 3DS never takes — the console never reads a cartridge ROM at all). |
 
+### 2.7 The `ni_*` levers (the interpreter off the menus)
+
+Seven `[native]` levers move whole screens off the owned interpreter's display-list walk onto
+native paths. **Since preset-fix they are on in both preset tables** (§4), at the values every
+hardware test card since ni-s0 ran: `ni_menu 1`, `ni_menu_root 1`, `ni_menu_split 3`,
+`ni_menu_keep 1`, `ni_menu_ucode 1`, `ni_menu_xition 1`, `ni_course 1`, `ni_mach 3`, `ni_race 1`,
+plus `ni_view 0x97A` on the New 3DS only (the Old 3DS table carries the MP-only `ni_fullview 0x97A`
+instead). The `GDX_3DS_PRESET_NI` CMake option that used to stage them is gone. `tools/ci-3ds.sh`'s
+`gdx3ds_preset_mustship_tests` fails if a preset stops carrying any of them. The "default"
+column below is the compiled-in fallback that applies only under `[perf] preset = off`.
+
+| key | default | value to try | what it nativises |
+|---|---|---|---|
+| `ni_menu` | `0` | `1` (`2` = verify) | Every non-race screen's 2D: the draw is captured as MENU-kind runs and drawn by compiled programs (needs `nrr_hud = 1`). `[nimenu]` receipts. |
+| `ni_course` | `0` | `1` | The 3D course preview of course select, GP next course and records course select. `[nicourse]`. |
+| `ni_mach` | `0` | `3` | Bit 1: machine select's 30 machines as NRR mach records. Bit 2: machine settings / GP next machine and their reflection models. `[nimach]`. |
+| `ni_view` | `0` | `0x57A` | NRR categories in multi-view races (VS 2-4P, attract demos; bits per category) and `0x400` the records flyby. Gated by gstate and the NRR 3D tolerance class, not bit-exact. |
+| `ni_menu_root` | `0` | `1` | With `ni_menu`: the `ni_race` span programs also run each menu frame's root (segment table, colour/z image, setup lists between the MENU runs), taking the menus' remaining walker residue to ~1 command per frame. `[nirace] init ... menu_root=`. |
+| `ni_menu_xition` | `0` | `1` | With `ni_menu = 1` (refused under `interp_verify`): the menu transitions. The hide half of every wipe and the `GAMEMODE_CHANGE_INIT` frame run while `gGameModeChangeState != 0`, where `ni_menu_root` never armed; with this on, those frames keep the root's span programs too (race modes excluded), and the game side captures the INIT frame's lone `Transition_Draw` as a MENU region. The 2D wipes (tiles, fades, strips, sliding wipe) then draw as MENU runs on every frame; the tiled whirl / spiral's 64 perspective tiles stay on the walker. `[debug] xition_mask` bisects (1 change-frame roots, 2 INIT capture); `[debug] xition_force = 1..7` makes every random transition that type (test knob, RNG untouched). `[xition] init` / `[xition] window` receipts. |
+| `ni_race` | `0` | `1` (`2` = verify) | The 1P race's walk between NRR markers, as span programs. `ni_race_mesh` (default on with it) draws their geometry segments as retained meshes, refused in stereo frame replay. `[nirace]`. |
+
+Not in the staged rows (off everywhere; a card sets them by hand):
+
+| key | default | value to try | what it does |
+|---|---|---|---|
+| `ni_view` bit `0x800` | off | `0x97A` with `ni_race = 1` | The `ni_race` span programs in VS 2-4P race frames too, each view's spans keyed on their own markers. `[nirace] init ... vs=1`. |
+| `ni_menu_split` | `0` | `3` | With `ni_menu`: bit 1 splits FILLRECT chains (the tile wipe), bit 2 cuts texture-load runs before each SETTIMG, so a transition's runs keep their programs. `[nimenu] init ... split=`. |
+| `ni_menu_keep` | `0` | `1` | With `ni_menu`: a full memo / program pool is not cleared for a run that also decoded last task. `[nimenu] init ... keep=`. |
+| `ni_menu_ucode` | `0` | `1` | A MENU region's ucode load (records screen) stays in place instead of cutting the region. `[hud] init ni_menu_ucode=`. |
+
+MP fullview (`[net] mp_fullview = 1`, or `[debug] fullview_player = k`; port/3ds/game/gdx3ds_fullview_game.c) draws
+only view k of a 2-4P VS race, full screen. The NRR still sees a multi-view race (`gNumPlayers` is unchanged), so view k's
+categories follow `ni_view` exactly as in split screen. The other views' NRR sections are never reached, because
+`gdx_dl_skip` drops them. Stereo frame replay is allowed for that single view (`Gdx3dsStereo::ReplayEnter`). It is refused
+again once the results transition brings the split screen back.
+
+Old 3DS MP fullview (o3ds60). Three levers apply only while a fullview frame is drawn (`gdx_fv_k() >= 0`); the
+`ni_race` row also covers the 1P race. Split screen and the attract demos are not affected. They are on by default in the
+Old 3DS table only; the New 3DS table leaves them off:
+
+| key | O3DS default | what it does |
+|---|---|---|
+| `[native] ni_fullview` | `0x97A` | ORed into `ni_view` for fullview frames: sky, track, dressing, shadows and FX go to the NRR, and the `0x800` bit (with `ni_race = 1`) gives the walk between markers as span programs. `[nrr] init ... ni_fullview=`, `[nirace] init ... fv=1`. The plain `ni_view` stays 0, so split screen still uses the legacy path. |
+| `[native] ni_race` | `1` | The Old 3DS table now turns on `ni_race`, the 1P span programs (exact). This also covers the SP race. |
+| `[ui] mp_hud_placement` | `1` | The fullview view follows `[hud] placement` the way the 1P race does. This lifts the 2-4P force-ALL_TOP rule for that view only (port/gdx_hud_placement.c, via `gdx3ds_bottomhud_fullview_placement`). `Hud_DrawHud` still runs, so every player's lap and interval logic runs, and the picture is rewound (decomp-3ds-o3ds60-mp-hud.patch). `[dash] init ... mp_hud=`. |
+| `[ui] dash_spread` | `1` | Not a fullview lever: the bottom race DASH (`dash_every` N > 1). While the race draws every tick (no frameskip skip iteration in the last 8, or steady frameskip already at D = 1), iteration i paints only the widgets at paint-order index i % N, instead of every widget on one iteration in N. The same 60/N Hz per widget, without a paint spike every Nth frame (a 1-in-4 spike sits above the frameskip's p90 and blocks the step up to every-tick rendering). `2` = only after 8 ticks without a skip (the 5c24be0 rule: the first ticks of a D = 1 stint still took a whole repaint). `[dash] init ... spread=`. |
+
+Old 3DS lockstep steady frameskip (o3ds60, from the 5c24be0 hardware log). The Old 3DS guest sits at the lockstep horizon:
+the host's pads arrive in 30 Hz pairs (`[net] mp_uds_tx_min_ms = 33`), so some ticks wait 16-55 ms for them, most of
+them skip ticks. That wait was not counted against the next slot's late start, so D = 1 slots missed "hard", repaid
+catch-up skips, and those skips waited at the horizon again (one D = 1 stint: 24 fps, netwaitms 2745 of 4318). These
+levers are frameskip-only: they change which ticks render and when, never the simulation or the pads:
+
+| key | O3DS default | N3DS default | what it does |
+|---|---|---|---|
+| `[debug] steady_net_excuse` | `1` | `0` | The pad wait summed over the whole previous slot explains a late start. A slot that started late by no more than that wait, and whose present fits measured from its own start, is not missed (`netlate`) and re-anchors on the vblank its present makes. `[frameskip] lockstep on ... net_excuse=`. |
+| `[debug] steady_net_catchup` | `0` | `1` | `0`: no catch-up skips for a late start while a pad wait happened in the last 16 ticks (the console is ahead of its peers; the next pad wait repays the vblank). `[steadyd1] ... catchupcut=`. |
+| `[debug] steady_net_lead` | `2` | `0` | The most vblanks per lockstep race a slot start that waited >= 1 ms for pads takes one vblank later (120 ticks apart; one repeated frame each), so this console runs ahead of the pads instead of at the horizon. hw 5c24be0: the New 3DS host never waited (wait_us=0) while the Old 3DS guest waited 164-6221 us a tick; the host keeps ~100 ms of the 6-tick delay, ~67 ms after two. `[frameskip] lockstep lead +1 vblank`. |
+
+Old 3DS race dash on a budget (o3ds60, from the 52acd44 hardware log: at D = 1 the post-present tail averaged 4.1 ms,
+max 7.6, and the dash tick reached 4.5-5.6 ms):
+
+| key | O3DS default | N3DS default | what it does |
+|---|---|---|---|
+| `[ui] dash_budget` | `1` | `0` | At steady D = 1 a dash tick stops painting widgets once it has used `dash_budget_us`; the rest carry to the next tick, painted first. Also (whatever D): the map box's scaled bitmap is cached while the minimap bitmap and palette are unchanged, the present copies each run of painted columns instead of the whole span between the first and last, and the 120-present self-heal is a 40-column slice every 15. Bottom screens are pixel-identical on the emulator (the FPS digits aside). `[dash] init ... budget=`, `[dashworst]` per 256 ticks. |
+| `[ui] dash_budget_us` | `1000` | - | The per-tick budget (100-16000). |
+| `[ui] dash_every_d1` | `6` | `0` | The spread's widget period at steady D = 1 (6 = each widget 10 times a second; 0 = `dash_every`). |
+| `[ui] dash_map_inc` | `1` | `0` | Needs `dash_budget`. While the cached map box is on screen unchanged, a map tick puts the cache back only under the previous tick's dots / NET chip / FPS text, paints them again, and presents only those rows of their columns. hw a3b4531: a map tick was map_us 1.6-2.0 + pres_us 1.5-2.3 ms (106 KB), and every D = 1 miss with dash_us ~3 ms was one. A whole-frame present without a whole map paint in the same tick, or 50 incremental map ticks off D = 1, paints the whole box again. `[dashmap] inc= whole= cache_builds=` per 256 ticks, `[dashworst] ... map_inc=`. |
+
+Old 3DS 60 fps rules from the a3b4531 hardware log (o3ds60; every D = 1 stint of a 2-machine MP race with 3D on ended
+after 3 misses in 4 slots, rw 12.5-14.5 ms avg + post 2.1-4.5 ms). Timing and rendering only: the simulation, the pads
+and the lockstep digest are the same with every one of them on or off.
+
+| key | O3DS default | N3DS default | what it does |
+|---|---|---|---|
+| `[debug] steady_d1_rate` | `1` | `0` | At D = 1 in a lockstep race (`2` = in every race) a slot is missed only when its START lost a vblank (a repeated frame). A present later than the 4 ms margin before its display vblank but on time at its start is one more vblank of latency, not a lost frame, and counts as `latepres=`. hw a3b4531: the D = 1 renders took 12.5-14.5 ms, so nearly every slot "missed" the margin rule. `[frameskip] mode=steady ... d1_rate=`. |
+| `[debug] steady_d1_hold_pct` | `85` | `0` | At D = 1 the step-down rules wait until fewer than this % of the last `steady_d1_hold_slots` slots hit (a missed slot repeats one frame; a step down halves the rate for the whole dwell). `[steadyd1] ... holds= hold_pct= hit=%`. |
+| `[debug] steady_d1_hold_slots` | `64` | `16` | The hold's window (16..64). A stint younger than the window counts its unseen slots as hits, so a short burst does not leave D = 1; every slot missed still steps down within 10 slots at 85 / 64. hw 9088d3a (3D): stints at 93-97% hit left D = 1 on 4 misses in a row (80% of 16 allows 3). `[steadyd1] ... hold_slots=`. |
+| `[debug] steady_d1_retry_ms` / `steady_d1_retry_pct` | `2000` / `85` | `0` (off) / `85` | At D = 2 (D = 1 allowed), step up after this long (a failed try doubles it once, to 2x at most) with no hard miss in 16 slots and the spike-free p90 render under pct% of a vblank. The stock rule needs p90 + the 4 ms present margin inside 80% (p90 <= ~9.3 ms) and backs off to 16 s: hw 9088d3a sat at D = 2 for whole windows with p90 8-12 ms. `[steadyd1] ... retries=`. |
+| `[debug] steady_ab` | `0` | `0` | 1 = lockstep race 1 runs the D = 1 rules as configured, race 2 the 9088d3a rules (80% of 16 slots, the stock step up), race 3 on as configured. `[steadyab] race N rule=new\|old`, `[frameskip] mode=steady ... rule=`, `[steadyd1] ... rule=`. |
+| `[debug] top_triple` | `1` | `0` | A third top framebuffer (576 KB, both eyes, the top screen's memory; `vendor/libctru_gfx/gfx_split.c`) in lockstep races (`2` = always). The back buffer is the one neither on screen nor waiting for its vblank, so the pace end guard (a frame's display transfer waits until the previous swap latched) never waits. hw a3b4531: `fe=` (EndFrame, guard included) 0.5-2.2 ms avg, max 3.9. A present that replaces a still-pending one drops that frame (`[pipe] ... replaced=`). `[pace] ... tb= tbskip=`. |
+| `[ui] dash_pre_frame` | `1` | `0` | In a lockstep race a rendering iteration runs the bottom-screen tick (the race dash and its present) right before StartFrame, where the CPU would wait for the GPU to finish the previous frame (`gsp=`), instead of after EndFrame. |
+| `[debug] pipe_ab` | `0` | `0` | N frames (rounded to the 256-frame receipt window): inside every lockstep race, even blocks run as configured, odd blocks flip what `pipe_ab_what` names (1 = `top_triple` + `dash_pre_frame` off, 2 = `kick_3d` flipped), so one launch measures both. `[pipe] frame= block= state=new\|old`, `[steadyd1] ... pipe=1\|0`, `[pace] ... tb=1\|0`. |
+| `[debug] kick_3d` | `1` | `1` | 0 = no `[overlap]` mid-frame GPU kick (and no stereo head run) while the right eye runs, so EndFrame has no kicked queue to drain on the CPU. hw 9088d3a (3D, D = 1): `fe=` 4.7 ms avg / 8.2 max with ~2 kicks a frame vs 0.8 ms in 2D. `[steadyd1] ... drain=avg/max kickf=kicked/presents`. |
+| `[stereo] mp_3d` | `0` | `1` | An online race: `0` = 2D (one eye: the GPU does half), unless the Home 3D button was pressed in this launch (then the button decides); `1` = as `[stereo] enabled` / the button says. |
+| `[stereo] mp_ab` | `0` | `0` | The one-launch 3D A/B. 1: online race 1 of the launch runs 2D, race 2 runs 3D (whatever `mp_3d` and the button say; a 2D-booted session creates the right eye then), later races follow `mp_3d`. 2: races 1 and 2 run 3D (with `steady_ab`: the new D = 1 rules, then the old), later races follow `mp_3d`. `[mpab] race N stereo=on\|off (rule)`, `[mpab] race N end ... frames= right_eye=`. |
+| `[debug] bui_3d_button` | `0` | `0` | Developer lever (card-4; was `[ui] home_3d_button`, default 1): Home shows a 3D ON / OFF button. It writes `[stereo] enabled` to the ini and takes effect on the next frame (a session that booted 2D creates the right-eye target then). Players use the 3D slider: `[stereo] enabled` defaults to 1 on both models (`[perf] preset = auto`). `[stereo] button:`. |
+| `[debug] stereo_mp_lock30` | `1` | `0` | o3ds3d: while a lockstep race renders in 3D, steady D is pinned at 2 or above (no D = 1 retry; a D = 3 step down on misses still allowed). `1` = the pin and the present hold (every frame presents at vblank S+1 and shows for 2 vblanks; b52ac08 showed D = 2 frames for 1 or 3 with the lockstep hold off), `2` = the pin alone, `0` = off. 2D races and single player never pin. `[lock30] on\|off`, `[lock30] frame= slots= missed= ... pp=` per steady window, `[lock30] race=N end` per race. |
+| `[debug] ceiling_probe` | `0` | `0` | o3ds3d, measurement only: lockstep race N of the launch runs `ceiling_probe_blocks` (2) blocks, from racing tick `ceiling_probe_start` (1200) every `ceiling_probe_every` (2400), of `ceiling_probe_ticks` (240) D = 1 ticks as usual then as many with the previous frame's GPU work waited out first (the frame then runs with no GPU work beside it). The controller never sees probe slots; only the render cadence changes (the game state and lockstep inputs do not). Skipping the GPU wait instead is unsafe: one command buffer and a VBO pool that both restart at offset 0 every frame. 3D slots only. `[ceiling] race= block= half=normal\|idle ... rwcpu= post= frame= ... fit=`. hw 0c2668a: the idle-first half did not make the D = 1 3D frame cheaper (14.2 vs 13.5 ms), so the double-cmdbuf / deferred-wait plan is dropped; the lever stays as a measurement. |
+| `[native] zclear_elide` | `1` | `1` | Both presets pin it on (exact by construction: the skipped depth fill would rewrite the value already there). `2` = the hardware A/B (on in even 1024-frame blocks, `[gputl] zc=`), which the New 3DS preset shipped until o3ds3d. |
+| `[stereo] onesubmit` | `1` | `1` | ship6 (hw card-6 A/B): both eyes of a 3D body chunk in ONE GX entry (the body ends in `CMDBUF_JUMP1` to a right-eye prologue that jumps back into it), so one GSP submit and one completion IRQ per chunk instead of two. Old 3DS: 3D menu 40.2 -> 44.6 fps, 1P 3D race ~1.5-1.8 ms/frame headroom (~1.5 ms onesubmit alone, ~1.8 ms with `onesubmit_narrow`, the shipped pair); New 3DS neutral. `0` = the re-submitted right-eye replay. Code default and both presets. `port/3ds/gfx/STEREO.md` "One submission". |
+| `[stereo] onesubmit_narrow` | `1` | `1` | ship6: with `onesubmit`, a 3D frame's end flushes only the `[overlap]` noted dirty ranges instead of the whole linear heap (another ~0.3 ms on the Old 3DS, -0.4 ms GX CPU on the New 3DS). `0` = the whole-heap flush. |
+| `[stereo] onesubmit_kicks` / `onesubmit_ab` | `0` | `0` | Not shipped: `kicks` 1/2 drops the mid-frame body kick (and head run), which costs +1.0 / +2.5 ms of frame-begin GPU wait; `ab = 1` is the per-`[cpucut]`-block A/B of the hardware card. |
+| `[debug] prewrite` | `0` | `0` | o3ds3d, measurement only: per 256 rendered race frames, C3D_FrameBegin's queue wait (`gsp=`), the CPU time from its return to the frame's first GPU-memory write (`pre=`: VBO handout, texture upload, GX fill/copy, cache flush, or a polled command-buffer move) and `hide=` min(gsp, pre) on frames no vblank wait absorbs -- what moving the wait to the first write would save. `[prewrite]`. Contract in `port/3ds/gfx/gdx3ds_prewrite.h`. |
+| `[debug] gpumem` | `0` | `0` | o3ds3d, measurement only: per race, linear-heap free low water (and the largest 2/1.5/1/0.5 MiB block that allocates 600 frames in), VRAM free low water, command-buffer words high water / avg vs its size, VBO bytes high water / avg vs the 1 MiB pool, and whether the largest frame fits half of each (`halves=`). `[gpumem] race=N end\|checkpoint`. |
+
+`[fvse]` counts one online race: cleared when it starts, printed when it ends (`race-end`) and when the bottom screen opens
+its results (`results`), per player (engine / level / player SE starts, and the SE volume commands kept or muted).
+
+Announcer lines in an online race (`decomp-3ds-mp-polish.patch`): every system SE plays on seq 0 channel 1, which the
+per-player mixer never scales, so a voice one player triggered played on every console. A console that is one MP player's
+speaker plays the lap-2 / final-lap lines for its own player (`hud.c`), the "pulling away from the pack" voice (`NA_SE_59`,
+a human leader 4000 ahead) only when its own player leads, and the wrong-way voice (`NA_SE_60`) only for its own player
+(`racer.c`). Every gated decision logs `[announce] se=NA_SE_59 racer=N local=M players=P played|skipped` (NA_SE_17 / 18 /
+59 / 60; the stock trigger fired, the line says which console played it). The race-wide lines (the 3-2-1-GO countdown, pause, the results ticks) and the 1P-only ones are unchanged.
+
+The `[steadyd1]` / `[steadymiss]` lines also carry `fe=`, EndFrame's share of `post`. `[stereo] slider` (every 1024 frames) prints the
+3D slider's min/max as the system reports it and the frames with the right eye drawn: every Old 3DS hardware log so far reads 0.39 on
+every frame, so on that console 3D can only be turned off with `[stereo] enabled = 0`.
+
+`[steadyd1]` (each 256-tick window with D = 1 slots) gives the D = 1 slots, misses by cause (`begin`, `net`, `late` = the
+previous slot's post-present tail overran, `work` = the render itself), and avg/max of the start lateness, the slot's pad
+wait, the render work, the post-present tail (EndFrame + dash + telemetry), the GSP wait inside the render and the dash
+tick. `[steadymiss]` prints the first 40 missed D = 1 slots of each race one per line.
+
+Emulator receipts (o3ds60, Old 3DS model, `race-vs2p-results` with `[debug] fullview_player = 0`, `det=1`): the race view's
+`[nicensus]` NRR line goes from `hud mach` only to `hud trk mach sky dress shd fx deco`, the interpreter walk between markers
+runs as span programs, and the 393 `[gstate]` digests (every 30 ticks, through the results) are identical with the three
+fullview levers on or off. Old 3DS hardware 158a13e, MP race, same view on the interpreter: walkB 7.3-9.2 ms + seam 6.1-6.9 ms
++ nrrhud 2.7-4.4 ms per drawn frame; the NRR 1P race on the same console: walkB 4.5-5.5 ms (no span programs), no seam.
+
+All four are render-only. The sim reads `gdx_sim_machine_visible`, and none of them writes `machineLod`, which is folded into
+`gdx_mpo_vis_hash`.
+
 ---
 
 ## 3. The compact native race renderer (NRR)
@@ -191,7 +321,7 @@ NRR renders by **category**, each gated by its own `[native] nrr_<name>=1` under
 
 | Category | Lever | Covers |
 |---|---|---|
-| HUD | `nrr_hud` | The bottom-screen dashboard and HUD elements |
+| HUD | `nrr_hud` | The top-screen race HUD (the bottom-screen DASH is CPU-painted, not an NRR category) |
 | Track | `nrr_trk` | The course surface |
 | Machines | `nrr_mach` | The racer models |
 | Sky | `nrr_sky` | Sky and backdrop |
@@ -270,7 +400,9 @@ overrides the preset's value for that key only. Grouped by what each batch is fo
 - **NRR**: `native.nrr=1` and every category lever from §3, plus `finish_mesh`, `prewarm`, and
   `zclear_elide`.
 - **Stereo**: `stereo_interleave`, `stereo_noreflush`, `stereo.enabled=1` — the 3D slider is live
-  under this preset (slider at 0 still renders byte-identical mono).
+  under this preset (slider at 0 still renders byte-identical mono) — plus the 3D GPU-path rows
+  both tables share: `stereo_fold`, `[stereo] head_kick`, `resume_fold`, and (ship6) `onesubmit =
+  1`, `onesubmit_narrow = 1`, `onesubmit_kicks = 0`, `onesubmit_ab = 0`.
 
 **Old 3DS reaches its 60 fps race through the same `[perf] preset` key, not a separate recipe** —
 see the `auto` → `o3ds-auto` resolution above. It is not one you type by hand (there's no
@@ -349,6 +481,15 @@ but fitting in memory isn't the same as running well: on real Old 3DS hardware 6
 jittery, the disk music breaks up, and the editors are laggy, so `o3ds-ek` is experimental and not
 released in v1.0.0 — see `ARCHITECTURE.md` §4.1 for the four console builds and
 [`RELEASE-NOTES.md`](RELEASE-NOTES.md) Known issues.
+
+**Course editor test drive (`[native] nrr_testdrive`, on in both auto presets, compiled-in default
+`0`, Expansion Kit builds only).** The
+editor's test drive draws a 1P race outside `Race_Draw`, so by default every NRR category leaves it to
+the interpreter. `nrr_testdrive = 1` opens the race scope for that draw
+(`decomp-3ds-ek-testdrive-scope.patch`): sky, track, machines, shadows and effects then draw natively,
+and `Course_Init` re-bakes the track at the start of every test run. Receipts:
+`[c5tick] nrr_testdrive=N` at boot and `[c5tick] testdrive scope open run=N` per run. On by default
+through the auto presets (§4); `nrr_testdrive = 0` turns it off.
 
 What it costs and what is still wrong with it is in [`RELEASE-NOTES.md`](RELEASE-NOTES.md). The
 disk-streaming levers are in §2.6 above.

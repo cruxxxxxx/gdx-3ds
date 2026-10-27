@@ -1,0 +1,92 @@
+diff --git a/src/overlays/ovl_i2/transition.c b/src/overlays/ovl_i2/transition.c
+index b8f447e..50e88ad 100644
+--- a/src/overlays/ovl_i2/transition.c
++++ b/src/overlays/ovl_i2/transition.c
+@@ -303,6 +303,23 @@ const s32 kTransitionRandomSelection[] = { TRANSITION_TYPE_SMALL_TILES,  TRANSIT
+                                            TRANSITION_TYPE_FADE,         TRANSITION_TYPE_STATIC_FADE,
+                                            TRANSITION_TYPE_PHASED_STRIPS };
+ 
++#ifdef PORT
++/* PORT: [debug] xition_force (gdx3ds_hud_capture.c) swaps the picked type AFTER the RNG draw, so
++   the random stream is untouched. 0 (the default) is stock. */
++static s32 Transition_GdxPick(s32 type) {
++    extern int gdxmenu_xition_force(void);
++    s32 forced = gdxmenu_xition_force();
++
++    if (forced >= TRANSITION_TYPE_SMALL_TILES && forced <= TRANSITION_TYPE_PHASED_STRIPS) {
++        return forced;
++    }
++    return type;
++}
++#define GDX_XITION_PICK(type) Transition_GdxPick(type)
++#else
++#define GDX_XITION_PICK(type) (type)
++#endif
++
+ bool Transition_QueueRandom(s32 appearType, bool instantTransitionAllowed) {
+     s32 instantTransitionChance;
+     u32 randomTransition;
+@@ -313,17 +330,17 @@ bool Transition_QueueRandom(s32 appearType, bool instantTransitionAllowed) {
+         if (instantTransitionAllowed) {
+             if (instantTransitionChance < 2) {
+                 randomTransition = Math_Rand1();
+-                allocFailed = Transition_Queue(appearType, kTransitionRandomSelection[randomTransition % 7]);
++                allocFailed = Transition_Queue(appearType, GDX_XITION_PICK(kTransitionRandomSelection[randomTransition % 7]));
+             } else {
+                 allocFailed = Transition_Queue(appearType, TRANSITION_TYPE_INSTANT);
+             }
+         } else {
+             randomTransition = Math_Rand1();
+-            allocFailed = Transition_Queue(appearType, kTransitionRandomSelection[randomTransition % 7]);
++            allocFailed = Transition_Queue(appearType, GDX_XITION_PICK(kTransitionRandomSelection[randomTransition % 7]));
+         }
+     } else {
+         randomTransition = Math_Rand1();
+-        allocFailed = Transition_Queue(appearType, kTransitionRandomSelection[randomTransition % 7]);
++        allocFailed = Transition_Queue(appearType, GDX_XITION_PICK(kTransitionRandomSelection[randomTransition % 7]));
+     }
+     return allocFailed;
+ }
+@@ -518,15 +535,26 @@ static s32 Transition_UsesCapturedBackground(s32 transitionType) {
+ }
+ #endif
+ 
++#ifdef PORT
++/* menus-s4: the transition type this frame's Transition_Draw drew (0: none). Read by the port's
++   [debug] nicensus_wipe attribution (port/3ds/gfx/n64/gdx_rt_glue.cpp); written nowhere else. */
++s32 gGdxXitionDrawnType = TRANSITION_TYPE_NONE;
++#endif
++
+ Gfx* Transition_Draw(Gfx* gfx) {
+     Transition* transition = &sTransition;
+ #ifdef PORT
+     s32 gdxWideTransition = false;
++
++    gGdxXitionDrawnType = TRANSITION_TYPE_NONE;
+ #endif
+ 
+     if (!(transition->flags & TRANSITION_FLAG_DRAW)) {
+         return gfx;
+     }
++#ifdef PORT
++    gGdxXitionDrawnType = transition->activeTransitionType;
++#endif
+ 
+     gDPPipeSync(gfx++);
+     gDPSetCycleType(gfx++, G_CYC_1CYCLE);
+diff --git a/src/game/game.c b/src/game/game.c
+--- a/src/game/game.c
++++ b/src/game/game.c
+@@ -1008,6 +1008,12 @@
+ #if defined(PORT) && defined(GDX_NATIVE_HUD)
+     if (gdxMenuArmed) {
+         gfx = (Gfx*) gdxmenu_capture((void*) gdxMenuStart, (void*) gfx, (int) gdxMenuMode);
++    } else {
++        /* menus-s4 [native] ni_menu_xition (port/3ds/gfx/gdx3ds_hud_capture.c): the mode's draw did not
++         * run (the GAMEMODE_CHANGE_INIT frame between a wipe's hide and appear halves), so the region is
++         * Transition_Draw's words alone; they are compacted as a MENU region too instead of walked. */
++        extern void* gdxmenu_capture_xition(void* regionStart, void* regionEnd, int mode);
++        gfx = (Gfx*) gdxmenu_capture_xition((void*) gdxMenuStart, (void*) gfx, (int) GET_MODE(gGameMode));
+     }
+ #endif
+     return gfx;

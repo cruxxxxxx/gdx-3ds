@@ -1156,7 +1156,10 @@ static FastLeg RunFastScene(int fast, int memo) {
     {
         gdxn::Interp it(&mb);
         if (gTestNicensus != 0) {
-            it.NcSet(1);
+            it.NcSet(gTestNicensus == 2 ? 2 : 1);
+            if (gTestNicensus == 2) {
+                it.NsSet(1, 1); /* [debug] ni_strict=1 (count), a periodic receipt every frame */
+            }
         }
         for (int frame = 0; frame < 2; frame++) {
             if (it.NcOn()) {
@@ -1170,6 +1173,7 @@ static FastLeg RunFastScene(int fast, int memo) {
         }
         if (it.NcOn()) {
             it.NcDump("hosttest", 1.0);
+            it.NsDump("hosttest", true); /* [debug] ni_strict: the full table (no-op when off) */
         }
         const gdxn::Counters& st = it.Stats();
         out.memoHits = st.triResolveMemo;
@@ -1256,6 +1260,15 @@ static void TestNicensusParity() {
     CHECK(got.emitted == ref.emitted && got.spanWords == ref.spanWords);
     printf("  [nicensus] census leg: %zu batches, %zu uploads %s\n", got.batches.size(), got.uploads.size(),
            same ? "IDENTICAL" : "DIFFER");
+    /* [debug] ni_strict=1 counts on the same engine and must not change what is drawn either */
+    gTestNicensus = 2;
+    const FastLeg strict = RunFastScene(0, 0);
+    gTestNicensus = 0;
+    const bool sameStrict = SameBatches(ref, strict);
+    CHECK(sameStrict);
+    CHECK(strict.emitted == ref.emitted && strict.spanWords == ref.spanWords);
+    printf("  [nistrict] count leg: %zu batches, %zu uploads %s\n", strict.batches.size(), strict.uploads.size(),
+           sameStrict ? "IDENTICAL" : "DIFFER");
 }
 
 /* [tmemblock] the widened same-content skip ([native] tmemskip), built on TestRectTexture's

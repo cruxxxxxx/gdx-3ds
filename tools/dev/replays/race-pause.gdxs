@@ -1,0 +1,238 @@
+# race-pause: the in-race PAUSE menu, mid-race (plan S6 replay).
+# Needs --ini debug.autodrive=1 (the CPU drives player 1, so the
+# race is still running when START opens the pause box).
+# Ticks 0-3299: race-gp-finish's walk (GP, JACK cup, MUTE CITY).
+# 5000 START: pause box opens (scissor wipe), cursor on CONTINUE.
+# DOWN x5: Retry, Settings, Quit, (wrap) Continue, Retry; UP x5
+# back to Continue (GP lists 4 options), A: unpause, race resumes.
+# 7000 START again, DOWN to RETRY, A: the GP restarts the race
+# (retry transition, course intro, countdown) to the end.
+# SHOTs hand-placed on the pause screens (this is not a covsched
+# corpus replay; tools/dev/replays like the ek-* files).
+build ni-strict-census@bbd92ab
+seed1 0x1234abcd
+seed2 0x0fedcba9
+pins renderthread=0 det=1 autodrive=1
+at 400
+press START 15 0
+at 800
+press A 15 0
+at 1100
+press A 15 0
+at 1400
+press A 15 0
+at 1700
+press A 15 0
+at 2000
+press A 15 0
+at 2300
+press A 15 0
+at 2600
+press A 15 0
+at 2900
+press A 15 0
+at 3200
+press A 15 0
+at 3300
+at 3600
+wait 1
+shot r3600
+at 3900
+wait 1
+shot r3900
+at 4200
+wait 1
+shot r4200
+at 4500
+wait 1
+shot r4500
+at 4800
+wait 1
+shot r4800
+at 4990
+wait 1
+shot pre_pause
+at 5000
+press START 12 0
+at 5014
+wait 1
+shot pause5014
+at 5020
+wait 1
+shot pause5020
+at 5030
+wait 1
+shot pause5030
+at 5045
+wait 1
+shot pause5045
+at 5060
+wait 1
+shot pause5060
+at 5080
+wait 1
+shot pause5080
+at 5100
+wait 1
+shot pause5100
+at 5150
+press DOWN 10 0
+at 5190
+wait 1
+shot pcur_retry
+at 5230
+press DOWN 10 0
+at 5270
+wait 1
+shot pcur_settings
+at 5310
+press DOWN 10 0
+at 5350
+wait 1
+shot pcur_quit
+at 5390
+press DOWN 10 0
+at 5430
+wait 1
+shot pcur_wrap_continue
+at 5470
+press DOWN 10 0
+at 5510
+wait 1
+shot pcur_retry2
+at 5550
+press UP 10 0
+at 5610
+press UP 10 0
+at 5670
+press UP 10 0
+at 5730
+press UP 10 0
+at 5790
+press UP 10 0
+at 5850
+wait 1
+shot pcur_back
+at 5890
+press A 10 0
+at 5902
+wait 1
+shot unpause12
+at 5910
+wait 1
+shot unpause20
+at 5930
+wait 1
+shot unpause40
+at 5970
+wait 1
+shot unpause80
+at 6050
+wait 1
+shot unpause160
+at 6290
+wait 1
+shot r6290
+at 6590
+wait 1
+shot r6590
+at 6890
+wait 1
+shot r6890
+at 6990
+wait 1
+shot pre_pause2
+at 7000
+press START 12 0
+at 7100
+wait 1
+shot pause2
+at 7150
+press DOWN 10 0
+at 7200
+wait 1
+shot pause2_retry
+at 7250
+press A 10 0
+at 7270
+wait 1
+shot rt7270
+at 7300
+wait 1
+shot rt7300
+at 7330
+wait 1
+shot rt7330
+at 7360
+wait 1
+shot rt7360
+at 7390
+wait 1
+shot rt7390
+at 7420
+wait 1
+shot rt7420
+at 7450
+wait 1
+shot rt7450
+at 7480
+wait 1
+shot rt7480
+at 7500
+wait 1
+shot rt7500
+at 7600
+wait 1
+shot rt7600
+at 7700
+wait 1
+shot rt7700
+at 7800
+wait 1
+shot rt7800
+at 7900
+wait 1
+shot rt7900
+at 8000
+wait 1
+shot rt8000
+at 8100
+wait 1
+shot rt8100
+at 8200
+wait 1
+shot rt8200
+at 8300
+wait 1
+shot rt8300
+at 8400
+wait 1
+shot rt8400
+at 8500
+wait 1
+shot rt8500
+at 8600
+wait 1
+shot rt8600
+at 8700
+wait 1
+shot rt8700
+at 8800
+wait 1
+shot rt8800
+at 8900
+wait 1
+shot rt8900
+at 9000
+wait 1
+shot rt9000
+at 9100
+wait 1
+shot rt9100
+at 9200
+wait 1
+shot rt9200
+at 9300
+wait 1
+shot rt9300
+len 9500

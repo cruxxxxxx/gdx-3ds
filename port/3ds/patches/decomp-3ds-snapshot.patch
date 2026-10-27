@@ -1,0 +1,340 @@
+diff --git a/include/gdx_snap_section.h b/include/gdx_snap_section.h
+new file mode 100644
+--- /dev/null
++++ b/include/gdx_snap_section.h
+@@ -0,0 +1,26 @@
++#ifndef GDX_SNAP_SECTION_H
++#define GDX_SNAP_SECTION_H
++
++/* mp-snapshot (decomp-3ds-snapshot.patch; port/gdx_snapshot.h, port/3ds/gdx3ds_snapshot_bss.ld).
++ * The snapshot linker fragments group every decomp TU's .data / .bss / COMMON into the snapshot
++ * blocks. These move one object back OUT of them:
++ *   GDX_NOSNAP        boot-time and course-load tables. Never restored; watched by the gate, which
++ *                     proves a race tick does not write them.
++ *   GDX_NOSNAP_DRAW   course-load tables whose fields the draw pass rewrites every frame before
++ *                     reading them (gSegmentChunks: depth / drawState). Never restored, not watched.
++ *   GDX_NOSNAP_SCHED  the scheduler's objects (thread stacks -- unused, the port's fibers own their
++ *                     stacks -- OSThread, OSMesgQueue and their message buffers): they describe the
++ *                     same parked state at every tick boundary and must never be rewound under the
++ *                     scheduler. Not watched: they change every tick.
++ * Empty off the 3DS build. */
++#if defined(PORT) && defined(__3DS__)
++#define GDX_NOSNAP __attribute__((section(".bss.gdx_nosnap")))
++#define GDX_NOSNAP_DRAW __attribute__((section(".bss.gdx_nosnap_draw")))
++#define GDX_NOSNAP_SCHED __attribute__((section(".bss.gdx_nosched")))
++#else
++#define GDX_NOSNAP
++#define GDX_NOSNAP_DRAW
++#define GDX_NOSNAP_SCHED
++#endif
++
++#endif /* GDX_SNAP_SECTION_H */
+diff --git a/src/audio/disk/external.c b/src/audio/disk/external.c
+--- a/src/audio/disk/external.c
++++ b/src/audio/disk/external.c
+@@ -407,7 +407,17 @@
+ }
+ 
+ // Na_PlyTrgSE_Start
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++extern int gdx_snap_se_gate(int kind, int a, int b); /* mp-snapshot: port/gdx_snapshot.h */
++#endif
++
+ void Audio_PlayerTriggerSEStart(u8 racerId, u8 sfxId) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    /* mp-snapshot: one-shot trigger gate + de-dup accounting (port/gdx_snapshot.h). */
++    if (gdx_snap_se_gate(2 /* GDX_SNAP_SE_PLAYER */, racerId, sfxId)) {
++        return;
++    }
++#endif
+ 
+     PRINTF("==BANDO== Na_PlyTrgSE_Start Called. player = %02x num = %02x\n");
+ 
+@@ -485,6 +495,12 @@
+ extern s32 D_800D11C8[];
+ 
+ void Audio_TriggerSystemSE(u8 sfxId) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    /* mp-snapshot: one-shot trigger gate + de-dup accounting (port/gdx_snapshot.h). */
++    if (gdx_snap_se_gate(1 /* GDX_SNAP_SE_SYSTEM */, sfxId, 0)) {
++        return;
++    }
++#endif
+     u8 i;
+ 
+     PRINTF("==BANDO== System SE = %02x\n", sfxId);
+@@ -1154,6 +1170,12 @@
+ 
+ // Na_chakuchi
+ void Audio_Chakuchi(u8 racerId, f32 volume) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    /* mp-snapshot: one-shot trigger gate + de-dup accounting (port/gdx_snapshot.h). */
++    if (gdx_snap_se_gate(3 /* GDX_SNAP_SE_LANDING */, racerId, (int) (volume * 16.0f))) {
++        return;
++    }
++#endif
+ 
+     if (gAudioPlayerFinishedState[racerId] != 0) {
+         PRINTF("==BANDO== Na_chakuchi Called BUT RETURN! cause GOAL\n");
+diff --git a/src/audio/disk/lib/thread.c b/src/audio/disk/lib/thread.c
+--- a/src/audio/disk/lib/thread.c
++++ b/src/audio/disk/lib/thread.c
+@@ -452,6 +452,14 @@
+ }
+ 
+ void AudioThread_QueueCmd(u32 opArgs, void** data) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    /* mp-snapshot (port/gdx_snapshot.h): a resimulated tick is silent -- every command it would
++       queue was already queued by the real tick it repeats. */
++    extern int gdx_snap_audio_drop(void);
++    if (gdx_snap_audio_drop()) {
++        return;
++    }
++#endif
+ #if defined(PORT) && defined(GDX_PLATFORM_3DS)
+     /* MP phase 3 (decomp-3ds-mp-fullview.patch): a fullview console mixes for its own player --
+        that player's channels centred, the other humans' quieter. Rewrites a copy of the payload
+diff --git a/src/audio/rom/external.c b/src/audio/rom/external.c
+--- a/src/audio/rom/external.c
++++ b/src/audio/rom/external.c
+@@ -1484,7 +1484,17 @@
+ }
+ 
+ // Na_PlyTrgSE_Start
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++extern int gdx_snap_se_gate(int kind, int a, int b); /* mp-snapshot: port/gdx_snapshot.h */
++#endif
++
+ void Audio_PlayerTriggerSEStart(u8 racerId, u8 sfxId) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    /* mp-snapshot: one-shot trigger gate + de-dup accounting (port/gdx_snapshot.h). */
++    if (gdx_snap_se_gate(2 /* GDX_SNAP_SE_PLAYER */, racerId, sfxId)) {
++        return;
++    }
++#endif
+ 
+     if (sfxId == NA_SE_30) {
+         goto block_5;
+@@ -1544,6 +1554,12 @@
+ }
+ 
+ void Audio_TriggerSystemSE(u8 sfxId) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    /* mp-snapshot: one-shot trigger gate + de-dup accounting (port/gdx_snapshot.h). */
++    if (gdx_snap_se_gate(1 /* GDX_SNAP_SE_SYSTEM */, sfxId, 0)) {
++        return;
++    }
++#endif
+ 
+     PRINTF("System SE = %02x\n", sfxId);
+     if (sfxId == NA_SE_17) {
+@@ -1888,6 +1904,12 @@
+ 
+ // Na_chakuchi
+ void Audio_Chakuchi(u8 racerId, f32 volume) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    /* mp-snapshot: one-shot trigger gate + de-dup accounting (port/gdx_snapshot.h). */
++    if (gdx_snap_se_gate(3 /* GDX_SNAP_SE_LANDING */, racerId, (int) (volume * 16.0f))) {
++        return;
++    }
++#endif
+     PRINTF("Na_chakuchi Called player = %02x volume = %f \n", racerId, volume);
+ 
+     if (volume < -48.0f) {
+diff --git a/src/audio/rom/lib/thread.c b/src/audio/rom/lib/thread.c
+--- a/src/audio/rom/lib/thread.c
++++ b/src/audio/rom/lib/thread.c
+@@ -324,6 +324,14 @@
+ }
+ 
+ void AudioThread_QueueCmd(u32 opArgs, void** data) {
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++    /* mp-snapshot (port/gdx_snapshot.h): a resimulated tick is silent -- every command it would
++       queue was already queued by the real tick it repeats. */
++    extern int gdx_snap_audio_drop(void);
++    if (gdx_snap_audio_drop()) {
++        return;
++    }
++#endif
+ #if defined(PORT) && defined(GDX_PLATFORM_3DS)
+     /* MP phase 3 (decomp-3ds-mp-fullview.patch): a fullview console mixes for its own player --
+        that player's channels centred, the other humans' quieter. Rewrites a copy of the payload
+diff --git a/src/game/game_context.c b/src/game/game_context.c
+--- a/src/game/game_context.c
++++ b/src/game/game_context.c
+@@ -1,11 +1,12 @@
+ #include "global.h"
+ #include "fzx_racer.h"
++#include "gdx_snap_section.h" /* mp-snapshot */
+ 
+ CourseInfo gCourseInfos[56]; // 0x3480
+ #ifndef EXPANSION_KIT
+-SegmentChunk gSegmentChunks[1025]; // 0x18060
++SegmentChunk gSegmentChunks[1025] GDX_NOSNAP_DRAW; // 0x18060 (course-load table; draw rewrites depth/drawState)
+ #else
+-SegmentChunk gSegmentChunks[769]; // 0x12060
++SegmentChunk gSegmentChunks[769] GDX_NOSNAP_DRAW; // 0x12060 (course-load table; draw rewrites depth/drawState)
+ #endif
+ CourseSegment D_802C2020[64];     // 0x2900
+ Racer gRacers[TOTAL_RACER_COUNT]; // 0x6DB0
+diff --git a/src/overlays/ovl_i3/cpu.c b/src/overlays/ovl_i3/cpu.c
+--- a/src/overlays/ovl_i3/cpu.c
++++ b/src/overlays/ovl_i3/cpu.c
+@@ -750,6 +750,14 @@
+ 
+ void func_i3_80116C4C(void) {
+     D_i3_8013DBE8 = Arena_Allocate(ALLOC_FRONT, 0x200 * sizeof(s16));
++#if defined(PORT) && defined(__3DS__)
++    {
++        /* mp-snapshot (port/gdx_snapshot.h): the CPU-AI buffer lives in the RDRAM arena, outside the
++           linked image, so it is registered as a dynamic snapshot region at every race init. */
++        extern void gdx_snap_register_dynamic(int slot, void* ptr, unsigned int size, const char* name);
++        gdx_snap_register_dynamic(0 /* GDX_SNAP_DYN_CPU_AI */, D_i3_8013DBE8, 0x200 * sizeof(s16), "cpu_ai");
++    }
++#endif
+ }
+ 
+ f32 D_i3_8013EBD0[] = {
+diff --git a/src/overlays/ovl_i6/options_menu.c b/src/overlays/ovl_i6/options_menu.c
+--- a/src/overlays/ovl_i6/options_menu.c
++++ b/src/overlays/ovl_i6/options_menu.c
+@@ -10,7 +10,8 @@
+ #include ASSET_HEADER(setup_gfx.h)
+ 
+ SaveContext* sSaveContextPtr;
+-Vtx D_i6_8011FB18[2][0x258];
++#include "gdx_snap_section.h" /* mp-snapshot */
++Vtx D_i6_8011FB18[2][0x258] GDX_NOSNAP; /* the options menu's vertex buffers */
+ Vtx* D_i6_80124618;
+ s16 D_i6_80124620[176];
+ s32 sOptionsDataClearMenu;
+diff --git a/src/sys/math.c b/src/sys/math.c
+--- a/src/sys/math.c
++++ b/src/sys/math.c
+@@ -2,8 +2,9 @@
+ #include "audio.h"
+ #include "fzx_camera.h"
+ #include ASSET_HEADER(course_track_gfx.h)
++#include "gdx_snap_section.h" /* mp-snapshot */
+ 
+-f32 gSinTable[0x1000];
++f32 gSinTable[0x1000] GDX_NOSNAP; /* boot-time table (Math_SinTableInit) */
+ Mtx sDefaultMtx;
+ MtxF sDefaultMtxF;
+ 
+diff --git a/src/sys/sys_gfx.c b/src/sys/sys_gfx.c
+--- a/src/sys/sys_gfx.c
++++ b/src/sys/sys_gfx.c
+@@ -2,6 +2,7 @@
+ #include "audio.h"
+ #include "fzx_game.h"
+ #include "fzx_thread.h"
++#include "gdx_snap_section.h" /* mp-snapshot */
+ 
+ #ifdef PORT
+ extern void gdx_ck(const char* s);
+@@ -662,8 +663,9 @@
+          * Dma_LoadAssets -> Dma_RomCopy. Forward-declared rather than #include'd: this decomp
+          * TU's include path does not carry port/. */
+         extern int GdxSegmentSourceRead(unsigned int romBase, unsigned int size, void* dst);
++        /* mp-snapshot: a ROM staging buffer, never simulation state. */
+         static unsigned char sGdxCourseTrackStage[PORT_course_track_gfx_ROM_END -
+-                                                  PORT_course_track_gfx_ROM_START];
++                                                  PORT_course_track_gfx_ROM_START] GDX_NOSNAP;
+         if (GdxSegmentSourceRead((unsigned int) PORT_course_track_gfx_ROM_START,
+                                  (unsigned int) sizeof(sGdxCourseTrackStage),
+                                  sGdxCourseTrackStage)) {
+diff --git a/src/sys/sys_main.c b/src/sys/sys_main.c
+--- a/src/sys/sys_main.c
++++ b/src/sys/sys_main.c
+@@ -3,6 +3,7 @@
+ #include "fzx_thread.h"
+ #include "PR/viint.h"
+ #include "PR/leo.h"
++#include "gdx_snap_section.h" /* mp-snapshot: the scheduler objects are never restored */
+ 
+ #ifdef PORT
+ // Diagnostic checkpoints. Can't include <stdio.h> here — the decomp's libc/stdint.h defines
+@@ -16,46 +17,46 @@
+ #define GDX_CKI(n, v)
+ #endif
+ 
+-char sBootThreadStack[0x200];
+-char sIdleThreadStack[0x200];
+-char sMainThreadStack[0x400];
+-char sGameThreadStack[0x1000];
+-char sAudioThreadStack[0x800];
++char sBootThreadStack[0x200] GDX_NOSNAP_SCHED;
++char sIdleThreadStack[0x200] GDX_NOSNAP_SCHED;
++char sMainThreadStack[0x400] GDX_NOSNAP_SCHED;
++char sGameThreadStack[0x1000] GDX_NOSNAP_SCHED;
++char sAudioThreadStack[0x800] GDX_NOSNAP_SCHED;
+ #ifndef EXPANSION_KIT
+-char sResetThreadStack[0x1200];
++char sResetThreadStack[0x1200] GDX_NOSNAP_SCHED;
+ #else
+-char sSys6ThreadStack[0x1000];
+-char sResetThreadStack[0x200];
++char sSys6ThreadStack[0x1000] GDX_NOSNAP_SCHED;
++char sResetThreadStack[0x200] GDX_NOSNAP_SCHED;
+ #endif
+-UNUSED char sUnusedThreadStack[0xE00];
+-OSThread sIdleThread;
+-OSThread sMainThread;
+-OSThread sAudioThread;
+-OSThread sGameThread;
+-OSThread sResetThread;
+-OSThread sSys6Thread;
+-OSMesgQueue sPiMgrCmdQueue;
+-OSMesgQueue gDmaMesgQueue;
+-OSMesgQueue gSerialEventQueue;
+-OSMesgQueue gAudioTaskMesgQueue;
+-OSMesgQueue D_800DCAB0;
+-OSMesgQueue D_800DCAC8;
+-OSMesgQueue gMainThreadMesgQueue;
+-OSMesgQueue gResetMesgQueue;
+-OSMesgQueue D_800DCB10;
+-OSMesg sPiMgrCmdBuf[64];
+-OSMesg sDmaMsgBuf[1];
+-OSMesg sSerialEventBuf[1];
+-OSMesg sAudioTaskMsgBuf[1];
+-OSMesg D_800DCC34[1];
+-OSMesg D_800DCC38[1];
+-OSMesg sMainThreadMsgBuf[16];
+-OSMesg sResetMsgBuf[1];
+-OSMesg D_800DCC84[1];
+-/*  */ UNUSED s8 D_800DCC88[0x20];
++UNUSED char sUnusedThreadStack[0xE00] GDX_NOSNAP_SCHED;
++OSThread sIdleThread GDX_NOSNAP_SCHED;
++OSThread sMainThread GDX_NOSNAP_SCHED;
++OSThread sAudioThread GDX_NOSNAP_SCHED;
++OSThread sGameThread GDX_NOSNAP_SCHED;
++OSThread sResetThread GDX_NOSNAP_SCHED;
++OSThread sSys6Thread GDX_NOSNAP_SCHED;
++OSMesgQueue sPiMgrCmdQueue GDX_NOSNAP_SCHED;
++OSMesgQueue gDmaMesgQueue GDX_NOSNAP_SCHED;
++OSMesgQueue gSerialEventQueue GDX_NOSNAP_SCHED;
++OSMesgQueue gAudioTaskMesgQueue GDX_NOSNAP_SCHED;
++OSMesgQueue D_800DCAB0 GDX_NOSNAP_SCHED;
++OSMesgQueue D_800DCAC8 GDX_NOSNAP_SCHED;
++OSMesgQueue gMainThreadMesgQueue GDX_NOSNAP_SCHED;
++OSMesgQueue gResetMesgQueue GDX_NOSNAP_SCHED;
++OSMesgQueue D_800DCB10 GDX_NOSNAP_SCHED;
++OSMesg sPiMgrCmdBuf[64] GDX_NOSNAP_SCHED;
++OSMesg sDmaMsgBuf[1] GDX_NOSNAP_SCHED;
++OSMesg sSerialEventBuf[1] GDX_NOSNAP_SCHED;
++OSMesg sAudioTaskMsgBuf[1] GDX_NOSNAP_SCHED;
++OSMesg D_800DCC34[1] GDX_NOSNAP_SCHED;
++OSMesg D_800DCC38[1] GDX_NOSNAP_SCHED;
++OSMesg sMainThreadMsgBuf[16] GDX_NOSNAP_SCHED;
++OSMesg sResetMsgBuf[1] GDX_NOSNAP_SCHED;
++OSMesg D_800DCC84[1] GDX_NOSNAP_SCHED;
++/*  */ UNUSED s8 D_800DCC88[0x20] GDX_NOSNAP_SCHED;
+ #ifdef EXPANSION_KIT
+-OSMesgQueue D_8079A2E8;
+-OSMesg D_8079A300[1];
++OSMesgQueue D_8079A2E8 GDX_NOSNAP_SCHED;
++OSMesg D_8079A300[1] GDX_NOSNAP_SCHED;
+ #endif
+ OSIoMesg gDmaIOMsg;
+ OSTask* gCurGfxTask;

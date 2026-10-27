@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "gdx3ds_cpucut.h"
 #include "gdx3ds_dlb_shim.h"
 #include "gdx3ds_hotcold.h"
 #include "gdx3ds_interp_seam.h"
@@ -67,11 +68,24 @@ constexpr int kRetireCap = 1024;
 /* ---- levers and receipts ---- */
 int sOn = 0;
 int sLatched = 0;
-/* [native] nrr_speck_batch (n60ships, default 0): 1 = a LOD-6 speck whose record is the one the
- * previous entry (also a speck) just drew re-uses that draw's state block, fog and uniform block
- * and only re-poses (MP, light, alpha light, colour); exact by construction (the stock path would
- * write the same values). Single-run speck records only. */
-int sSpeckBatch = 0;
+/* [native] nrr_speck_batch (n60ships; o3ds-cpucuts: DEFAULT 1, was 0): 1 = a LOD-6 speck whose record
+ * is the one the previous entry (also a speck) just drew re-uses that draw's state block, fog and
+ * uniform block and only re-poses (MP, light, alpha light, colour); exact by construction (the stock
+ * path would write the same values). Single-run speck records only. o3ds-cpucuts: such a speck also
+ * hands NrrDrawXfRows only the rows a re-pose writes (kXfSpeckRows) instead of all 28, under the
+ * nrr_draw bit 2 contract (every other row equals the previous speck's block). Stock order already
+ * keeps a predecessor's specks together (a speck's material is the previous LOD 1-5 body's last run),
+ * so grouping them further would only reorder draws across materials: not done.
+ * Hardware o3ds-3d@0c2668a, 1P 16 machines: 21 of ~28 entries per frame are specks, sb=0 sfast=0. */
+int sSpeckBatch = 1;
+/* o3ds-cpucuts [debug] mach_split (DEFAULT 0, diagnostic): split the hot racer's time into pose (MP,
+ * lights, the mesh's uniform block), apply (state block, combiner inputs, fog) and draw
+ * (NrrDrawXfRows: the uniform compare + the draw packet), `[nrrmach] split` per receipt window. */
+int sSplit = 0;
+struct SplitWin {
+    uint64_t pose, apply, draw;
+    unsigned ents, runs;
+} sSplitWin;
 
 GDX_COLD void Log(const char* fmt, ...) {
     char buf[256];
@@ -435,13 +449,29 @@ GDX_COLD void MenuReceipt() {
     memset(&sMenuWin, 0, sizeof(sMenuWin));
 }
 
+GDX_COLD void SplitReceipt() {
+    if (!sSplit || sSplitWin.ents == 0) {
+        return;
+    }
+    const double us = 1000000.0 / (double)SYSCLOCK_ARM11;
+    const double perF = sWin.frames != 0 ? 1.0 / (double)sWin.frames : 1.0;
+    Log("[nrrmach] split frames=%u ents/f=%.1f runs/f=%.1f us/f pose=%.0f apply=%.0f draw=%.0f | us/run apply=%.1f "
+        "draw=%.1f",
+        sWin.frames, sSplitWin.ents * perF, sSplitWin.runs * perF, (double)sSplitWin.pose * us * perF,
+        (double)sSplitWin.apply * us * perF, (double)sSplitWin.draw * us * perF,
+        sSplitWin.runs != 0 ? (double)sSplitWin.apply * us / sSplitWin.runs : 0.0,
+        sSplitWin.runs != 0 ? (double)sSplitWin.draw * us / sSplitWin.runs : 0.0);
+    memset(&sSplitWin, 0, sizeof(sSplitWin));
+}
+
 GDX_COLD void Receipt() {
+    SplitReceipt();
     Log("[nrr] mach frames=%u markers=%u hot=%u ents=%u runs=%u drops=%u | stub=%u nrr=%u fallback=%u "
         "other=%u | rec begin=%u pub=%u incomplete=%u refused=%u tex=%u | meshes %luB tex %d/%luB | speck=%u "
         "sfast=%u sb=%d cmdfree_min=%lu",
         sWin.frames, sWin.markers, sWin.hot, sWin.ents, sWin.runs, sWin.drops, sWin.stubs, sWin.nrr, sWin.fallback,
         sWin.other, sWin.recBegin, sWin.recPub, sWin.recIncomplete, sWin.recRefused, sWin.recTex, sRecBytes, sTexN,
-        sTexBytes, sWin.specks, sWin.sfast, sSpeckBatch != 0 && NrrAbOn(2) ? 1 : 0, sWin.cmdFreeMin);
+        sTexBytes, sWin.specks, sWin.sfast, gdx3ds_cpucut_on(sSpeckBatch, GDX3DS_CPUCUT_BIT_SPECK) != 0 && NrrAbOn(2) ? 1 : 0, sWin.cmdFreeMin);
     memset(&sWin, 0, sizeof(sWin));
 }
 
@@ -538,6 +568,11 @@ NRR_HOT void NrrMachHotMeshXf(const MeshRec& m, const Pose& p, const ViewIn& v, 
  * the only rows that differ between two runs of one mesh (NrrDrawXfRows, [native] nrr_draw bit 2). */
 constexpr uint32_t kXfRunRows = (3u << kXfConv) | (((1u << kXfTgN) - 1u) << kXfTg);
 constexpr uint32_t kXfAllRows = (1u << kXfVec4) - 1u;
+/* o3ds-cpucuts: the rows a nrr_speck_batch re-pose writes over the previous speck's block (MP, the
+ * model-space light, the racer colour, the FLX alpha light); conv / tg..seli come from the same run
+ * record and amb / lcol from the same view, so they equal the previous block. */
+constexpr uint32_t kXfSpeckRows = (0xFu << kXfMvp) | (1u << kXfLdir) | (1u << kXfCol) | (1u << kXfFlx);
+static_assert((kXfSpeckRows & ~kXfAllRows) == 0u, "xf layout");
 
 NRR_HOT void NrrMachHotRun(NrrCtx* c, const RunRec& rr, const void* verts, const Pose& p, const ViewIn& v, int kind,
                            float xf[kXfVec4][4], uint32_t rows) {
@@ -557,6 +592,18 @@ NRR_HOT void NrrMachHotRun(NrrCtx* c, const RunRec& rr, const void* verts, const
     }
     if (envOn && rr.colEnv) {
         memcpy(xf[kXfCol], p.rgb, sizeof(p.rgb));
+    }
+    if (GDX_UNLIKELY(sSplit)) {
+        const uint64_t t0 = svcGetSystemTick();
+        NrrStateApply(c, rr.block);
+        NrrSetInputs(c, rr.block, in, rr.numInputs);
+        NrrSetFog(c, rr.block, kind == GDX_NRR_MACH_HL ? p.rgb : v.fog);
+        const uint64_t t1 = svcGetSystemTick();
+        NrrDrawXfRows(c, verts, 16, rr.idx, rr.nIdx, &xf[0][0], rows);
+        sSplitWin.apply += t1 - t0;
+        sSplitWin.draw += svcGetSystemTick() - t1;
+        sSplitWin.runs++;
+        return;
     }
     NrrStateApply(c, rr.block);
     NrrSetInputs(c, rr.block, in, rr.numInputs);
@@ -591,10 +638,16 @@ NRR_HOT const MeshRec* NrrMachHotRacer(NrrCtx* c, const GdxNrrMachSnap* f, const
     sWin.sfast += same ? 1u : 0u;
     Pose p;
     const float(*tmpl)[4] = m->runs[0].xf;
+    const uint64_t t0 = GDX_UNLIKELY(sSplit) ? svcGetSystemTick() : 0;
     NrrMachHotPose(f, e, P, v.alphaRsp, tmpl[kXfAmb][3] != 0.0f, tmpl[kXfFlx][3] != 0.0f, p);
     NrrMachHotMeshXf(*m, p, v, xf, same);
+    if (GDX_UNLIKELY(sSplit)) {
+        sSplitWin.pose += svcGetSystemTick() - t0;
+        sSplitWin.ents++;
+    }
+    const uint32_t firstRows = same ? kXfSpeckRows : kXfAllRows;
     for (unsigned r = 0; r < m->nRuns; r++) {
-        NrrMachHotRun(c, m->runs[r], m->verts, p, v, e.kind, xf, r == 0 ? kXfAllRows : kXfRunRows);
+        NrrMachHotRun(c, m->runs[r], m->verts, p, v, e.kind, xf, r == 0 ? firstRows : kXfRunRows);
     }
     return m;
 }
@@ -611,7 +664,7 @@ NRR_HOT void NrrMachHotFrame(NrrCtx* c, const GdxNrrMachSnap* f, const float (*P
     gdx3ds_vtx_normalize(v.alphaRsp);
     float xf[kXfVec4][4];
     const MeshRec* prev = nullptr;
-    const bool speckBatch = sSpeckBatch != 0 && NrrAbOn(2);
+    const bool speckBatch = gdx3ds_cpucut_on(sSpeckBatch, GDX3DS_CPUCUT_BIT_SPECK) != 0 && NrrAbOn(2);
     for (unsigned i = 0; i < f->n; i++) {
         const GdxNrrMachEnt& e = f->e[i];
         const MeshRec* m = NrrMachHotRacer(c, f, e, P, v, gen, prev, xf);
@@ -1208,7 +1261,9 @@ extern "C" void gdx3ds_nrr_cat_init_mach(void) {
     if (sOn) {
         gdx3ds_nrr_set_draw(NRR_CAT_MACH, NrrMachHotDraw);
     }
-    sSpeckBatch = (sOn && Cfg("native", "nrr_speck_batch", 0) == 1) ? 1 : 0;
+    sSpeckBatch = sOn ? gdx3ds_cpucut_clamp(Cfg("native", "nrr_speck_batch", 1), 1) : 0;
+    gdx3ds_cpucut_lever("speck", &sSpeckBatch, GDX3DS_CPUCUT_BIT_SPECK);
+    sSplit = Cfg("debug", "mach_split", 0) != 0 ? 1 : 0;
     /* ni_mach itself is NOT decided here: gdx3ds_nimach_level() derives it lazily, on every real
      * (menu-only) use, from sOn as it stands at that moment -- not as it stood during this boot
      * call, which other categories / combined-build boot paths may not have settled yet. This
@@ -1217,13 +1272,11 @@ extern "C" void gdx3ds_nrr_cat_init_mach(void) {
     Log("[nimach] init asked=%d (bits 1 machine select, 2 machine settings / GP next machine; see "
         "the first `[nimach] relatch` receipt for the live value)",
         Cfg("native", "ni_mach", 0));
-    /* 2 = time-sliced (needs [debug] nrr_ab bit 1 + nrr_ab_period; otherwise it is on) */
-    if (sOn && Cfg("native", "nrr_speck_batch", 0) == 2) {
-        sSpeckBatch = 1;
-    }
+    /* 2 = A/B: on in the even [cpucut] blocks of bit 3 (o3ds-cpucuts), and further time-sliced by
+     * [debug] nrr_ab bit 1 + nrr_ab_period when that is set */
     Log("[nrr] mach speck_batch=%d (asked %d; 1 = consecutive specks of one single-run record re-use its state "
-        "and uniforms, exact)",
-        sSpeckBatch, Cfg("native", "nrr_speck_batch", 0));
+        "and uniforms, exact) mach_split=%d",
+        sSpeckBatch, Cfg("native", "nrr_speck_batch", 1), sSplit);
     Log("[nrr] mach init on=%d%s%s (body consumed on rendered ticks; snapshot <= %u B/view; hot: NrrMachHot* + "
         "the core's state/draw calls)",
         sOn, why != nullptr ? " REFUSED: " : "", why != nullptr ? why : "", (unsigned)sizeof(GdxNrrMachSnap));

@@ -73,8 +73,37 @@ void gdx_hud_set_custom_top_mask(unsigned mask, int customActive) {
     gGdxHudCustomActive = customActive;
 }
 
+// o3ds60 [ui] mp_hud_placement: an MP fullview race draws ONE local view, full screen, in the 1P
+// layout (port/3ds/game/gdx3ds_fullview_game.c), so the 2-4P force-ALL_TOP reason (one HUD per
+// viewport quadrant) does not hold for it. With the lever on (Old 3DS default) that view answers as
+// the 1P race does; the bottom DASH shows the same race information. 3DS only (the hook lives in
+// port/3ds/gdx3ds_bottomhud.c); everywhere else numPlayers is used as given.
+#if defined(GDX_HUD_PLACEMENT_HOST_TEST)
+static int sGdxHudPlacementTestFullview = 0; // host test: stands in for the 3DS hook below
+
+void gdx_hud_placement_test_set_fullview(int on) {
+    sGdxHudPlacementTestFullview = on;
+}
+#endif
+
+static int gdx_hud_placement_players(int numPlayers) {
+#if defined(GDX_HUD_PLACEMENT_HOST_TEST)
+    if (numPlayers > 1 && sGdxHudPlacementTestFullview) {
+        return 1;
+    }
+#elif defined(GDX_PLATFORM_3DS)
+    extern int gdx3ds_bottomhud_fullview_placement(void); // port/3ds/gdx3ds_bottomhud.c
+    if (numPlayers > 1 && gdx3ds_bottomhud_fullview_placement()) {
+        return 1;
+    }
+#endif
+    return numPlayers;
+}
+
 unsigned gdx_hud_top_element_mask(int numPlayers) {
     int mode;
+
+    numPlayers = gdx_hud_placement_players(numPlayers);
 
     if (gGdxHudCustomActive && (numPlayers <= 1)) {
         return gGdxHudCustomTopMask;

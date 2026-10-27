@@ -277,6 +277,36 @@ s32 LeoTestUnitReady(LEOStatus* status) {
    course records landing on LBA boundaries. */
 #define GDX_NDD_SYSTEM_AREA_BYTES 0x738C0
 
+/* ekaudio2 `[debug] disk_stream_coalesce_kb` (port/3ds/include/gdx3ds_disk_async.h): before a
+   streamed read copies its bytes out, fetch the runs of blocks it is missing with one SD request
+   each instead of one per block. `extra` is the read-ahead tail (async audio loads only; 0
+   everywhere else). Only makes blocks resident -- the read below is unchanged, so are its bytes,
+   its overlay and its refusal. No 3DS levers on the desktop: a no-op there. */
+#if defined(GDX_PLATFORM_3DS)
+extern unsigned int gdx3ds_disk_coalesce_bytes(void);
+extern unsigned int gdx3ds_disk_readahead_bytes(void);
+#endif
+
+static void gdx_leo_prefill(u32 offset, u32 bytes, u32 extra) {
+#if defined(GDX_PLATFORM_3DS)
+    const unsigned int runBytes = gdx3ds_disk_coalesce_bytes();
+    if (runBytes == 0 || gdx_disk_stream_mode() <= 0) {
+        return;
+    }
+    (void) gdx_disk_stream_fill_range((unsigned int) offset, (unsigned int) bytes, (unsigned int) extra, runBytes);
+#else
+    (void) offset; (void) bytes; (void) extra;
+#endif
+}
+
+/* "A disk is mounted": the resident buffer or the SD stream is live (LeoReadWrite's own guard
+   below). Cheap and side-effect free, unlike gdx_disk_load(), which re-runs the file search
+   while nothing is mounted -- so the EK disk audio library can ask it on every load
+   (decomp-3ds-ek-nodisk-audio.patch: no disk, no disk audio). */
+int gdx_leo_disk_mounted(void) {
+    return (gdx_disk_buffer != NULL || gdx_disk_stream_mode() > 0) ? 1 : 0;
+}
+
 s32 LeoReadWrite(LEOCmd* cmdBlock, s32 direction, u32 LBA, void* buffer, u32 nLBAs, OSMesgQueue* mq) {
     s32 offset = 0;
     s32 bytes = 0;
@@ -285,7 +315,7 @@ s32 LeoReadWrite(LEOCmd* cmdBlock, s32 direction, u32 LBA, void* buffer, u32 nLB
        stream. Today mode 1 always has both, so this reads the same as it always did; it is
        written this way so that B11d's mode 2 (stream-only, no resident buffer) does not have
        to come back and re-find this guard. */
-    if (gdx_disk_buffer == NULL && gdx_disk_stream_mode() <= 0) {
+    if (!gdx_leo_disk_mounted()) {
         LeoPostError(cmdBlock, mq, LEO_ERROR_DRIVE_NOT_READY, LBA, nLBAs);
         return LEO_ERROR_DRIVE_NOT_READY;
     }
@@ -313,6 +343,7 @@ s32 LeoReadWrite(LEOCmd* cmdBlock, s32 direction, u32 LBA, void* buffer, u32 nLB
            plus the journal overlay; without it, the original bcopy out of the resident image.
            A refusal posts an error and copies NOTHING, rather than handing the caller a
            half-filled buffer it will read as data. */
+        gdx_leo_prefill((u32) offset, (u32) bytes, 0u);
         if (!gdx_leo_fetch((u32) offset, (u32) bytes, buffer)) {
             LeoPostError(cmdBlock, mq, LEO_ERROR_UNRECOVERED_READ_ERROR, LBA, nLBAs);
             return LEO_ERROR_UNRECOVERED_READ_ERROR;
@@ -337,6 +368,94 @@ s32 LeoReadWrite(LEOCmd* cmdBlock, s32 direction, u32 LBA, void* buffer, u32 nLB
 
     LeoPostDone(cmdBlock, mq);
     return LEO_ERROR_GOOD;
+}
+
+/* o3dsekperf `[debug] audio_disk_async` (port/3ds/include/gdx3ds_disk_async.h): the async disk
+   audio loader's reads, served by an I/O worker instead of inline on the audio producer. The
+   decomp's AudioLoad_DiskLoad state machine already polls its queue across ticks, exactly as it
+   does for a real drive; this only stops the port from finishing the "DMA" before returning.
+   The worker runs THIS file's LeoReadWrite, unchanged, so the bytes, the error posts and the
+   completion message are the inline path's. Returns 1 when queued (the worker posts `mq`), 0
+   when the caller must call LeoReadWrite itself: lever off, a write, or no 3DS worker (desktop).
+   One slot, because the state machine has at most one request in flight. */
+#if defined(GDX_PLATFORM_3DS)
+typedef void (*GdxDiskAsyncJob)(void* arg);
+extern int gdx3ds_disk_async_enabled(void);
+extern int gdx3ds_disk_async_submit(GdxDiskAsyncJob job, void* arg);
+extern void gdx3ds_disk_async_wait_idle(void);
+
+typedef struct GdxLeoAsyncReq {
+    LEOCmd* cmdBlock;
+    u32 lba;
+    void* buffer;
+    u32 nLBAs;
+    OSMesgQueue* mq;
+    u32 loadAhead; /* bytes the load still wants past this request (the decomp's bytesRemaining) */
+} GdxLeoAsyncReq;
+
+static GdxLeoAsyncReq sLeoAsyncReq;
+
+/* ekaudio2 `[debug] audio_disk_readahead_kb`: the in-flight load's next bytes ride on this
+   request's SD request, up to the window measured from the request's start. The load is
+   LBA-contiguous on the image (block-linear .ndd), so "the next bytes" are the next file
+   bytes. `loadAhead` over-states the head read by one LBA's worth at most (bytesRemaining
+   still counts the head) -- a tail that lands inside the window anyway. */
+static void gdx_leo_async_readahead(const GdxLeoAsyncReq* req) {
+    s32 offset = 0;
+    s32 bytes = 0;
+    u32 extra;
+    const u32 window = gdx3ds_disk_readahead_bytes();
+    if (window == 0 || req->loadAhead == 0) {
+        return;
+    }
+    if (LeoLBAToByte(0, req->lba, &offset) != LEO_ERROR_GOOD ||
+        LeoLBAToByte((s32) req->lba, req->nLBAs, &bytes) != LEO_ERROR_GOOD) {
+        return; /* LeoReadWrite refuses the same request on its own terms */
+    }
+    if ((u32) bytes >= window) {
+        return; /* the request alone fills the window; its own prefill coalesces it */
+    }
+    extra = window - (u32) bytes;
+    if (extra > req->loadAhead) {
+        extra = req->loadAhead;
+    }
+    gdx_leo_prefill((u32) offset + GDX_NDD_SYSTEM_AREA_BYTES, (u32) bytes, extra);
+}
+
+static void gdx_leo_async_job(void* arg) {
+    GdxLeoAsyncReq* req = (GdxLeoAsyncReq*) arg;
+    gdx_leo_async_readahead(req);
+    LeoReadWrite(req->cmdBlock, OS_READ, req->lba, req->buffer, req->nLBAs, req->mq);
+}
+#endif
+
+int gdx_leo_read_async(LEOCmd* cmdBlock, s32 direction, u32 lba, void* buffer, u32 nLBAs, OSMesgQueue* mq,
+                       s32 loadAhead) {
+#if defined(GDX_PLATFORM_3DS)
+    if (direction != OS_READ || !gdx3ds_disk_async_enabled()) {
+        return 0;
+    }
+    /* The slot is rewritten below, so a job still running must finish first. */
+    gdx3ds_disk_async_wait_idle();
+    sLeoAsyncReq.cmdBlock = cmdBlock;
+    sLeoAsyncReq.lba = lba;
+    sLeoAsyncReq.buffer = buffer;
+    sLeoAsyncReq.nLBAs = nLBAs;
+    sLeoAsyncReq.mq = mq;
+    sLeoAsyncReq.loadAhead = loadAhead > 0 ? (u32) loadAhead : 0u;
+    return gdx3ds_disk_async_submit(gdx_leo_async_job, &sLeoAsyncReq);
+#else
+    (void) cmdBlock; (void) direction; (void) lba; (void) buffer; (void) nLBAs; (void) mq; (void) loadAhead;
+    return 0;
+#endif
+}
+
+/* Blocks until the async read in flight (if any) has posted. The reset drain in
+   AudioLoad_ProcessAsyncLoadDiskDrive calls this instead of spinning on the state machine. */
+void gdx_leo_async_wait_idle(void) {
+#if defined(GDX_PLATFORM_3DS)
+    gdx3ds_disk_async_wait_idle();
+#endif
 }
 
 s32 LeoSeek(LEOCmd* cmdBlock, u32 lba, OSMesgQueue* mq) {

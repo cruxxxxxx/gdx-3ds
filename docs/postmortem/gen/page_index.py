@@ -1,36 +1,55 @@
 from framework import *
+import pa_facts as F
+
+PA_STYLE = ('<style>.pa-rel { list-style:none; padding:0; margin:0 0 24px; max-width:72ch; } '
+            '.pa-rel { border-top:1px solid var(--rule); } .pa-rel li { padding:10px 0; border-bottom:1px solid var(--line); font-size:16px; } '
+            '.pa-rel li b { font-family:var(--sans); font-size:21px; letter-spacing:-.02em; margin-right:8px; } '
+            '.pa-rel li span { font-family:var(--sans); font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--ink3); margin-right:10px; font-variant-numeric:tabular-nums; } '
+            '.pa-nw { white-space:nowrap; } .pa-mp img { max-height:440px; object-fit:contain; } '
+            '.tiles { grid-template-columns:repeat(3, minmax(0,1fr)); } '
+            '.pa-builds { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px 24px; list-style:none; padding:0; margin:14px 0 12px; max-width:none; } '
+            '.pa-builds li { border-top:3px solid var(--rule); padding:10px 0 4px; font-size:15px; color:var(--ink2); } '
+            '.pa-builds li b { display:block; font-family:var(--sans); font-size:20px; letter-spacing:-.02em; color:var(--ink); } '
+            '.pa-feat { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:22px 32px; margin:24px 0 20px; } '
+            '.pa-feat > div { border-top:1px solid var(--rule); padding:10px 0 4px; } '
+            '.pa-feat h4 { margin:0 0 6px; font-size:16px; } .pa-feat ul { margin:0; padding-left:18px; } .pa-feat li { margin:4px 0; font-size:15px; } '
+            '.pa-stack li { margin:10px 0; } '
+            '.pa-ph1 { --ph:var(--blue); --phs:var(--blue-soft); --phi:var(--blue-ink); } .pa-ph2 { --ph:var(--accent); --phs:var(--accent-soft); --phi:var(--accent-ink); } .pa-ph3 { --ph:var(--gold); --phs:var(--gold-soft); --phi:var(--gold-ink); } '
+            '.pa-d { display:inline-block; white-space:nowrap; background:var(--phs); border-left:3px solid var(--ph); border-radius:0; padding:3px 8px; font-family:var(--sans); font-size:12.5px; font-weight:700; font-variant-numeric:tabular-nums; } '
+            '.pa-d abbr { display:block; text-decoration:none; font-size:10px; font-weight:700; letter-spacing:.1em; color:var(--phi); text-transform:uppercase; } '
+            '.pa-key { display:flex; flex-wrap:wrap; gap:6px 16px; font-size:12.5px; color:var(--ink2); margin:10px 0 4px; } '
+            '.pa-key span::before { content:""; display:inline-block; width:12px; height:12px; border-radius:0; background:var(--phs); border-left:3px solid var(--ph); vertical-align:-1px; margin-right:6px; } '
+            '@media print { .pa-d, .pa-key span::before { -webkit-print-color-adjust:exact; print-color-adjust:exact; } } '
+            '@media (max-width: 640px) { .pa-builds, .pa-feat { grid-template-columns:1fr; } } '
+            '@media (max-width: 860px) { .tiles { grid-template-columns:repeat(2, minmax(0,1fr)); } } '
+            '.pa-src { font-size:12px; color:var(--ink3); margin:4px 0 0; max-width:none; }</style>')
 
 
 def build(D):
-    b = []
+    b = [PA_STYLE]
     b.append('<p class="eyebrow">01 · Overview</p><h1>F-Zero X on 3DS — Old and New, native, with the 64DD Expansion Kit</h1>')
-    b.append('<p class="lede">A post-mortem of porting G-Diffuser, the F-Zero X decompilation, to the Nintendo 3DS — '
-             'v1.0.0, covering both the original 24-day sprint that put it on a New 3DS at 60 fps in 3D (2026-08-11 to '
-             '09-03) and the 43-day second phase that added Old 3DS support, a native renderer, and the Expansion '
-             'Kit (2026-09-07 to 10-19). One person directed throughout; one long-lived Claude session orchestrated; '
-             + esc(D["subagents"]) + ' subagents built the first phase and many more carried the second.</p>')
-    b.append('<p class="lede">The console went from a black screen to a native-60 stereoscopic racer, then from a '
-             'New-3DS-only build to a four-way release covering both consoles with and without the 64DD expansion.</p>')
+    b.append('<p class="lede">How G-Diffuser, the PC port of the F-Zero X decompilation, got onto the Nintendo 3DS: one person '
+             'directing, Claude agents writing all of the code, 11 weeks from first research to multiplayer.</p>')
+    b.append('<ul class="pa-rel">'
+             '<li><b>v0.9.0</b> <span>2026-09-04</span> New 3DS and New 2DS XL only: a 59.6 fps hardware median and stereoscopic 3D, after a 24-day sprint.</li>'
+             '<li><b>v1.0.0</b> <span>2026-10-19</span> Old 3DS and 2DS support, a native renderer as the default on both consoles, '
+             'the 64DD Expansion Kit on New 3DS, and the DASH bottom screen.</li>'
+             '<li><b>v1.1.0</b> <span>2026-10-26</span> Multiplayer for 2–4 players over local wireless, Wi-Fi or the internet; '
+             'native menus; both 3D eyes in one GPU submission. Release notes in <code>docs/RELEASE-NOTES.md</code>.</li>'
+             '</ul>')
+    H = F.HW
+    b.append('<h2>The numbers</h2>')
     b.append(tiles([
-        (esc(D["final_median"]) + '<small>fps</small>', "median on hardware, full Grand Prix, New 3DS, end of the first phase (from 12–20 fps in the first emulator race)", True),
-        (esc(D["final_p10"]) + '<small>fps</small>', "tenth-percentile floor in 30-machine crowds, first phase (from 25–35)", True),
-        (esc(D["final_cap"]), "of frames at the 60 cap, first phase (from 14% one week earlier)", True),
-        (esc(D["active_days"]), "active days across the first phase's 24 calendar days, three pauses when the weekly plan allowance ran out", False),
-        (esc(D["tokens_total_h"]), "tokens across all sessions and agents, first phase only; see Cost", False),
-        (esc(D["cost_b_h"]), "at published API list prices (Fable $10/$50 per MTok, 1-hour cache writes), first phase only; see Cost", False),
-        (esc(D["commits_3ds"]), "commits touching the 3DS port in the first phase, frozen 2026-10-08 from the v0.9.0 docs — not re-verified against final history", False),
-        (esc(D["loc_port3ds"]), "lines under port/3ds plus " + D["patches"] + " pure-delta patches, first-phase count", False),
-    ]))
-    b.append('<h2>What v1.0.0 added</h2>')
-    b.append(tiles([
-        ("3", "released console builds from one source tree: Old 3DS, New 3DS, and New 3DS with the Expansion Kit", True),
-        ("199", "internal progress notes written during the second phase", False),
-        ("43<small>days</small>", "calendar span of the second phase, 2026-09-07 to 10-19 inclusive", False),
-    ]))
-    b.append('<div class="note">The tiles above are dated. The first phase\'s hardware numbers and token/cost '
-             'figures were measured through 2026-09-03 and have not been re-run for v1.0.0; the <a href="agentic.html">'
-             'Agentic workflow</a> page describes how the second phase was run, and the <a href="cost.html">Cost</a> '
-             'page is explicit about what it does and does not price.</div>')
+        ("60<small>fps</small>", f"New 3DS, 3D race: all {H['n3ds_race3d_windows']} one-second windows at 59–61", "red"),
+        (f"{H['o3ds_race3d_median']}<small>fps</small>", f"Old 3DS, 3D race: median window; {H['o3ds_race3d_at60']}% at 60, tenth percentile {H['o3ds_race3d_p10']}", "red"),
+        (esc(F.big(F.tokens(F.TOT))), "tokens across all sessions and agents, 08-11 to 10-26", "blue"),
+        (esc(F.money(F.COST_1H)), f"at API list prices ({F.money(F.COST_LOGGED)} billing cache writes as logged)", "gold"),
+        (f"{F.PROMPTS}", f"human prompts; {F.SUBAGENTS} subagents and {F.WORKFLOW_AGENTS:,} workflow agents did the work", "blue"),
+        (f"{F.LOC_PORT // 1000}k", "lines of port code under port/3ds, tests included", "red"),
+    ], hero=True))
+    b.append('<p class="pa-src">Hardware: card-6 test logs, build <code>ba0692e</code>, 10-26 (1P vs CPU field, 3D on); how the numbers got there '
+             'is on <a href="road-to-60.html">Road to 60</a>. Tokens and cost: session transcripts '
+             'to 10-26, method on <a href="cost.html">Cost</a>.</p>')
 
     b.append('<h2>On hardware</h2>')
     b.append('<div class="media">'
@@ -38,6 +57,12 @@ def build(D):
              '<figcaption>v1.0, New 3DS: the Expansion Kit\'s Select Mode (COURSE EDIT, CREATE MACHINE); the bottom screen is DASH\'s idle view.</figcaption></figure>'
              '<figure><a href="../media/v1-race.jpg" target="_blank" rel="noopener"><img src="../media/v1-race.jpg" alt="v1.0 on a New 3DS: a race on the top screen, the DASH race dashboard on the bottom" loading="lazy"></a>'
              '<figcaption>v1.0, New 3DS, mid-race: DASH on the bottom screen with energy, position, lap times and the course map.</figcaption></figure>'
+             '</div>')
+    b.append('<div class="media pa-mp">'
+             '<figure><a href="../media/mp-race-countdown.png" target="_blank" rel="noopener"><img src="../media/mp-race-countdown.png" alt="v1.1.0 work, emulator: a four-player Mute City race at the countdown, with the DASH showing standings and the NET indicator on the bottom screen" loading="lazy"></a>'
+             '<figcaption>v1.1.0 work, multiplayer, emulator capture (not a photo of hardware): a four-player race on Mute City at the countdown. Each console shows its own racer; the DASH shows the standings and the NET indicator.</figcaption></figure>'
+             '<figure><a href="../media/mp-menu.png" target="_blank" rel="noopener"><img src="../media/mp-menu.png" alt="v1.1.0 work, emulator: Select Mode with VS Battle chosen and the bottom-screen MULTIPLAYER menu offering Play Nearby and Play Online" loading="lazy"></a>'
+             '<figcaption>v1.1.0 work, emulator capture: picking VS opens the MULTIPLAYER menu on the bottom screen, nearby (local wireless or same Wi-Fi) or online with a room code.</figcaption></figure>'
              '</div>')
     b.append('<p>The clips and photos below are from v0.9 (2026-09), before DASH replaced the debug console on the bottom screen.</p>')
     b.append('<div class="media">'
@@ -53,63 +78,66 @@ def build(D):
              '<figure><a href="../media/character2.jpg" target="_blank" rel="noopener"><img src="../media/character2.jpg" alt="Blue Falcon stats" loading="lazy"></a><figcaption>Blue Falcon.</figcaption></figure>'
              '</div>')
     b.append('<h2>What was built</h2>')
-    b.append('<p>Three released console builds from one source tree, all booting from the HOME menu (.cia) or the homebrew '
-             'launcher (.3dsx): the base game for Old 3DS / 2DS and for New 3DS / New 2DS XL, and a New 3DS build with the 64DD '
-             'Expansion Kit (course editor and machine creator, playable with a user-supplied disk image). Every build '
-             'reads prebaked asset archives from the SD card — no ROM or disk image ever ships with the game.</p>')
-    b.append('<p>They play the whole game: Grand Prix, Time Trial, Practice, Death Race, and the machine editor screens, '
-             'with music and effects on the real DSP, stereoscopic 3D on the slider, a bottom-screen dashboard with three '
-             'HUD layouts and an idle view outside races, and clean HOME suspend, resume, close, lid sleep and power-off. '
-             'The New 3DS build keeps the native-60 frame pacing the first phase reached; the Old 3DS build gets to a '
-             'comparable result by a different route. At v1.0.0, with no ini, both builds default to that same route: '
-             'the native renderer (<code>[perf] preset = auto</code>). The New 3DS\'s first-phase render-thread/per-draw-stereo '
-             'path is still built in and reachable with an explicit ini, but is no longer the default — see <a href="frontier.html">Frontier</a> and <a href="boundaries.html">'
-             'Pushing the boundaries</a> for the two builds compared side by side.</p>')
-    b.append('<div class="cols2">')
-    b.append('<div><h3>The stack</h3><ul>'
-             '<li><b>decomp</b>: the F-Zero X decompilation (inspectredc/fzerox), untouched upstream, plus a patch stack.</li>'
-             '<li><b>libultraship</b>: the N64 runtime (Kenix3), untouched upstream, including a 13-line newlib fix that lets it build on devkitARM; it still draws every menu and non-race screen.</li>'
-             '<li><b>port/3ds</b>: ' + esc(D["loc_port3ds"]) + ' lines as of the first phase, since grown: a citro3d rendering backend, stereo, audio, input, menu, lifecycle, render thread, profilers, packaging.</li>'
-             '<li><b>the native renderer</b> (added in the second phase): an owned interpreter that skips the per-frame '
-             'display-list walk for race geometry, and is the v1.0.0 default on both consoles — see <a href="frontier.html">Frontier</a> for how, and why it is '
-             'what lets the Old 3DS keep up.</li>'
-             '</ul></div>')
-    b.append('<div><h3>The headline numbers on hardware, first phase (New 3DS)</h3>' + table(["When", "Median", "p10", "At cap"], D["headline_rows"], num_cols=(1, 2, 3)) + '</div>')
-    b.append('</div>')
-
-    b.append('<h2>The first phase in five lines</h2>')
-    b.append('<ol>')
-    b.append('<li><b>08-11 → 08-14: from research to a race.</b> Feasibility dossier, plan for a team of agents, five parallel foundation streams, six boot bugs, first race at 12–20 fps in the emulator.</li>')
-    b.append('<li><b>08-20 → 08-22: from pink to playable, then to a real console.</b> Fog, HUD, livery, shadow, sky fixed; the loadblock discovery took menus from 27 to 60 fps; first hardware run 08-21 (\"wow it runs amazing\"); audio the same evening.</li>')
-    b.append('<li><b>08-27 → 08-28: product grade.</b> Five-agent fleet drop, stereo armed, touch menu, rival detail, GPU vertex-transform moonshot built and shelved, README with legal notice, release package.</li>')
-    b.append('<li><b>09-01 → 09-02: lifecycle and the last big lever.</b> HOME crash and close-from-HOME hang fixed; a bridge output cache proven a NO-GO and replaced by memoizing each sub-display-list\'s classification instead of re-scanning it every frame; LOCKED-60 campaign launched with four parallel levers.</li>')
-    b.append('<li><b>09-02 → 09-03: multi-core.</b> Render thread on core 2, one-frame-ahead mode, bridge on main, auto LOD; median 59.6 with 53% of frames at cap; crash fixed; viewport placement fixed; stereo markers anchored.</li>')
-    b.append('</ol>')
-    b.append('<h2>The second phase in six lines</h2>')
-    b.append('<p>Not originally planned; it ran 09-07 to 10-19, 43 calendar days.</p>')
-    b.append('<ol>')
-    b.append('<li><b>09-07 → 09-29: scoping, then making it fit.</b> The Old 3DS milestone, previously written off, was restarted; '
-             'parallel agents fit the build into its 64 MB app region (the RDRAM arena halved, audio streamed instead of resident, '
-             'texture uploads capped); on 2026-09-29, in the first hardware session on a real Old 3DS, the shipped (New-3DS-era, 16 MiB '
-             'RDRAM) build died at boot while the <code>-DGDX_3DS_O3DS=ON</code> profile, built to fit the console\'s memory grant, booted '
-             'and raced the same session at about 10 fps.</li>')
-    b.append('<li><b>09-29 → 09-30: finding the real costs.</b> A narrowed audio lock cut the race-wall wait on the Old 3DS by about 20 ms '
-             'a frame; frame skipping ended the game\'s accidental slow motion; a first retained-mode renderer won big in the emulator and '
-             'barely moved the number on hardware.</li>')
-    b.append('<li><b>09-30 → 10-01: the probe that changed the plan.</b> Hardware performance counters showed the real limit was '
-             'instruction-cache misses, not instruction count. A pose-replay fallback was built and worked, then was set aside on the '
-             'user\'s call: "we should go for a real 60! i still believe it has to be possible."</li>')
-    b.append('<li><b>10-01 → 10-02: the native renderer.</b> Rebuilt around the cache instead of around instruction counts, one small '
-             'loop per race category, sized to fit the 16 KB instruction cache. Median frame time on a 2D Grand Prix race reached 16.5 ms.</li>')
-    b.append('<li><b>10-03 → 10-08: 3D at 60, on the Old 3DS too.</b> A per-eye resubmit with its own swap-pacing mode reached 59–60 fps '
-             'in 3D on most Grand Prix courses; the heaviest courses (Silence, Sand Ocean) can still trip the frame-skip safety net to a '
-             'steady 30 fps mid-race.</li>')
-    b.append('<li><b>10-08 → 10-19: the Expansion Kit, a dashboard, and release.</b> The 64DD Expansion Kit verified tick-for-tick '
-             'identical under the native renderer and booted on the Old 3DS, which then proved too slow to release it on; the '
-             'bottom-screen DASH shipped; a standing adversarial review audited the merged result before the v1.0.0 release.</li>')
-    b.append('</ol>')
+    b.append('<p>Three console builds from one source tree:</p>')
+    b.append('<ul class="pa-builds">'
+             '<li><b>Old 3DS / 2DS</b>F-Zero X</li>'
+             '<li><b>New 3DS / New 2DS XL</b>F-Zero X</li>'
+             '<li><b>New 3DS + Expansion Kit</b>F-Zero X with the 64DD add-on</li>'
+             '</ul>')
+    b.append('<p>Each installs from the HOME menu (.cia) or the Homebrew Launcher (.3dsx). No ROM or disk image ships: players '
+             'extract their own.</p>')
+    b.append('<div class="pa-feat">'
+             '<div><h4>The whole game</h4><ul>'
+             '<li>Grand Prix, Time Attack, Practice, Death Race, VS and the machine screens.</li>'
+             '<li>With the Expansion Kit: Course Edit and Create Machine.</li></ul></div>'
+             '<div><h4>Speed</h4><ul>'
+             '<li>New 3DS: 60 fps races in 2D and 3D.</li>'
+             '<li>Old 3DS: 2D races at or near 60; 3D races mostly hold 60.</li>'
+             '<li>The heaviest Old 3DS courses can still drop to 30 in 3D.</li></ul></div>'
+             '<div><h4>The console, used properly</h4><ul>'
+             '<li>Stereoscopic 3D on the slider.</li>'
+             '<li>Music and effects on the DSP.</li>'
+             '<li>A bottom-screen dashboard (DASH).</li>'
+             '<li>Clean HOME, sleep and power-off.</li></ul></div>'
+             '<div><h4>Multiplayer <small>(v1.1.0 work)</small></h4><ul>'
+             '<li>2–4 players, each on their own console.</li>'
+             '<li>Nearby or online.</li></ul></div>'
+             '</div>')
+    b.append('<p>Both consoles draw through the same native renderer by default. The New 3DS\'s first-phase render-thread path is '
+             'still built in as an option; <a href="frontier.html">Frontier</a> and <a href="road-to-60.html">Road to 60</a> cover it.</p>')
+    b.append('<h3>The stack</h3><ul class="pa-stack">'
+             '<li><b>decomp</b>: the F-Zero X decompilation, unmodified upstream, with a small set of patches on top.</li>'
+             '<li><b>libultraship</b>: the N64 runtime that PC ports of decompiled games are built on. The port carries a trimmed copy '
+             'with its 3DS changes folded in. It loads the game\'s assets; its original renderer remains as a fallback.</li>'
+             '<li><b>port/3ds</b>: the port itself, ' + f"{F.LOC_PORT // 1000}k" + ' lines: rendering, stereo, audio, input, menus, '
+             'lifecycle, multiplayer and packaging.</li>'
+             '<li><b>the native renderer</b>: N64 PC ports normally translate the game\'s drawing commands into GPU calls one at a '
+             'time, every frame. This port instead writes the 3DS GPU\'s own commands directly, from data prepared ahead of time, '
+             'for races, menus and most transitions: nearly everything on screen. Only a few rare screens, such as the course editor '
+             'and the ending, still take the old route. No other port in this family does this, and it is what lets the Old 3DS keep '
+             'up. See <a href="native.html">The road to 60, all over again</a>.</li>'
+             '</ul>')
+    b.append('<h2>How it went</h2>')
+    b.append('<p>The first phase (08-11 → 09-03) ported the game to the New 3DS. The second (09-07 → 10-19, not originally planned) '
+             'brought it to the Old 3DS through a native renderer and shipped v1.0.0. Then a week of v1.1.0 work.</p>')
+    b.append('<div class="pa-key" aria-label="Date colour key"><span class="pa-ph1">v0.9 = New 3DS only (first phase)</span>'
+             '<span class="pa-ph2">v1.0 = Old 3DS (second phase, the native fork)</span><span class="pa-ph3">v1.1 = polish and online multiplayer</span></div>')
+    b.append(table(["Dates", "Stage", "What happened"], [
+        ['<span class="pa-d pa-ph1">08-11 → 08-14<abbr title="New 3DS only (first phase)">v0.9</abbr></span>', "<b>From research to a race</b>", "Feasibility dossier, a plan for a team of agents, five parallel foundation streams, six boot bugs; first race at 12–20 fps in the emulator."],
+        ['<span class="pa-d pa-ph1">08-20 → 08-22<abbr title="New 3DS only (first phase)">v0.9</abbr></span>', "<b>Playable, then on a console</b>", "Fog, HUD, livery, shadow and sky fixed; menus from 27 to 60 fps; first hardware run 08-21 (\"wow it runs amazing\"), audio the same evening."],
+        ['<span class="pa-d pa-ph1">08-27 → 08-28<abbr title="New 3DS only (first phase)">v0.9</abbr></span>', "<b>Product grade</b>", "Stereo 3D armed, touch menu, rival detail; a GPU vertex-transform moonshot built and shelved; README and release package."],
+        ['<span class="pa-d pa-ph1">09-01 → 09-02<abbr title="New 3DS only (first phase)">v0.9</abbr></span>', "<b>Lifecycle and the last big lever</b>", "HOME crash and close-from-HOME hang fixed; per-frame display-list re-scanning replaced by memoized results; the LOCKED-60 campaign launched."],
+        ['<span class="pa-d pa-ph1">09-02 → 09-03<abbr title="New 3DS only (first phase)">v0.9</abbr></span>', "<b>Multi-core</b>", "Render thread on core 2, one frame ahead; median 59.6 fps with 53% of frames at the cap. v0.9.0."],
+        ['<span class="pa-d pa-ph2">09-07 → 09-29<abbr title="Old 3DS (second phase, the native fork)">v1.0</abbr></span>', "<b>Make it fit</b>", "Old 3DS restarted; build squeezed into its 64 MB app region. First boot on a real Old 3DS: about 10 fps."],
+        ['<span class="pa-d pa-ph2">09-29 → 09-30<abbr title="Old 3DS (second phase, the native fork)">v1.0</abbr></span>', "<b>Find the real costs</b>", "Narrower audio lock (−20 ms a frame); frame skipping ends the slow motion; a retained renderer wins in the emulator only."],
+        ['<span class="pa-d pa-ph2">09-30 → 10-01<abbr title="Old 3DS (second phase, the native fork)">v1.0</abbr></span>', "<b>The probe</b>", "Hardware counters: the limit is instruction-cache misses, not instruction count. A working pose-replay fallback is shelved: \"we should go for a real 60!\""],
+        ['<span class="pa-d pa-ph2">10-01 → 10-02<abbr title="Old 3DS (second phase, the native fork)">v1.0</abbr></span>', "<b>Native renderer</b>", "Small race loops sized to the 16 KB instruction cache. 2D Grand Prix at a 16.5 ms median frame."],
+        ['<span class="pa-d pa-ph2">10-03 → 10-08<abbr title="Old 3DS (second phase, the native fork)">v1.0</abbr></span>', "<b>3D at 60</b>", "Per-eye resubmit: 59–60 fps in 3D on most courses; the heaviest can fall to 30."],
+        ['<span class="pa-d pa-ph2">10-08 → 10-19<abbr title="Old 3DS (second phase, the native fork)">v1.0</abbr></span>', "<b>Release</b>", "Expansion Kit verified tick-for-tick, released for New 3DS only (too slow on Old); DASH ships; adversarial review; v1.0.0."],
+        ['<span class="pa-d pa-ph3">10-20 → 10-26<abbr title="Polish and online multiplayer">v1.1</abbr></span>', "<b>After v1.0.0</b>", "2–4 player multiplayer; one GPU submission for both eyes (Old 3DS 3D menu 40.2 → 44.6 fps); HOME-close lock fixed."],
+    ]))
     b.append('<p>See <a href="agentic.html">Agentic workflow</a> for how the second phase was run and '
-             '<a href="old-3ds.html">Old 3DS</a> for the full campaign, card by card.</p>')
+             '<a href="native.html#old-3ds">The road to 60, all over again</a> for the Old 3DS campaign, card by card.</p>')
 
     b.append('<h2>Read on</h2>')
     b.append('<ul>')

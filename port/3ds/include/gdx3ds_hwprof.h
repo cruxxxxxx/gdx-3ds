@@ -38,6 +38,8 @@
  *     One receipt per site per [c5cat] window:
  *       [hwsite] frame=N r=R site=S n/f=calls us/f=us ovh/f=us | cat=n/us cat=n/us ...
  *     per rendered frame; ovh = the site's own two clock reads per call.
+ *     [debug] hwsite_every = N (onesubmit, default 1): time the sites in one [c5cat] window of
+ *     every N only (receipts for those windows only), the cheap sampled mode for a test card.
  */
 #ifndef GDX3DS_HWPROF_H
 #define GDX3DS_HWPROF_H

@@ -1,101 +1,198 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Author&#x27;s notes</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap"><style>
-:root {
-  --bg:#eef1f6; --bg2:#ffffff; --bg3:#e2e7ef; --ink:#17202e; --ink2:#48546a; --ink3:#7a8598;
-  --line:#cfd6e2; --accent:#2457ff; --accent-ink:#1a3fc4; --accent-soft:#dbe3ff; --gold:#e0a71a; --gold-soft:#fbefc9;
-  --good:#1f8f4e; --warn:#c77d0a; --bad:#c9302c; --bad-soft:#f8dcdb; --good-soft:#d9f1e3; --warn-soft:#fbe9cc;
-  --c1:#2457ff; --c2:#e0a71a; --c3:#7a3be0; --c4:#1f8f4e; --c5:#c9302c; --c6:#0e8fa3; --c7:#8a6d3b; --c8:#5c6577;
-  --shadow:0 1px 2px rgba(23,32,46,.08), 0 8px 24px -12px rgba(23,32,46,.25);
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg:#0f141d; --bg2:#161d29; --bg3:#1f2836; --ink:#e7ecf4; --ink2:#b3bccb; --ink3:#7f8a9c;
-    --line:#2b3547; --accent:#6d8dff; --accent-ink:#9fb3ff; --accent-soft:#1d2a55; --gold:#f0c04a; --gold-soft:#3a2f10;
-    --good:#4cc37c; --warn:#f0a83a; --bad:#f06a66; --bad-soft:#4a1f1e; --good-soft:#153826; --warn-soft:#3f2c0f;
-    --c1:#6d8dff; --c2:#f0c04a; --c3:#b08cff; --c4:#4cc37c; --c5:#f06a66; --c6:#3fc3d8; --c7:#c9a26b; --c8:#8f9ab0;
-    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
-  }
-}
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Author&#x27;s notes</title><script>(function(){var d=document.documentElement;d.classList.add('js');var t=null;try{t=localStorage.getItem('pm-theme');}catch(e){}var q=/[?&]theme=(light|dark)/.exec(location.search);if(q){t=q[1];}if(t==='light'||t==='dark'){d.setAttribute('data-theme',t);}})();</script><style>:root {
+  --bg:#ffffff; --bg2:#ffffff; --bg3:#f3f3f4; --ink:#111113; --ink2:#47474d; --ink3:#808087; --line:#dcdce0; --rule:#111113;
+  --accent:#e4002b; --accent-ink:#c8002a; --accent-soft:#fde8ec; --accent-hi:#ff8597; --accent-glow:rgba(228,0,43,.34);
+  --blue:#0047ff; --blue-ink:#0039cc; --blue-soft:#e6edff; --blue-hi:#86a8ff; --blue-glow:rgba(0,71,255,.30);
+  --gold:#f0a500; --gold-ink:#b46b00; --gold-soft:#fff3d6; --gold-hi:#ffc94d; --gold-glow:rgba(240,165,0,.40);
+  --good:#00845a; --good-soft:#dff3ea; --warn:#b46b00; --warn-soft:#fff3d6; --bad:#c8002a; --bad-soft:#fde8ec;
+  --c1:#e4002b; --c2:#f0a500; --c3:#0047ff; --c4:#00a06b; --c5:#55555c; --c6:#86a8ff; --c7:#b46b00; --c8:#b9b9bf;
+  --shadow:none;
+  --sans:"Helvetica Neue", Helvetica, Arial, sans-serif; --mono:ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg:#1c1c1e; --bg2:#232325; --bg3:#2c2c2f; --ink:#f2f2ef; --ink2:#c4c4c8; --ink3:#8e8e94; --line:#3a3a3e; --rule:#f2f2ef;
+  --accent:#ff3b4f; --accent-ink:#ff6676; --accent-soft:#3e1a21; --accent-hi:#ffb4be; --accent-glow:rgba(255,59,79,.55);
+  --blue:#4d86ff; --blue-ink:#86a8ff; --blue-soft:#1b2640; --blue-hi:#c8d8ff; --blue-glow:rgba(77,134,255,.55);
+  --gold:#ffbb2e; --gold-ink:#ffc34d; --gold-soft:#3a2e12; --gold-hi:#ffe9ad; --gold-glow:rgba(255,187,46,.50);
+  --good:#3ccf8e; --good-soft:#163527; --warn:#ffb340; --warn-soft:#3a2e12; --bad:#ff6676; --bad-soft:#3e1a21;
+  --c1:#ff3b4f; --c2:#ffbb2e; --c3:#4d86ff; --c4:#3ccf8e; --c5:#a1a1a6; --c6:#a3bfff; --c7:#d69a3a; --c8:#69696f;
+  --shadow:none;
+} }
 :root[data-theme="dark"] {
-  --bg:#0f141d; --bg2:#161d29; --bg3:#1f2836; --ink:#e7ecf4; --ink2:#b3bccb; --ink3:#7f8a9c;
-  --line:#2b3547; --accent:#6d8dff; --accent-ink:#9fb3ff; --accent-soft:#1d2a55; --gold:#f0c04a; --gold-soft:#3a2f10;
-  --good:#4cc37c; --warn:#f0a83a; --bad:#f06a66; --bad-soft:#4a1f1e; --good-soft:#153826; --warn-soft:#3f2c0f;
-  --c1:#6d8dff; --c2:#f0c04a; --c3:#b08cff; --c4:#4cc37c; --c5:#f06a66; --c6:#3fc3d8; --c7:#c9a26b; --c8:#8f9ab0;
-  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  --bg:#1c1c1e; --bg2:#232325; --bg3:#2c2c2f; --ink:#f2f2ef; --ink2:#c4c4c8; --ink3:#8e8e94; --line:#3a3a3e; --rule:#f2f2ef;
+  --accent:#ff3b4f; --accent-ink:#ff6676; --accent-soft:#3e1a21; --accent-hi:#ffb4be; --accent-glow:rgba(255,59,79,.55);
+  --blue:#4d86ff; --blue-ink:#86a8ff; --blue-soft:#1b2640; --blue-hi:#c8d8ff; --blue-glow:rgba(77,134,255,.55);
+  --gold:#ffbb2e; --gold-ink:#ffc34d; --gold-soft:#3a2e12; --gold-hi:#ffe9ad; --gold-glow:rgba(255,187,46,.50);
+  --good:#3ccf8e; --good-soft:#163527; --warn:#ffb340; --warn-soft:#3a2e12; --bad:#ff6676; --bad-soft:#3e1a21;
+  --c1:#ff3b4f; --c2:#ffbb2e; --c3:#4d86ff; --c4:#3ccf8e; --c5:#a1a1a6; --c6:#a3bfff; --c7:#d69a3a; --c8:#69696f;
+  --shadow:none;
 }
+
 * { box-sizing:border-box; }
-html { color-scheme: light dark; }
-body { margin:0; background:var(--bg); color:var(--ink); font-family:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif; font-size:16px; line-height:1.55; }
-a { color:var(--accent-ink); text-decoration:none; } a:hover { text-decoration:underline; }
-code, pre, .mono { font-family:"IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; font-size:.92em; }
-pre { background:var(--bg3); padding:12px 14px; border-radius:6px; overflow-x:auto; line-height:1.45; }
-code { background:var(--bg3); padding:1px 5px; border-radius:4px; }
+html { color-scheme:light; -webkit-text-size-adjust:100%; }
+:root[data-theme="dark"] { color-scheme:dark; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme:dark; } }
+body { margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); font-size:16.5px; line-height:1.55;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; overflow-x:hidden; }
+a { color:var(--accent-ink); text-decoration:none; } a:hover { text-decoration:underline; text-underline-offset:.15em; }
+code, pre, .mono { font-family:var(--mono); font-size:.86em; }
+pre { background:var(--bg3); padding:12px 14px; border-left:2px solid var(--rule); overflow-x:auto; line-height:1.45; }
+code { background:var(--bg3); padding:1px 4px; border-radius:2px; overflow-wrap:anywhere; }
 pre code { background:none; padding:0; }
-.shell { display:grid; grid-template-columns:230px minmax(0,1fr); min-height:100vh; }
-nav.rail { border-right:1px solid var(--line); padding:26px 18px; position:sticky; top:0; height:100vh; overflow:auto; background:var(--bg2); }
-nav.rail .brand { font-family:"Barlow Condensed", "Arial Narrow", sans-serif; font-weight:700; font-size:22px; letter-spacing:.02em; text-transform:uppercase; line-height:1.05; margin-bottom:4px; }
-nav.rail .sub { color:var(--ink3); font-size:12.5px; margin-bottom:22px; }
-nav.rail ol { list-style:none; padding:0; margin:0; counter-reset:p; }
-nav.rail li { margin:0 0 6px; }
-nav.rail li a { display:block; padding:7px 10px; border-radius:6px; color:var(--ink2); }
-nav.rail li a b { display:block; font-weight:600; color:var(--ink); font-size:14.5px; }
-nav.rail li a span { font-size:12px; color:var(--ink3); }
-nav.rail li a.on { background:var(--accent-soft); } nav.rail li a.on b { color:var(--accent-ink); }
-nav.rail li a:hover { text-decoration:none; background:var(--bg3); }
-nav.rail .foot { margin-top:26px; font-size:11.5px; color:var(--ink3); line-height:1.5; }
-main { padding:40px 56px 80px; max-width:1180px; }
-.eyebrow { font-family:"IBM Plex Mono", monospace; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent-ink); margin:0 0 8px; }
-h1 { font-family:"Barlow Condensed", "Arial Narrow", sans-serif; font-weight:700; font-size:54px; line-height:.98; letter-spacing:.005em; margin:0 0 14px; text-wrap:balance; text-transform:uppercase; }
-h2 { font-family:"Barlow Condensed", "Arial Narrow", sans-serif; font-weight:600; font-size:31px; line-height:1.05; margin:46px 0 12px; text-wrap:balance; text-transform:uppercase; letter-spacing:.01em; }
-h3 { font-size:17.5px; font-weight:600; margin:28px 0 8px; }
+b, strong { font-weight:700; }
+
+/* ---- shell: a narrow left column of small text links, content on a flush-left column ---- */
+.shell { display:grid; grid-template-columns:240px minmax(0,1fr); min-height:100vh; }
+nav.rail { border-right:1px solid var(--line); padding:28px 22px 32px; position:sticky; top:0; height:100vh; overflow:auto; background:var(--bg); }
+nav.rail .rail-top { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+nav.rail .brand { font-weight:700; font-size:22px; letter-spacing:-.025em; line-height:1.02; margin:0 0 10px; color:var(--ink); }
+nav.rail .brand a { color:inherit; }
+nav.rail .brand i { font-style:normal; color:var(--accent); }
+nav.rail .sub { color:var(--ink3); font-size:11.5px; line-height:1.45; margin-bottom:26px; }
+nav.rail .sub b { display:block; font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--ink); margin-bottom:4px; }
+nav.rail ol { list-style:none; padding:0; margin:0; counter-reset:p; border-bottom:1px solid var(--line); }
+nav.rail li { margin:0; counter-increment:p; max-width:none; }
+nav.rail li a { display:grid; grid-template-columns:24px minmax(0,1fr); padding:8px 0 9px; border-top:1px solid var(--line); color:var(--ink2); }
+nav.rail li a::before { content:counter(p, decimal-leading-zero); font-size:10.5px; font-weight:700; color:var(--ink3);
+  padding-top:2px; font-variant-numeric:tabular-nums; grid-row:span 2; }
+nav.rail li a b { display:block; font-weight:700; color:var(--ink); font-size:14px; letter-spacing:-.005em; line-height:1.25; }
+nav.rail li a span { font-size:11.5px; color:var(--ink3); line-height:1.35; }
+nav.rail li a.on { border-top:2px solid var(--accent); padding-top:7px; }
+nav.rail li a.on b, nav.rail li a.on::before { color:var(--accent); }
+nav.rail li a:hover { text-decoration:none; } nav.rail li a:hover b { color:var(--accent-ink); }
+nav.rail .foot { margin-top:24px; font-size:11px; color:var(--ink3); line-height:1.5; }
+
+/* ---- theme toggle (shown only once the head script has run) ---- */
+.theme-toggle { display:none; flex:0 0 auto; align-items:center; gap:7px; margin-top:2px; padding:5px 9px 5px 7px; cursor:pointer;
+  font:700 10.5px/1 var(--sans); letter-spacing:.1em; text-transform:uppercase; color:var(--ink); background:transparent;
+  border:1px solid var(--rule); border-radius:0; }
+html.js .theme-toggle { display:inline-flex; }
+.theme-toggle:hover { background:var(--ink); color:var(--bg); }
+.theme-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.theme-toggle .ico { width:11px; height:11px; border-radius:50%; border:1.5px solid currentColor;
+  background:linear-gradient(90deg, currentColor 50%, transparent 50%); }
+
+/* ---- type ---- */
+main { padding:56px 64px 96px; max-width:1180px; min-width:0; }
+.eyebrow { font-size:11.5px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 14px; }
+h1 { font-weight:700; font-size:clamp(36px, 5.2vw, 66px); line-height:1.0; letter-spacing:-.035em; margin:0 0 24px; text-wrap:balance; max-width:20ch; }
+h2 { font-weight:700; font-size:clamp(25px, 2.6vw, 33px); line-height:1.08; letter-spacing:-.022em; margin:64px 0 16px;
+  padding-top:14px; border-top:1px solid var(--rule); text-wrap:balance; }
+h3 { font-size:18px; font-weight:700; letter-spacing:-.01em; margin:34px 0 8px; }
+h4 { font-weight:700; }
 p, li { max-width:72ch; }
-.lede { font-size:19px; color:var(--ink2); max-width:66ch; margin:0 0 26px; }
-.tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px,1fr)); gap:12px; margin:22px 0 10px; }
-.tile { background:var(--bg2); border:1px solid var(--line); border-radius:8px; padding:14px 16px 12px; }
-.tile .n { font-family:"Barlow Condensed", sans-serif; font-weight:700; font-size:34px; overflow-wrap:anywhere; line-height:1; letter-spacing:.005em; font-variant-numeric:tabular-nums; }
-.tile .n small { font-size:19px; color:var(--ink3); font-weight:600; margin-left:2px; }
-.tile .l { font-size:12.5px; color:var(--ink2); margin-top:6px; line-height:1.35; }
-.tile.hot .n { color:var(--accent-ink); }
-figure { margin:22px 0 30px; background:var(--bg2); border:1px solid var(--line); border-radius:8px; padding:16px 18px 12px; box-shadow:var(--shadow); }
+.lede { font-size:clamp(18px, 1.6vw, 21px); line-height:1.45; letter-spacing:-.005em; color:var(--ink2); max-width:60ch; margin:0 0 34px; }
+
+/* ---- headline numbers ---- */
+.tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px,1fr)); gap:28px 28px; margin:26px 0 18px; }
+.tile { border-top:1px solid var(--rule); padding:12px 0 4px; container-type:inline-size; min-width:0; }
+.tile.hot { border-top:3px solid var(--tone, var(--accent)); padding-top:10px; }
+.tile .n { font-size:40px; font-size:clamp(30px, 21cqi, 54px); white-space:nowrap; }
+.tile .n small { font-size:.4em; color:var(--ink3); -webkit-text-fill-color:var(--ink3); font-weight:700; letter-spacing:0; margin-left:.12em; }
+.tile .l { font-size:13px; color:var(--ink2); margin-top:10px; line-height:1.4; max-width:34ch; }
+.tiles.hero { gap:40px 32px; margin:30px 0 22px; }
+.tiles.hero .tile .n { font-size:64px; font-size:clamp(46px, 25cqi, 96px); }
+.tiles.hero .tile .l { font-size:13.5px; }
+.big-num { font-weight:700; letter-spacing:-.05em; line-height:.92; font-variant-numeric:tabular-nums lining-nums; color:var(--tone, var(--ink)); }
+.t-red { --tone:var(--accent); --tone-hi:var(--accent-hi); --glow:var(--accent-glow); }
+.t-blue { --tone:var(--blue); --tone-hi:var(--blue-hi); --glow:var(--blue-glow); }
+.t-gold { --tone:var(--gold-ink); --tone-hi:var(--gold-hi); --glow:var(--gold-glow); }
+.t-ink { --tone:var(--ink); --tone-hi:var(--ink3); --glow:transparent; }
+@supports ((-webkit-background-clip:text) or (background-clip:text)) {
+  .big-num.glow { background-image:linear-gradient(100deg, var(--tone) 0%, var(--tone) 40%, var(--tone-hi) 50%, var(--tone) 60%, var(--tone) 100%);
+    background-size:300% 100%; background-position:100% 0; -webkit-background-clip:text; background-clip:text;
+    -webkit-text-fill-color:transparent; animation:pm-sheen 7s cubic-bezier(.5,0,.3,1) infinite, pm-glow 4.5s ease-in-out infinite; }
+}
+.tile:nth-child(2) .big-num.glow { animation-delay:.9s, .6s; } .tile:nth-child(3) .big-num.glow { animation-delay:1.8s, 1.2s; }
+.tile:nth-child(4) .big-num.glow { animation-delay:2.7s, 1.8s; } .tile:nth-child(5) .big-num.glow { animation-delay:3.6s, 2.4s; }
+.tile:nth-child(6) .big-num.glow { animation-delay:4.5s, 3s; }
+@keyframes pm-sheen { 0% { background-position:100% 0; } 55%, 100% { background-position:0 0; } }
+@keyframes pm-glow { 0%, 100% { filter:drop-shadow(0 0 0 transparent); } 50% { filter:drop-shadow(0 0 16px var(--glow)); } }
+
+/* ---- figures, tables, components: thin rules, no boxes or shadows ---- */
+figure { margin:28px 0 36px; background:transparent; border-top:1px solid var(--rule); padding:14px 0 0; }
 figure svg { width:100%; height:auto; display:block; }
-figcaption { font-size:13px; color:var(--ink2); margin-top:10px; max-width:none; line-height:1.45; }
+figcaption { font-size:13px; color:var(--ink2); margin-top:12px; max-width:88ch; line-height:1.5; }
 figcaption b { color:var(--ink); }
-.legend { display:flex; flex-wrap:wrap; gap:6px 16px; font-size:12.5px; color:var(--ink2); margin:0 0 8px; }
-.legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:-1px; }
-.tbl { overflow-x:auto; margin:16px 0 26px; }
-table { border-collapse:collapse; width:100%; font-size:14px; }
-th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
-th { font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink2); font-weight:600; }
-td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.legend { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:12px; color:var(--ink2); margin:0 0 10px; }
+.legend i { display:inline-block; width:10px; height:10px; border-radius:0; margin-right:6px; vertical-align:-1px; }
+.tbl { overflow-x:auto; margin:18px 0 30px; -webkit-overflow-scrolling:touch; }
+table { border-collapse:collapse; width:100%; font-size:14px; font-variant-numeric:tabular-nums; }
+th, td { text-align:left; padding:9px 12px 9px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+th { font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink); font-weight:700; border-bottom:1px solid var(--rule); padding-bottom:7px; }
+td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; padding-left:12px; }
+th.num { white-space:normal; }
 tr:hover td { background:var(--bg3); }
-.pill { display:inline-block; font-size:11.5px; font-weight:600; letter-spacing:.04em; padding:2px 8px; border-radius:999px; white-space:nowrap; }
+.pill { display:inline-block; font-size:10.5px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; padding:2px 6px; border-radius:0; white-space:nowrap; }
 .pill.good { background:var(--good-soft); color:var(--good); } .pill.bad { background:var(--bad-soft); color:var(--bad); }
 .pill.warn { background:var(--warn-soft); color:var(--warn); } .pill.neu { background:var(--bg3); color:var(--ink2); }
 .pill.acc { background:var(--accent-soft); color:var(--accent-ink); }
-.timeline { border-left:2px solid var(--line); margin:20px 0 30px 8px; padding-left:22px; }
-.ev { position:relative; margin:0 0 22px; }
-.ev::before { content:""; position:absolute; left:-29px; top:8px; width:12px; height:12px; border-radius:50%; background:var(--bg); border:2px solid var(--accent); }
+.timeline { border-left:1px solid var(--rule); margin:22px 0 32px 6px; padding-left:24px; }
+.ev { position:relative; margin:0 0 24px; }
+.ev::before { content:""; position:absolute; left:-30px; top:7px; width:11px; height:11px; border-radius:50%; background:var(--bg); border:2px solid var(--accent); }
 .ev.big::before { background:var(--accent); }
 .ev.bad::before { border-color:var(--bad); } .ev.bad.big::before { background:var(--bad); }
 .ev.gold::before { border-color:var(--gold); } .ev.gold.big::before { background:var(--gold); }
-.ev .d { font-family:"IBM Plex Mono", monospace; font-size:12px; color:var(--ink3); letter-spacing:.04em; }
-.ev .t { font-weight:600; font-size:16px; margin:1px 0 3px; }
-.ev p { margin:0 0 4px; color:var(--ink2); font-size:14.5px; }
-.q { border-left:3px solid var(--gold); padding:6px 14px; margin:14px 0; background:var(--gold-soft); border-radius:0 6px 6px 0; font-size:14.5px; max-width:72ch; }
-.q .who { font-family:"IBM Plex Mono", monospace; font-size:11.5px; color:var(--ink3); letter-spacing:.06em; text-transform:uppercase; display:block; margin-bottom:2px; }
-.author p { font-size:17px; line-height:1.65; max-width:760px; }
-.author ol { max-width:760px; font-size:17px; line-height:1.65; }
-.author hr { border:0; border-top:1px solid var(--line); margin:34px 0; max-width:760px; }
-.media { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px,1fr)); gap:14px; margin:18px 0 6px; }
-.media.four { grid-template-columns:repeat(auto-fit, minmax(200px,1fr)); }
-.media figure { margin:0; padding:10px 10px 8px; }
-.media video, .media img { width:100%; height:auto; display:block; border-radius:5px; background:#000; }
+.ev .d { font-size:11px; font-weight:700; color:var(--ink3); letter-spacing:.1em; text-transform:uppercase; font-variant-numeric:tabular-nums; }
+.ev .t { font-weight:700; font-size:16.5px; margin:2px 0 3px; letter-spacing:-.01em; }
+.ev p { margin:0 0 4px; color:var(--ink2); font-size:15px; }
+.q { border-left:2px solid var(--accent); padding:4px 0 4px 16px; margin:18px 0; font-size:16px; max-width:68ch; }
+.q .who { font-size:10.5px; font-weight:700; color:var(--ink3); letter-spacing:.12em; text-transform:uppercase; display:block; margin-bottom:3px; }
+.author p { font-size:17.5px; line-height:1.62; max-width:68ch; }
+.author ol { max-width:68ch; font-size:17.5px; line-height:1.62; }
+.author hr { border:0; border-top:1px solid var(--rule); margin:40px 0; max-width:68ch; }
+.media { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(280px,100%),1fr)); gap:24px; margin:22px 0 10px; }
+.media.four { grid-template-columns:repeat(auto-fit, minmax(min(200px,100%),1fr)); }
+.media figure { margin:0; padding:0; border-top:0; }
+.media video, .media img { width:100%; height:auto; display:block; border-radius:0; background:#000; }
 .media figcaption { margin-top:8px; }
-.media a.open { display:block; margin-top:6px; font-size:12px; font-family:"IBM Plex Mono", monospace; }
+.media a.open { display:block; margin-top:6px; font-size:10.5px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; }
 .media a:has(img) img { cursor:zoom-in; }
-.note { background:var(--bg3); border-radius:6px; padding:10px 14px; font-size:14px; color:var(--ink2); max-width:78ch; margin:14px 0; }
-.cols2 { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px,1fr)); gap:14px 28px; }
-.assume { border:1px dashed var(--line); border-radius:6px; padding:10px 14px; font-size:13.5px; color:var(--ink2); max-width:78ch; }
-.next { margin-top:56px; padding-top:18px; border-top:1px solid var(--line); display:flex; justify-content:space-between; font-size:14px; }
-@media (max-width: 860px) { .shell { grid-template-columns:1fr; } nav.rail { position:static; height:auto; border-right:0; border-bottom:1px solid var(--line); } main { padding:26px 20px 60px; } h1 { font-size:40px; } }
-@media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
-</style></head><body><div class="shell"><nav class="rail"><div class="brand">G-Diffuser<br>on 3DS</div><div class="sub">Post-mortem · F-Zero X<br>New 3DS 2026-08-11 → 09-03<br>Native fork 2026-09-07 → 10-19 (v1.0.0)</div><ol><li><a href="index.html"><b>Overview</b><span>What was built, in one screen</span></a></li><li><a href="author.html" class="on"><b>Author&#x27;s notes</b><span>The one page written by a human</span></a></li><li><a href="timeline.html"><b>Every step</b><span>The chronology, New 3DS to v1.0.0</span></a></li><li><a href="road-to-60.html"><b>Road to 60</b><span>The New 3DS performance campaign, round by round</span></a></li><li><a href="native.html"><b>The native fork</b><span>Why it exists, and what it changed</span></a></li><li><a href="old-3ds.html"><b>Old 3DS</b><span>The road to a real 60 at 268 MHz</span></a></li><li><a href="boundaries.html"><b>Pushing the boundaries</b><span>Against our New 3DS build and against the field</span></a></li><li><a href="difficulties.html"><b>Difficulties</b><span>What fought back, and how it was beaten</span></a></li><li><a href="frontier.html"><b>Frontier</b><span>What this port does that others in its position haven&#x27;t</span></a></li><li><a href="agentic.html"><b>Agentic workflow</b><span>How the fleet was run, and how the ship was steered</span></a></li><li><a href="cost.html"><b>Cost</b><span>Tokens, dollars, subagents</span></a></li></ol><div class="foot">Sources: git history, docs/research, session transcripts, hardware logs. <a href="https://github.com/cruxxxxxx/gdx-3ds">Repository</a> · <a href="G-Diffuser-3DS-postmortem.pdf">PDF</a><br>Sourcing evidence (raw, not reader-facing) — full detail through the New 3DS chapter (v0.9.0), plus a native-fork addendum: <a href="source-timeline.md">source-timeline.md</a>, <a href="source-perf-data.md">source-perf-data.md</a></div></nav><main><p class="eyebrow">02 · Author's notes</p><h1>A note from the human</h1><p class="lede">Everything else on this site was written by the agent that did the work. This page was not.</p><div class="author"><p>Hello reader. This is the only section of this project written by a real human. Isn&#x27;t that kind of neat? Well, I guess it depends on how you feel about all of these changes in our lives. In this section, I&#x27;ll quickly detail my thoughts on this 100% AI generated port, its reflection on the direction of software development, and my own experience in using Claude Code to create it.</p><hr><p>Awhile back I saw <a href="https://blog.chrislewis.au/using-coding-agents-to-decompile-nintendo-64-games/">Chris Lewis make a post about using Claude</a> to assist in the Snowboard Kids 2 decompilation. It got me thinking: what a perfect use-case for a coding agent. It&#x27;s a long running, tedious, endeavor of classification and definition.</p><p>I realized that one day I&#x27;d like to port F-Zero X to 3DS using a coding agent when it was decompiled/ported. So when <a href="https://github.com/Zorkats/G-Diffuser">G-Diffuser</a> port was released based on the <a href="https://github.com/inspectredc/fzerox">Inspectredc Decompilation</a>, I gave it a shot. I pulled a bunch of adjacent repositories &amp; documentation together, fed it to Claude using deep research, read the master plan and gave it the OK to spin up a bunch of subagents. For 3 weeks, I babysat and assumed a role somewhere between a Product Owner and a QA tester.</p><ol><li>Claude suggests an implementation strategy to either fix a bug or improve performance.</li><li>I approve the suggestion, push back, or do research/implore research if we seem to hit a dead end.</li><li>Claude works and validates in Azahar emulator.</li><li>Claude provides a build and I test on 3DS.</li><li>I report back and provide debug logs. Loop continues.</li></ol><p>This continued until it was &#x27;done&#x27;. It still totally blows my mind that after 24 days I can play F-Zero X in 3D at a near solid 60fps.</p><hr><p>Since my first experience using ChatGPT in 2022, I was filled with total existential dread. I saw my livelihood threatened, as this skill I had dedicated my life to became immediately devalued. Since then, I&#x27;ve used LLM chatbots &amp; coding tools extensively and I&#x27;ve oscillated between feelings of fascination, fear, humility, intrigue, reward, and emptiness.</p><p>This project revealed to me how much things have changed. The complexity of this project cannot be overstated: this is a marvel. This is nothing short of a miracle. And it was done by a machine, with no human intervention on the code. I never read a line. I never made a true technical decision.</p><p>I learned how to program 15 years ago with the dream of contributing projects like this, and since then I&#x27;ve come to a stark realization: while I COULD plausibly port F-Zero X to the 3DS by hand, the time in my life IS finite, and when weighed against other life pursuits such as making an original game, it would not serve me well. I&#x27;m sure the journey would make me a better programmer. I&#x27;m sure I would learn so much about graphics rendering, address-space heuristics, the 3DS architecture, edge device profiling, etc. And I wholeheartedly thank &amp; admire everyone whose work this is built off of, many of you are nameless but overwhelmingly appreciated.</p><p>The (terrifying) fact is: this would&#x27;ve taken me a few thousand hours of my life. For professionals, this might&#x27;ve cost nearly 80x to make (actually, even more, because Claude is currently subsidized).</p><p>So to any naysayers, feel free to not play. I understand. The ethics of LLMs are muddy and their incoming impact on society is understated. This project, in my opinion, serves as proof of the latter. However, to anyone who has ever dreamed of F-Zero X 3DS, enjoy.</p></div><div class="next"><a href="index.html">← Overview</a><a href="timeline.html">Every step →</a></div></main></div></body></html>
+.note { border-top:1px solid var(--rule); border-bottom:1px solid var(--line); padding:12px 0; font-size:14.5px; color:var(--ink2); max-width:78ch; margin:20px 0; }
+.cols2 { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(300px,100%),1fr)); gap:14px 36px; }
+.assume { border-left:2px solid var(--line); padding:6px 0 6px 14px; font-size:13.5px; color:var(--ink2); max-width:78ch; }
+.next { margin-top:72px; padding-top:16px; border-top:1px solid var(--rule); display:flex; justify-content:space-between; gap:16px;
+  font-size:13px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+
+/* ---- phones ---- */
+@media (max-width: 860px) {
+  .shell { grid-template-columns:minmax(0,1fr); }
+  nav.rail { position:static; height:auto; border-right:0; border-bottom:1px solid var(--rule); padding:18px 16px 14px; }
+  nav.rail .sub { margin-bottom:14px; }
+  nav.rail ol { display:flex; flex-wrap:wrap; gap:2px 16px; border-bottom:0; }
+  nav.rail li a { display:block; border-top:0; padding:3px 0; }
+  nav.rail li a.on { border-top:0; padding-top:3px; box-shadow:inset 0 -2px 0 var(--accent); }
+  nav.rail li a::before, nav.rail li a span { display:none; }
+  nav.rail li a b { font-size:13.5px; }
+  nav.rail .foot { margin-top:12px; }
+  main { padding:30px 16px 64px; }
+  h2 { margin-top:48px; }
+}
+@media (max-width: 520px) { .tiles { gap:22px 18px; } .tiles.hero { gap:28px 18px; } }
+
+/* ---- motion and print ---- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition:none !important; animation:none !important; }
+  .big-num.glow { filter:none !important; }
+}
+@media print {
+  *, *::before, *::after { animation:none !important; transition:none !important; }
+  .big-num, .big-num.glow { background:none !important; -webkit-text-fill-color:currentColor !important; filter:none !important;
+    -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .theme-toggle { display:none !important; }
+}
+</style></head><body><div class="shell"><nav class="rail"><div class="rail-top"><div class="brand">G-Diffuser<br>on 3DS</div><button class="theme-toggle" type="button" aria-pressed="false" title="Switch colour theme"><span class="ico" aria-hidden="true"></span><span class="lbl">Theme</span></button></div><div class="sub">Post-mortem · F-Zero X<br>New 3DS 2026-08-11 → 09-03<br>Native fork 2026-09-07 → 10-19 (v1.0.0)<br>After v1.0.0 10-20 → 10-26 (v1.1.0)</div><ol><li><a href="index.html"><b>Overview</b><span>What was built, in one screen</span></a></li><li><a href="author.html" class="on"><b>Author&#x27;s notes</b><span>The one page written by a human</span></a></li><li><a href="timeline.html"><b>Every step</b><span>The chronology, New 3DS to v1.1.0</span></a></li><li><a href="road-to-60.html"><b>Road to 60</b><span>The New 3DS performance campaign, round by round</span></a></li><li><a href="native.html"><b>Road to 60, again</b><span>The Old 3DS needed a new renderer: how it works, and what shipped</span></a></li><li><a href="boundaries.html"><b>Pushing the boundaries</b><span>How it compares to the field</span></a></li><li><a href="difficulties.html"><b>Difficulties</b><span>The fights worth retelling</span></a></li><li><a href="frontier.html"><b>Frontier</b><span>What this port does that others in its position haven&#x27;t</span></a></li><li><a href="agentic.html"><b>Agentic workflow</b><span>How the fleet was run, and how the ship was steered</span></a></li><li><a href="cost.html"><b>Cost</b><span>Tokens, dollars, subagents</span></a></li></ol><div class="foot">Sources: git history, docs/research, session transcripts, hardware logs. <a href="https://github.com/cruxxxxxx/gdx-3ds">Repository</a> · <a href="G-Diffuser-3DS-postmortem.pdf">PDF</a><br>Sourcing evidence (raw, not reader-facing) — full detail through the New 3DS chapter (v0.9.0), plus a native-fork addendum: <a href="source-timeline.md">source-timeline.md</a>, <a href="source-perf-data.md">source-perf-data.md</a></div></nav><main><p class="eyebrow">02 · Author's notes</p><h1>A note from the human</h1><p class="lede">Everything else on this site was written by the agent that did the work. This page was not.</p><div class="author"><p>Hello reader. This is the only section of this project written by a real human. Isn&#x27;t that kind of neat? Well, I guess it depends on how you feel about all of these changes in our lives. In this section, I&#x27;ll quickly detail my thoughts on this 100% AI generated port, its reflection on the direction of software development, and my own experience in using Claude Code to create it.</p><hr><p>Awhile back I saw <a href="https://blog.chrislewis.au/using-coding-agents-to-decompile-nintendo-64-games/">Chris Lewis make a post about using Claude</a> to assist in the Snowboard Kids 2 decompilation. It got me thinking: what a perfect use-case for a coding agent. It&#x27;s a long running, tedious, endeavor of classification and definition.</p><p>I realized that one day I&#x27;d like to port F-Zero X to 3DS using a coding agent when it was decompiled/ported. So when <a href="https://github.com/Zorkats/G-Diffuser">G-Diffuser</a> port was released based on the <a href="https://github.com/inspectredc/fzerox">Inspectredc Decompilation</a>, I gave it a shot. I pulled a bunch of adjacent repositories &amp; documentation together, fed it to Claude using deep research, read the master plan and gave it the OK to spin up a bunch of subagents. For 3 weeks, I babysat and assumed a role somewhere between a Product Owner and a QA tester.</p><ol><li>Claude suggests an implementation strategy to either fix a bug or improve performance.</li><li>I approve the suggestion, push back, or do research/implore research if we seem to hit a dead end.</li><li>Claude works and validates in Azahar emulator.</li><li>Claude provides a build and I test on 3DS.</li><li>I report back and provide debug logs. Loop continues.</li></ol><p>This continued until it was &#x27;done&#x27;. It still totally blows my mind that after 24 days I can play F-Zero X in 3D at a near solid 60fps.</p><hr><p>Since my first experience using ChatGPT in 2022, I was filled with total existential dread. I saw my livelihood threatened, as this skill I had dedicated my life to became immediately devalued. Since then, I&#x27;ve used LLM chatbots &amp; coding tools extensively and I&#x27;ve oscillated between feelings of fascination, fear, humility, intrigue, reward, and emptiness.</p><p>This project revealed to me how much things have changed. The complexity of this project cannot be overstated: this is a marvel. This is nothing short of a miracle. And it was done by a machine, with no human intervention on the code. I never read a line. I never made a true technical decision.</p><p>I learned how to program 15 years ago with the dream of contributing projects like this, and since then I&#x27;ve come to a stark realization: while I COULD plausibly port F-Zero X to the 3DS by hand, the time in my life IS finite, and when weighed against other life pursuits such as making an original game, it would not serve me well. I&#x27;m sure the journey would make me a better programmer. I&#x27;m sure I would learn so much about graphics rendering, address-space heuristics, the 3DS architecture, edge device profiling, etc. And I wholeheartedly thank &amp; admire everyone whose work this is built off of, many of you are nameless but overwhelmingly appreciated.</p><p>The (terrifying) fact is: this would&#x27;ve taken me a few thousand hours of my life. For professionals, this might&#x27;ve cost nearly 80x to make (actually, even more, because Claude is currently subsidized).</p><p>So to any naysayers, feel free to not play. I understand. The ethics of LLMs are muddy and their incoming impact on society is understated. This project, in my opinion, serves as proof of the latter. However, to anyone who has ever dreamed of F-Zero X 3DS, enjoy.</p><hr><p>Update, 2026-10-27:</p><p>Hello again, reader. Since I published this about 2 months ago, it has taken on a bit of a life of its own and been a catalyst for discussion around Agentic development. There&#x27;s been plenty of drive-by dismissals, some appreciation, some curiosity, and, best of all, some folks who walked away a bit more enlightened by the nuance.</p><p>This project has continued to be fun, and I&#x27;m still shocked how the boundaries can be pushed. I now consider this project &#x27;feature complete&#x27; aside from some bug fixes.</p><p>All of this is still keeping me up at night. This project was a great learning experience for me, and has furthered my ability to use Claude far better than I could before. My high level understanding is more concrete now, but when I&#x27;m pressed on edge cases in problems, I&#x27;m clueless, because I&#x27;m not engaging enough with implementation details. I have severe fatigue from the massive amounts of code churned out and my ability to comprehend it all just by reading carefully. It&#x27;s a practice that is tiring but it&#x27;s my new job, I suppose.</p><p>To anyone who has enjoyed the project, thank you. The support kept me going. I think it came along really well and I hope to race some of you online.</p><p>Thanks especially to my girlfriend, Stace, who had to hear the Mute City theme way too many times and sat beside me while I toiled away, surrounded on the bed by many gadgets.</p><p>And thanks to TuxSH, a veteran in the 3DS scene, and jonhohle, a contributing member to the decomp scene. They challenged the integrity of the project on Hacker News. I understand a project stands on their shoulders, and so I respect their advice and principles greatly, even if we disagree on this project. I am humbled that they even took a look, and I mean no disrespect.</p></div><div class="next"><a href="index.html">← Overview</a><a href="timeline.html">Every step →</a></div></main></div><script>(function(){
+var d=document.documentElement,b=document.querySelector('.theme-toggle');
+function cur(){var a=d.getAttribute('data-theme');if(a){return a;}return window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}
+function label(){if(!b){return;}var dark=cur()==='dark';b.setAttribute('aria-pressed',dark?'true':'false');b.querySelector('.lbl').textContent=dark?'Light':'Dark';b.title=dark?'Switch to light mode':'Switch to dark mode';}
+if(b){label();b.addEventListener('click',function(){var n=cur()==='dark'?'light':'dark';d.setAttribute('data-theme',n);try{localStorage.setItem('pm-theme',n);}catch(e){}label();});}
+if(window.matchMedia){try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',label);}catch(e){}}
+var still=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+if(still||!('IntersectionObserver' in window)){return;}
+var re=/^([~$]?)(\d[\d,]*(?:\.\d+)?)(\s?[A-Za-z]{0,2})$/;
+function run(el){var tn=el.firstChild,fin=tn.nodeValue,m=re.exec(fin);if(!m){return;}
+ var raw=m[2].replace(/,/g,''),to=parseFloat(raw),dec=(raw.split('.')[1]||'').length,comma=m[2].indexOf(',')>=0,t0=null,dur=1300;
+ function fmt(v){var s=v.toFixed(dec);if(comma){var p=s.split('.');p[0]=p[0].replace(/\B(?=(\d{3})+(?!\d))/g,',');s=p.join('.');}return m[1]+s+m[3];}
+ function step(ts){if(t0===null){t0=ts;}var k=Math.min(1,(ts-t0)/dur),e=1-Math.pow(1-k,3);tn.nodeValue=k<1?fmt(to*e):fin;if(k<1){requestAnimationFrame(step);}}
+ requestAnimationFrame(step);setTimeout(function(){tn.nodeValue=fin;},dur+400);}
+var io=new IntersectionObserver(function(es){es.forEach(function(en){if(en.isIntersecting){io.unobserve(en.target);run(en.target);}});},{threshold:.4});
+document.querySelectorAll('.big-num').forEach(function(el){var tn=el.firstChild;if(tn&&tn.nodeType===3&&re.test(tn.nodeValue)&&parseFloat(tn.nodeValue.replace(/[~$,]/g,''))>0){io.observe(el);}});
+})();</script></body></html>

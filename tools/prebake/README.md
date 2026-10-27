@@ -47,6 +47,20 @@ SHA-256/entry-count out).
 
    The binary lands in `build-extract/install/bin/`. (A full desktop build's
    `--build-dir build` also works, as before.)
+
+   The same zip also carries **`gdx-hudpack`**, which bakes the 3DS
+   bottom-screen HUD (fonts, digits, portraits, chrome) from the archives
+   this tool produces — see step 6 below. Keep it next to `gdx-extract` and
+   the script finds it. To build it yourself (any C compiler, no submodules):
+
+   ```
+   cmake -S tools/hudpack -B build-hudpack -DCMAKE_BUILD_TYPE=Release
+   cmake --build build-hudpack --config Release
+   ```
+
+   (`prebake.py` looks in `build-hudpack/` too, or pass `--hudpack <path>`.)
+   Without it everything still works: the console bakes the HUD itself on
+   its first boot (about a second on an Old 3DS) and caches the result.
 3. **Your F-Zero X US rev0 cartridge dump**, big-endian (`.z64`) — the
    cartridge ROM, a separate file from any 64DD Expansion Kit disk image.
    This tool does not process the disk image at all; see "Expansion Kit"
@@ -92,6 +106,8 @@ Options:
 | `--skip-golden` | development only: accept an archive that fails the golden SHA-256/entry-count gate |
 | `--store-entry NAME` | keep this entry STORED (uncompressed) in `fzerox.o2r`; repeatable. Default: `audio_blob/audio_table`, `segment_blob/common_assets_compressed` |
 | `--no-store` | install the extractor's archive as-is (every entry deflated) |
+| `--hudpack PATH` | explicit `gdx-hudpack` binary (default: beside the extractor, then `build-hudpack/`, then `PATH`) |
+| `--no-hudpack` | skip `hudbake.cache` (the console bakes the HUD on first boot) |
 
 **Why some entries are stored.** The 3DS preloads `audio_blob/audio_table`
 (10.7 MB, deflate saves only 9%) and `segment_blob/common_assets_compressed`
@@ -104,6 +120,12 @@ The archive grows ~1.65 MB (15.5 -> 17.2 MB). The golden gate still applies
 to the extractor's raw output, before this step; the installed archive keeps
 the same entry order, names, sizes and CRCs — only the two entries'
 compression method changes.
+
+**Multiplayer content check.** Rooms compare a hash of each archive's entry
+names, CRCs and uncompressed sizes (`gdx_mpo_zip_cd_hash`), not its compressed
+bytes, so archives prebaked on different PCs (another zlib, `--no-store`)
+from the same ROM still match. `test_content_hash.py` (run by
+`tools/ci-3ds.sh`) re-packs an archive at several levels and checks this.
 
 The script:
 
@@ -123,6 +145,16 @@ The script:
 5. **Produces `gdiffuser.o2r`** (the engine archive: Fast3D shaders +
    branding, zero game-derived content) via the existing deterministic
    `tools/gen_f3d_o2r.py`, falling back to a desktop build's copy.
+6. **Bakes the bottom-screen HUD** into `hudbake.cache` with `gdx-hudpack`
+   (`tools/hudpack`): the console's own recipes (`port/3ds/gdx3ds_hudbake.c`,
+   compiled for your PC) run over the two archives above, and the result is
+   written in the console's SD-cache format — byte for byte the file the
+   console would write after baking from the same archives. It is keyed on
+   the CRC-32 and size of every archive record it was baked from plus the
+   recipes' build id, so the console uses it only while both still match;
+   any other archive or game build rejects it, bakes, and overwrites it.
+   Like the archives it is made from your own ROM on your PC and is never
+   shipped. Optional: without it the console bakes on first boot.
 
 ## Copy to the SD card
 
@@ -133,7 +165,8 @@ dist/sdmc/
 └── 3ds/
     └── gdiffuser/
         ├── fzerox.o2r      (~game archive, tens of MB)
-        └── gdiffuser.o2r   (engine archive, small)
+        ├── gdiffuser.o2r   (engine archive, small)
+        └── hudbake.cache   (bottom-screen HUD, ~100 KB; optional, see step 6)
 ```
 
 Copy the `3ds/` folder onto the **root** of your SD card, merging with the

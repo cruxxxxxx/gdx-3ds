@@ -45,3 +45,14 @@ void gdxgad_gbi_marker(void* g, uint32_t w0, const void* record) {
     _g->words.w0 = w0;
     _g->words.w1 = _GFXW1_PTR(record);
 }
+
+/* o3dsperf: a [c5cat] scene-category marker (G_NOOP p=0x61, port/3ds/gdx3ds_mainprof.h) written at
+ * `g`; returns the next command slot. gdx_dl_skip (port/3ds/gdx3ds_c5tick.c) uses it for the
+ * multiplayer fullview's local view, whose Race_Draw branch (gNumPlayers 2..4) has no decomp
+ * markers. */
+void* gdx_c5cat_gbi_marker(void* g, int cat) {
+    Gfx* _g = (Gfx*)g;
+    _g->words.w0 = ((uint32_t)G_NOOP << 24) | (0x61u << 16) | ((uint32_t)cat & 0xFFFFu);
+    _g->words.w1 = 0;
+    return (void*)(_g + 1);
+}

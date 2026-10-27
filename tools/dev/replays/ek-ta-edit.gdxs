@@ -1,0 +1,73 @@
+# ek-ta-edit ([ek] course_share): TIME ATTACK on course 1 of the EDIT cup, i.e. whatever custom
+# course edit-cup slot 1 names. Same walk as ek-ta-dd.gdxs, plus one RIGHT on the bottom cup row:
+# course_select.c D_i5_8007BDF0 sends DOWN from cup 0 to option 11 (DD-1) and RIGHT from 11 to
+# option 10 (the EDIT cup). Needs an EK build, the JP .ndd, and a course in slot 1 -- the
+# course_share round-trip stages one with `[ek] course_share_auto=import:<file>:1` before the
+# walk reaches the cup screen. [debug] autodrive=1 drives the race.
+build native/o3dsek
+seed1 0x1234abcd
+seed2 0x0fedcba9
+pins renderthread=0 stereo=0
+at 400
+press START 15 0
+at 700
+press RIGHT 12 0
+at 1000
+press A 15 0
+at 1750
+press A 15 0
+at 2300
+press A 15 0
+at 2550
+shot s_cups
+at 2600
+press DOWN 12 0
+at 2680
+press RIGHT 12 0
+at 2750
+shot s_cup_edit
+at 2900
+press A 15 0
+at 3150
+shot s_a0
+at 3200
+press A 15 0
+at 3450
+shot s_a1
+at 3500
+press A 15 0
+at 3750
+shot s_a2
+at 3800
+press A 15 0
+at 4050
+shot s_a3
+at 4100
+press A 15 0
+at 4350
+shot s_a4
+at 4400
+press A 15 0
+at 4650
+shot s_a5
+at 4700
+press A 15 0
+at 4950
+shot s_a6
+at 5000
+press A 15 0
+at 5250
+shot s_a7
+at 5400
+shot r_5400
+at 6000
+shot r_6000
+at 6600
+shot r_6600
+at 7200
+shot r_7200
+at 7800
+shot r_7800
+at 8400
+shot r_8400
+len 8600

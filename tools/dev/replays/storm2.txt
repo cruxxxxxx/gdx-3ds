@@ -1,18 +1,65 @@
-# storm2: A-mash into a 30-machine GP, then hold A.
-# Course card ~tick 3300, driving ~4600 (RESUME.md:155).
-# Every SHOT sits between two button lines on purpose.
+# storm2: tap A into a 30-machine GP, then drive on A.
+# A HOLD is ONE press (menus read edges), so the menus
+# are walked with 10-tick taps; see README (storm2).
+# 100-550 pass the title before the ~900 attract demo;
+# 2200+ finish the walk: race ~3300, course card 3400.
+# Then A is held and re-pressed every 500 ticks: an
+# unsteered racer retires ~1100 ticks in and the edges
+# restart it, a 3000-tick loop (race at ~6100, 9100..).
+# drive SHOTs sit mid-drive in that loop AND inside the
+# races [debug] autodrive=1 runs (3300-11000, 13100+).
 ticks
-20 A 2980
-3000 A 2980
+100 A 10
+250 A 10
+400 A 10
+550 A 10
+2200 A 10
+2350 A 10
+2500 A 10
+2650 A 10
+2800 A 10
+2950 A 10
+3100 A 10
+3250 A 10
 3400 SHOT card
-6000 A 2980
-6200 SHOT drive1
-9000 A 2980
-9200 SHOT drive2
-12000 A 2980
-12200 SHOT drive3
-15000 A 2980
-15200 SHOT drive4
-18000 A 2980
-18200 SHOT drive5
-21000 A 2980
+3500 A 480
+4000 A 480
+4000 SHOT drive1
+4500 A 480
+5000 A 480
+5500 A 480
+6000 A 480
+6500 A 480
+6850 SHOT drive2
+7000 A 480
+7500 A 480
+8000 A 480
+8500 A 480
+9000 A 480
+9500 A 480
+9850 SHOT drive3
+10000 A 480
+10500 A 480
+11000 A 480
+11500 A 480
+12000 A 480
+12500 A 480
+13000 A 480
+13500 A 480
+14000 A 480
+14500 A 480
+15000 A 480
+15500 A 480
+15850 SHOT drive4
+16000 A 480
+16500 A 480
+17000 A 480
+17500 A 480
+18000 A 480
+18500 A 480
+18850 SHOT drive5
+19000 A 480
+19500 A 480
+20000 A 480
+20500 A 480
+21000 A 480

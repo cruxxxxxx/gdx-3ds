@@ -55,4 +55,28 @@ static inline void gdx3ds_menu_layout_tabs(const char* const* labels, const int*
     *outOffC1 = menuCols;
 }
 
+/* mp-online: the MP tab ([net] rendezvous set) makes the worst case (MAP and RACE both shown)
+ * one tab too wide for the 40 columns. When the visible tabs would run into the OFF button's
+ * minimum 3-column span (menuCols-2..menuCols), the tab `dropIndex` (the least needed one: AB)
+ * is hidden instead. Returns 1 if it was. Call before gdx3ds_menu_layout_tabs, with the same
+ * hidden[]. Without an MP tab no combination is crowded, so the bar is the old one. */
+static inline int gdx3ds_menu_tabs_crowd(const char* const* labels, int* hidden, int count, int menuCols,
+                                         int dropIndex) {
+    int c = 1;
+    int last = 0;
+    int t;
+    for (t = 0; t < count; t++) {
+        if (hidden[t]) {
+            continue;
+        }
+        last = c + (int) strlen(labels[t]) - 1;
+        c = last + 2;
+    }
+    if (last > menuCols - 3 && dropIndex >= 0 && dropIndex < count && !hidden[dropIndex]) {
+        hidden[dropIndex] = 1;
+        return 1;
+    }
+    return 0;
+}
+
 #endif /* GDX3DS_MENU_TABBAR_LAYOUT_H */

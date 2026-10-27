@@ -97,6 +97,137 @@ emitted ONCE, eye-independent, and the right eye is the same command lists submi
   `full=` and its right eye holds only what was drawn before the body); a frame whose replay could not be entered
   (`refused=`: a taskless hold present, no queue room) keeps the NRR categories off for that frame.
 
+## Race GPU path (stereo-race-fps; `[stereo] head_kick`, `[stereo] resume_fold`, default 0)
+
+With the slider up the race frame's right eye costs little CPU (hardware 3d7: enter ~95 µs, the two
+interleave chunks ~240 µs, end ~30 µs on the Old 3DS) but the GPU path after the first `[overlap]`
+kick grows: every GX queue entry costs ~0.15-0.3 ms of GPU start-up (gputl `tiny`), each eye's
+colour+depth fill ~0.3 ms, and in 3D the frame-end drain waits on that path (`[c5cat] fend`
+2.3-4.4 ms in 3D vs ~0.5 ms in 2D, 3d7 V). Both levers shorten that path and are exact (both eyes
+bit-for-bit the lever-off frame); `2` = A/B (head_kick 512-frame blocks, resume_fold 4096-frame
+blocks), `[gputl] tp=` gets `+8` (head) / `+16` (resume) in the phases they run.
+
+- **head_kick=1**: at `ReplayEnter`, when the frame passes the `[overlap]` cadence (the frames that
+  kick) and nothing queued so far draws (no `DrawUsed`, no draw words in the closed list, no command
+  list in the queue before it), the GX queue is STARTED right there (`gdx3ds_overlap_head_run`: no
+  heap flush, no split, no chunk): both eyes' clears and the pre-body list run while the CPU builds
+  the sky/track, so they leave the post-kick path. It counts as a kick for the frame-end drain +
+  stop, the split flags and `gdx3ds_overlap_frame_kicks` (sky_late then refuses the frame), not for
+  the kick budget or the stereo chunks. A head that would draw is refused (`hkdrew=`).
+- **resume_fold=1**: the left eye's resume words after each right-eye chunk (main framebuffer +
+  `steye = -1`) no longer get a GX list of their own: they lead the next left list (16-byte
+  aligned, an idempotent uniform-config pad keeps the uniform write aligned), and the replay re-adds
+  that list from PAST them (`ReplayList` start + size adjusted), so the right eye never sees them.
+  -2 GX entries per frame with two chunks. Falls back to the separate list when the open list is
+  not empty or not aligned.
+- **Receipts**: `[stereo] race init head_kick= resume_fold=` once; `[stereo] race frames= replayed=
+  hk/f= hkclean= hkdrew= rfold/f= rskip/f= head= resume=` per replay window, only while a lever is
+  set (the `[stereo] replay` line is unchanged). `[gputl] seq` shows one `l` fewer per chunk and the
+  fills before the first kick mark. 3D off and the Old 3DS profile: nothing changes (both levers act
+  only inside a replayed frame; nrr_size `--direct` identical).
+- Rejected: right-eye LOD / HUD-once (the replay runs the SAME lists for both eyes; the HUD blends
+  over a per-eye scene), a shifted sky copy (tiled framebuffer shifts in 8 px steps; the sky is zero
+  parallax by the ortho heuristic), per-eye uniform uploads (already none but `steye`), an end kick
+  before the drain (late frames only move the GPU gap), one fill for both eyes (needs adjacent VRAM).
+
+## One submission (onesubmit; `[stereo] onesubmit` 1, `onesubmit_narrow` 1, `onesubmit_kicks` 0, `onesubmit_ab` 0)
+
+Both eyes of a body chunk in ONE GX queue entry: the list is P (left only: resume words + the
+`CMDBUF_SIZE1/ADDR0/ADDR1` words) + B (the body, a render-cache flush, `CMDBUF_JUMP1`); behind it R
+(right framebuffer, `steye = +1`, channel 0 = B, channel 1 = E, `JUMP0`) and E (FINALIZE). GSP gets
+[P][B]; the GPU runs B for the left eye, jumps to R, runs B again for the right, ends in E: one
+submit, one P3D IRQ, no CPU between the eyes. Chunks that are not exactly one open list fall back
+to the re-submitted replay (`[stereo] onesub fb=`). `onesubmit_kicks` 1 = no mid-frame body kick, 2 =
+no head run either; `onesubmit_narrow` = range flushes instead of the frame end's whole-heap flush;
+`onesubmit_ab` cycles baseline / onesubmit / +kicks / +narrow per `[cpucut]` block. Emulator: both
+eyes bit-identical to the lever-off frame in every arm, race entries 7 -> 6 per frame.
+
+Hardware (card-6 `ba0692e`, per-block A/B on both consoles): on the Old 3DS every onesubmit arm
+lifts the 3D menu from 40.2 to 44.6 fps (one GX entry and one P3D IRQ fewer per chunk: the
+previous frame's queue finishes 1.9 ms sooner) and gives the 1P 3D race ~1.5 ms (onesubmit) /
+~1.8 ms (+ narrow) of headroom a frame; the baseline was the only arm to drop below 60. New 3DS:
+neutral (60 fps in every arm). `onesubmit_kicks` loses the CPU/GPU overlap (+1.0 / +2.5 ms of
+frame-begin GPU wait) and stays off. No visual difference in 3D in any arm (narrow flush
+included). **Shipped (ship6): `onesubmit = 1`, `onesubmit_narrow = 1` in the code defaults and both
+auto presets; `onesubmit_kicks = 0`, `onesubmit_ab = 0`.** Each is still an ini key (`onesubmit =
+0` is the old re-submitted replay). Details, receipts and the A/B card snippet:
+`docs/research/native/onesubmit-progress.md`; dispatch cost receipt: `[debug] gxcost` (default 0).
+
+## Menu depth layout (menu-stereo-depth; `[stereo] menu_depth`, default 0)
+
+**What was wrong (measured, `[debug] stereo_census` + `--3d` SHOT pairs, legacy and `ni_menu=1` alike).**
+Every menu 2D draw is ortho (clip w == 1), so the heuristic put all of it -- backdrop, panels, text --
+at zero parallax: the menus were one flat sheet. Every menu 3D draw is SCENE and took the race's
+off-axis shift with the race convergence (0.25), but the menu cameras put their models at NDC depth
+0.96 .. 0.999 (N64 near planes are tiny: the transitions' frustum is near 16 / far 8129 with the eye
+500 away, `decomp/src/overlays/ovl_i2/transition.c` Matrix_SetFrustrum), i.e. at the far-plane
+parallax: the 30 SELECT MACHINE thumbnails +22.7 px R-L, the MACHINE SETTINGS model +23.7 px, the
+course previews +12 px (a folded half-size viewport), each with < 0.2 px of internal relief -- flat
+cut-outs sunk deep behind the zero-parallax panels they are drawn on top of (occlusion says in front,
+disparity says far behind), and in the machine grid 23 px is two thirds of a 35 px cell: every
+machine's other-eye image lands on its neighbour. The tiled whirl / spiral transitions draw the
+captured (flat) screen as perspective tiles at d ~= 0.97: the whole menu, text included, jumped from
+0 to +23 px for the transition and back.
+
+**The layout (lever on, slider up, a menu game mode: title, main menu, machine select / settings,
+course select, the GP next-course card, records course select, options).** Disparities R - L in
+top-screen px at full slider and iod 12, scaled live by slider x iod / 12:
+
+| layer | what | disparity |
+|---|---|---|
+| backdrop | screen-space draws whose largest triangle is >= 272 px (the art, drawn in full-width strips) | `menu_back` +4 (behind) |
+| panel | 32 .. 160 px (icons, portraits, frames, banners) | 0 (screen plane) |
+| text | <= 24 px (glyphs, arrows, cursors) | `menu_front` 2 -> -2 (in front) |
+| model | every SCENE draw of the frame (menu 3D, transition tiles) | `menu_model` 0 (flat, on the plane with the panels) |
+
+Linear ramps between the size breakpoints (a growing element slides, never pops). Models sit ON the
+plane, not behind it: menus draw 2D over models and models over 2D in the same cell (SELECT MACHINE
+draws the pilot portrait and the cursor burst, then the selected machine over both), so any
+separation between the model layer and the icon layer is a depth conflict where they overlap -- the
+first hardware build had models at +1 and 32..48 px icons ramped to ~-0.7 and the top-left cell read
+as a clash. Portrait, burst and machine now share the plane; only text floats in front. A screen-space
+draw touching the left / right screen edge stays at 0 (a shifted edge would uncover a strip in one
+eye). Models stay >= 0, so a model cut by its cell or the screen edge never violates the window.
+Size is per triangle, not per draw, because the legacy interpreter and the NRR menu runner batch the
+same rectangles differently. One draw is still one layer, and the batchers merge rectangles across
+texture changes (atlas pages): during the title's load-in the top half of the copyright line rode in
+the backdrop's batch (+4) while its bottom half was its own draw (0), so the line looked cut in two
+for ~1.4 s; and the NRR menu runner (`ni_menu=1`) batches a panel with the glyphs on it (SELECT
+MACHINE's "1260kg" sat on the plane there, in front on the legacy path). Every path now cuts a draw
+where its rectangles (triangle pairs sharing one box) change layer class -- backdrop (>= +0.5 px),
+plane, text (<= -0.5 px; the ramps' first half px counts as the plane, so a 31 px value box is a
+panel beside its arrows) -- and draws each run at its own layer (`MenuUiRunEnd`): the per-draw loop
+(`StereoMenuUiRuns`: both eyes per run), the frame replay (`StereoReplayMenuRuns`: one projection
+upload, an stk row per run; not while a native replay records) and the NRR menu runner
+(`NrrStereoMenuRow`, from the HUD's cold stereo hook: it draws the leading runs itself and hands the
+hot `NrrHudHotDraw` the last). One exception keeps nine-slice panels whole: between the plane and the
+text layer a rectangle that abuts (shares an edge with, without overlapping) one already in the run
+stays in it -- frame corners and borders touch their neighbours, glyphs sit inside or apart. A
+non-rectangle triangle never starts a run, so meshes stay whole. With `[debug] det=1` the legacy and
+`ni_menu=1` paths now give byte-identical menu SHOTs in both eyes. Races, the records flyby, demos, credits and editors are untouched;
+`[stereo] convergence` no longer moves menu models (they are a layer, not a depth).
+
+Paths: the per-draw loop and the frame replay classify in DrawTriangles (`StereoMenuUiClass`); the
+NRR menu runner's batches take the same row through the HUD's cold stereo hook
+(`NrrHudStereoAnchor` -> `NrrStereoMenuRow`), so no NRR hot function changes (`nrr_size --direct`
+identical). Census: `[stc]` lines carry `p=D` (per-draw loop), `p=R` (frame replay) or `p=N` (NRR
+menu runner; `m=` is GET_MODE there). Receipts: `[stereo] menu_depth=1 back= front= model=` at init, `[stereo] menu_depth
+ACTIVE` once, `[stereo] menu frames= ui= back= front= plane= edge= model=` every 256 menu frames.
+Census: `[debug] stereo_census=N` prints an `[stc]` line per stereo draw of every N-th frame
+(class, NDC depth, screen box, triangle size, disparity). `--3d` SHOTs now write the right eye as
+`<tag>_RE.bmp` (`_R` is the bottom screen's and overwrote it).
+
+## Edge coverage (skystereo; `gdx3ds_stereo_edge_shift_ndc()`)
+
+The eye skew moves each eye's image of far geometry sideways by up to `sep` (far-plane parallax,
+`iod` x slider px), so near the left / right screen edge each eye needs geometry the mono frame
+never had to cover. `gdx3ds_stereo_edge_shift_ndc()` is that largest per-eye shift this frame
+(NDC-x, `max(sep, k*dc)`), exactly 0 while the right-eye pass is off. `Background_Update` widens
+the skybox / venue floor / clouds `horizontalRange` by it (`decomp-3ds-stereo-sky-margin.patch`):
+no extra draw, and slider down or 2D is bit-identical. The course chunk cull is NOT widened by
+it: the 1.15 `widescreen_cull_pct` margin already covers the shift (measured: +2.5 % draws, no
+pixel changed).
+
 ## Remaining work (in dependency order)
 
 1. ~~**Proper off-axis projection math**~~ — DONE (stream S2, route a): the

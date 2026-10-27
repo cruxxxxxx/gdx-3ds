@@ -13,6 +13,8 @@
 #include "gdx3ds_config.h"
 #include "gdx3ds_filelog.h"
 #include "gdx3ds_frameskip.h"
+#include "gdx_snapshot.h" /* mp-snapshot: gdx_snap_tick_input (the build-drop prediction) */
+#include "gdx3ds_mainprof.h"
 #include "gfx/gdx3ds_dlb_shim.h"
 #include "gfx/nrr/gdx3ds_nrr.h"
 
@@ -121,6 +123,20 @@ static int sPendingHollowTask = 0; /* a hollow build finished; its task has not 
 static int sCur = -1;              /* open section, -1 outside a build */
 static int sRaceScope = 0;         /* inside Race_Draw (RHEAD .. TRANS): the only hollow scope */
 static int sSceneScope = 0;        /* niview: a non-race 3D scene (the records flyby) the NRR takes */
+#ifdef EXPANSION_KIT
+/* S5b [native] nrr_testdrive (default 0): the course editor's test drive draws its race outside
+ * Race_Draw (course_edit/191080.c func_xk2_800DF6FC); with the lever on its draw opens the race
+ * scope here (gdx_dl_testdrive_scope, decomp-3ds-ek-testdrive-scope.patch). Never hollow: the test
+ * drive is outside race0's frameskip scope, and the hollow proof was made on Race_Draw. */
+static int sTestDriveLever = 0;
+static int sTestDriveScope = 0;          /* this build is inside the test drive's race scope */
+static unsigned long sTestDriveBuilds = 0;
+static unsigned long sTestDriveRuns = 0;
+static unsigned long sTestDriveLastFrame = 0;
+#define TESTDRIVE_SCOPE() sTestDriveScope
+#else
+#define TESTDRIVE_SCOPE() 0
+#endif
 static uint64_t sLast = 0;
 static uint64_t sTickAcc[GDX_DLB_SEC_COUNT];
 static unsigned long sTickCount = 0;
@@ -317,6 +333,11 @@ static void LatchConfig(void) {
         DlwInit();
     }
     LatchConsumeMask();
+#ifdef EXPANSION_KIT
+    sTestDriveLever = gdx3ds_config_get_int("native", "nrr_testdrive", 0) != 0;
+    C5TickLog("[c5tick] nrr_testdrive=%d (EK course editor test drive: its race draw opens the race scope, "
+              "so the NRR categories take it; never hollow)", sTestDriveLever);
+#endif
     gdx3ds_nrr_boot(); /* [native] nrr (gfx/nrr/gdx3ds_nrr.h): latch + category inits (their consumes) */
     sMarkActive = sMarkActive || sProf || sWrite || sHollowLever;
     C5TickLog("[c5tick] dl_hollow=%d poses=%d dlbprof=%d dlwrite=%d (debug.dl_hollow: skipped ticks "
@@ -418,6 +439,11 @@ void gdx3ds_c5tick_end_tick(unsigned long frame) {
 static void BeginBuild(uint64_t now) {
     sPendingHollowTask = 0;
     sBuildDrop = (sHollowLever || sProf) ? gdx3ds_frameskip_next_skips(sHostFrame + 1) : 0;
+    /* mp-snapshot: the prediction reads the governor's clock, which a resimulated tick does not
+     * share, and a hollow build leaves different draw-side bytes behind (Racer shadowMatrixInit,
+     * course.c's chunk groups and display-list cursors). A resim replays the real tick's value
+     * (identity while no snapshot window is open). */
+    sBuildDrop = gdx_snap_tick_input(GDX_SNAP_IN_DL_BUILD_DROP, sBuildDrop);
     sTickHollow = sHollowLever && sBuildDrop;
     sBuildHollowed = 0;
     sRaceScope = 0;
@@ -438,6 +464,9 @@ static void EndBuild(void) {
     sCur = -1;
     sRaceScope = 0;
     sSceneScope = 0;
+#ifdef EXPANSION_KIT
+    sTestDriveScope = 0;
+#endif
     if (sBuildHollowed) {
         sPendingHollowTask = 1;
     }
@@ -475,6 +504,9 @@ void gdx_dlb_mark(int sec) {
         sRaceScope = 1;
     } else if (sec == GDX_DLB_SEC_TRANS) {
         sRaceScope = 0;
+#ifdef EXPANSION_KIT
+        sTestDriveScope = 0;
+#endif
     }
     sLast = sTickWrite ? svcGetSystemTick() : now;
 }
@@ -482,11 +514,11 @@ void gdx_dlb_mark(int sec) {
 /* Hollow only inside Race_Draw: every other draw function (menus, the ending cutscene's
  * Racer_Draw, Transition_Draw) builds in full on every tick. */
 int gdx_dl_hollow(void) {
-    return sTickHollow && sRaceScope;
+    return sTickHollow && sRaceScope && !TESTDRIVE_SCOPE();
 }
 
 int gdx3ds_c5tick_hollow_now(void) {
-    return sTickHollow && sRaceScope;
+    return sTickHollow && sRaceScope && !TESTDRIVE_SCOPE();
 }
 
 int gdx3ds_c5tick_hollow_pending(void) {
@@ -505,6 +537,14 @@ void gdx3ds_c5tick_note_leak(void) {
               "dropped (the screen keeps the last frame)", sFrame);
 }
 
+/* game/gdx3ds_fullview_game.c: this build's local view, -1 when fullview is off. */
+extern int gdx_fv_k(void);
+
+static int FullviewDrops(int view) {
+    const int k = gdx_fv_k();
+    return k >= 0 && view != k;
+}
+
 /* niview: the scene scope's skip -- only a consumed section WITH a stub (the stub builds what replaces
  * it, or declines), never hollow, never the track (the gadget pass reads its cull). */
 static int SceneSkip(int sec, int view, void** gfx) {
@@ -521,15 +561,56 @@ static int SceneSkip(int sec, int view, void** gfx) {
     return 1;
 }
 
+/* o3dsperf: [c5cat] markers for a multiplayer fullview build. Race_Draw's 2..4-player branch
+ * carries no sky / track / dressing markers (decomp-3ds-c5cat-markers.patch marks the 1P branch
+ * only), so on hardware 158a13e all of the local view's scene landed in misc= (12 ms of a 30 ms
+ * rendered tick). At each sky / track / dressing / camera section start of that branch this writes
+ * the category the walk is about to run: the section's own for the local view, misc for a
+ * dropped view and for the camera. Only while the [c5cat] clock is armed ([debug] mainprof=1 or
+ * gputrace=1); otherwise nothing is written and the list is unchanged. */
+extern void* gdx_c5cat_gbi_marker(void* g, int cat);
+
+static void C5CatFullviewMark(int sec, int view, void** gfx) {
+    const int k = gdx_fv_k();
+    int cat;
+    if (k < 0 || gfx == NULL || *gfx == NULL || !gdx3ds_c5cat_armed()) {
+        return;
+    }
+    if (sec == GDX_DLB_SEC_SKY) {
+        cat = GDX3DS_C5CAT_SKY;
+    } else if (sec == GDX_DLB_SEC_TRK) {
+        cat = GDX3DS_C5CAT_TRK;
+    } else if (sec == GDX_DLB_SEC_DRESS) {
+        cat = GDX3DS_C5CAT_DRESS;
+    } else if (sec == GDX_DLB_SEC_CAM) {
+        cat = GDX3DS_C5CAT_MISC;
+    } else {
+        return; /* racer.c's sections carry their own markers */
+    }
+    if (view != k) {
+        cat = GDX3DS_C5CAT_MISC;
+    }
+    *gfx = gdx_c5cat_gbi_marker(*gfx, cat);
+}
+
 int gdx_dl_skip(int sec, int view, void** gfx) {
     const int kind = sBuildDrop ? KIND_SKIP : KIND_REND;
     if (sec < 0 || sec >= GDX_DLB_SEC_COUNT || !kSkippable[sec]) {
         return 0;
     }
+    C5CatFullviewMark(sec, view, gfx);
+    /* MP phase 3 (gfx/gdx3ds_fullview_shim.h): in a fullview build only the local view is drawn;
+     * every other view's side-effect-free sections go unbuilt (their visibility pass and HUD logic
+     * still run). Latched by Race_Draw itself, so it needs neither the markers nor the race scope. */
+    if (FullviewDrops(view)) {
+        sWinSkipped[kind][sec]++;
+        return 1;
+    }
     if (!sRaceScope) {
         return sSceneScope ? SceneSkip(sec, view, gfx) : 0;
     }
-    if (sTickHollow && kHollowSkippable[sec] && !(kReplayKeeps[sec] && gdx3ds_replay_wants_tick())) {
+    if (sTickHollow && kHollowSkippable[sec] && !TESTDRIVE_SCOPE() &&
+        !(kReplayKeeps[sec] && gdx3ds_replay_wants_tick())) {
         sBuildHollowed = 1;
         sWinSkipped[kind][sec]++;
         return 1;
@@ -579,6 +660,31 @@ void gdx3ds_c5tick_want_scope(void) {
 int gdx3ds_c5tick_race_scope(void) {
     return sRaceScope;
 }
+
+#ifdef EXPANSION_KIT
+/* S5b: called at the top of the test drive's race draw (func_xk2_800DF6FC's test-run branch), inside
+ * func_80069698's build. Opens Race_Draw's scope exactly as its RHEAD marker does (the markers must
+ * be on: a consumed section or a want_scope category turned them on); game.c's TRANS marker and the
+ * end of the build close it. A new test run (a gap in the builds) gets one receipt line. */
+void gdx_dl_testdrive_scope(void) {
+    if (!sTestDriveLever || !sMarkActive || sCur < 0 || sRaceScope) {
+        return;
+    }
+    gdx_dlb_mark(GDX_DLB_SEC_RHEAD);
+    sTestDriveScope = 1;
+    if (sTestDriveBuilds == 0 || sHostFrame > sTestDriveLastFrame + 8u) {
+        sTestDriveRuns++;
+        C5TickLog("[c5tick] testdrive scope open run=%lu frame=%lu builds=%lu", sTestDriveRuns, sHostFrame,
+                  sTestDriveBuilds);
+    }
+    sTestDriveBuilds++;
+    sTestDriveLastFrame = sHostFrame;
+}
+
+int gdx3ds_c5tick_testdrive_scope(void) {
+    return sTestDriveScope;
+}
+#endif
 
 /* niview: Records_Draw brackets the flyby's sky / course / dressing (decomp-native-records-scene.patch).
  * The scope opens only when the NRR takes such scenes ([native] ni_view records bit, 1 view). Kept

@@ -47,6 +47,8 @@ static int sEnabled = 0;
 static int sArmedThreads = 0;
 static volatile int sSlotNext = 0;
 static volatile int sBusy = 0;
+/* CRASHFIX: set once main() starts its teardown (gdx3ds_crash_note_exit). */
+static volatile int sExiting = 0;
 static u8 sSlotStacks[GDX3DS_CRASH_SLOTS][GDX3DS_CRASH_SLOT_BYTES] __attribute__((aligned(8)));
 static char sReport[GDX3DS_CRASH_REPORT_BYTES];
 static size_t sReportLen = 0;
@@ -271,7 +273,7 @@ static void CrashLogWrite(void) {
             start = i + 1;
         }
     }
-    gdx3ds_filelog_flush();
+    gdx3ds_filelog_flush_sync();
 }
 
 static void ParkForever(void) {
@@ -293,8 +295,20 @@ static void CrashHandler(ERRF_ExceptionInfo* excep, CpuRegisters* regs) {
         sBootSink(sReport, sReportLen); /* boot.txt first: one flushed write */
     }
     CrashFileWrite();
+    if (sExiting) {
+        /* CRASHFIX: a fault during the teardown (rel1crash B/D: a title that armed this handler
+         * and ran cleanly reported "the system will reboot" on close from HOME). The report is
+         * on the card; end the process quietly, as an unarmed title's teardown fault does,
+         * instead of raising ErrDisp over a close the user asked for. No log write: the file
+         * log may already be closed. */
+        svcExitProcess();
+    }
     CrashLogWrite();
     ERRF_ExceptionHandler(excep, regs); /* ErrDisp, exactly as without this handler */
+}
+
+void gdx3ds_crash_note_exit(void) {
+    sExiting = 1;
 }
 
 /* ---- arming ------------------------------------------------------------------------------ */
@@ -369,12 +383,12 @@ void gdx3ds_crash_init(void) {
         }
     }
     gdx3ds_filelog_write(line, n);
-    gdx3ds_filelog_flush();
+    gdx3ds_filelog_flush_sync();
     if (sEnabled && selftest) {
         static const char kSelf[] = "[crash] selftest: NULL store now; expect crash" GDX3DS_LOG_TAG
                                     ".txt + ErrDisp";
         gdx3ds_filelog_write(kSelf, sizeof(kSelf) - 1);
-        gdx3ds_filelog_flush();
+        gdx3ds_filelog_flush_sync();
         SelfTestFault();
     }
 }
@@ -512,7 +526,18 @@ Result __wrap_svcBreak(UserBreakType breakReason) {
         line[n++] = *tail++;
     }
     gdx3ds_filelog_write(line, n);
-    gdx3ds_filelog_flush();
+    gdx3ds_filelog_flush_sync();
+    if (sExiting || aptShouldClose()) {
+        /* HEAPFIX: a break during the teardown, or with a HOME close order pending, hard-locked an
+         * Old 3DS (card-5: std::terminate in the exit chain's disk-save flush -> svcBreak with the
+         * HOME menu holding the screens; no ErrDisp, no dump, power button only). The line above
+         * is on the card; end the process the way CrashHandler already does for a teardown fault,
+         * so the close the user asked for completes. */
+        static const char kExitLine[] = "[fatal] svcBreak during teardown/close: svcExitProcess instead";
+        gdx3ds_filelog_write(kExitLine, sizeof(kExitLine) - 1);
+        gdx3ds_filelog_flush_sync();
+        svcExitProcess();
+    }
     return __real_svcBreak(breakReason);
 }
 

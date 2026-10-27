@@ -1177,6 +1177,28 @@ extern "C" void NrrStereoAnchor(NrrCtx* c, float primDepth) {
     c->anchorSet = 1;
 }
 
+extern "C" GDX_COLD void NrrStereoMenuRow(NrrCtx* c, float** verts, uint32_t* nVerts) {
+    if (!gdx3ds_stereo_replay_frame) {
+        return;
+    }
+    float* const v = *verts;
+    const uint32_t n = *nVerts;
+    uint32_t first = 0;
+    uint32_t end = gdx3ds_stereo_menu_run_end(v, n, GDX3DS_VBOPACK_STRIDE, 0u);
+    while (end < n) {
+        float* const run = v + (size_t)first * GDX3DS_VBOPACK_STRIDE;
+        gdx3ds_stereo_menu_ui_row(run, end - first, GDX3DS_VBOPACK_STRIDE, c->anchorRow);
+        c->anchorSet = 1;
+        NrrDraw2D(c, run, end - first);
+        first = end;
+        end = gdx3ds_stereo_menu_run_end(v, n, GDX3DS_VBOPACK_STRIDE, first);
+    }
+    *verts = v + (size_t)first * GDX3DS_VBOPACK_STRIDE;
+    *nVerts = n - first;
+    gdx3ds_stereo_menu_ui_row(*verts, *nVerts, GDX3DS_VBOPACK_STRIDE, c->anchorRow);
+    c->anchorSet = 1;
+}
+
 extern "C" void NrrDraw2DScene(NrrCtx* c, const float* verts, uint32_t nVerts) {
     c->scene2d = 1;
     NrrDraw2D(c, verts, nVerts);

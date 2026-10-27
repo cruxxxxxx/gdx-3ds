@@ -67,6 +67,34 @@ git -C decomp apply ../port/3ds/patches/decomp-port-title-demo-tick.patch
 git -C decomp apply ../port/3ds/patches/decomp-native-records-scene.patch
 git -C decomp apply ../port/3ds/patches/decomp-native-course-preview.patch
 git -C decomp apply ../port/3ds/patches/decomp-native-hud-elem-gate.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-ek-audio-disk-async.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-ek-audio-sync-bulk.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-ek-testdrive-scope.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-ek-editmesh.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-ek-nimach.patch
+git -C decomp apply ../port/3ds/patches/decomp-native-menu-xition.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-mp-online.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-mp-sim.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-mp-fullview.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-widescreen-cull.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-ek-nodisk-audio.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-ek-vs-onepad.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-settings-backdrop-full.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-mp-vis.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-mp-ekhold.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-mp-racers.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-mp-dropcpu.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-mp-rambot.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-mp-grid.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-bui-title-demo-hold.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-mp-stockpick.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-font-nullread.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-mp-vs-overlay-bounds.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-o3ds60-mp-hud.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-mp-polish.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-mp-vs-menu.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-unlock-3ds-code.patch
+git -C decomp apply ../port/3ds/patches/decomp-3ds-stereo-sky-margin.patch
 ```
 
 This list is kept in the same order as `tools/ci-3ds.sh`'s `PATCH_LIST`, which is the
@@ -1226,6 +1254,70 @@ list. `src/game/course.c` `func_800A2D2C` (writes a model's vertex buffer) bumps
 entry. The owned walker draws the run from a GPU-resident mesh (port/3ds/gfx/n64/gdx_nicourse.cpp,
 gdx3ds_course_mesh.inc) or walks it. Pure delta; applies last.
 
+## decomp-3ds-ek-nimach.patch (ekperf3 `[native] ek_nimach`, Expansion Kit only)
+
+`src/overlays/ovl_i4/machine.c`, every hunk inside `#if defined(PORT) && defined(GDX_PLATFORM_3DS) &&
+defined(EXPANSION_KIT)`, so a non-EK build preprocesses exactly as before. The EK twin of
+`decomp-3ds-nimach.patch`, whose blocks are `!defined(EXPANSION_KIT)`: `MachineSelect_EkNimachMachines`
+(machine select, ni_mach bit 1) and `MachineSettings_EkNimachBodies` + the reflection model marker
+(machine settings / GP next machine, bit 2), gated by `gdx_ek_nimach_level()`
+(port/3ds/game/gdx3ds_ek_nimach_game.c: 0 unless `[native] ek_nimach = 1`, then the live ni_mach
+bits). The EK loop's differences are kept: `G_RM_PASS / G_RM_AA_ZB_OPA_SURF2` is written before the
+marker and after the last slot (the body lists never set a render mode), the env colour is the EK
+`func_8009CCBC`'s (grey while `gGreyscaleMachinePart`), a player-designed machine
+(`CUSTOM_MACHINE_EDITED`) is always a stock slot, and the reflection model marker is written only for
+a machine with no custom state (`func_8009CEA0` draws its one stock list). Lever off: level 0, the
+stock loops. Pure delta on top of decomp-3ds-nimach.patch; applies last.
+
+## decomp-3ds-ek-editmesh.patch (ekeditmesh `[native] ek_editmesh_track`, Expansion Kit only)
+
+`src/game/course.c`, every hunk inside `#if defined(PORT) && defined(GDX_NATIVE_TRACK) &&
+defined(EXPANSION_KIT)`, so a non-EK build preprocesses exactly as before. `func_800A1954` (the
+chunk builder) bumps the editor preview's generation on entry. `func_800A95B4` (the course editor's
+course-surface preview walk) asks `gdx_ek_editmesh_begin` (port/3ds/game/gdx3ds_ek_editmesh_game.c)
+whether to bracket its chunk loop with `GDXTRK_BEGIN(0)` / `GDXTRK_END()`, as `Course_Draw` does,
+and re-bakes the resident rings once the generation has settled; both returns go through
+`GDX_EKMESH_LEAVE`. While the `[c5cat]` clock is armed it also writes the TRK/MISC category words
+around the walk. Lever off: begin returns 0 and the list is stock. The ground grid and the editor's
+lines need no decomp change: `[native] ek_editmesh` retains them in the owned walker.
+Pure delta; applies last.
+
+## decomp-3ds-mp-fullview.patch (MP phase 3: `[net] mp_fullview`, `[debug] fullview_player`)
+
+In a 2-4P VS race, show only the local player's view k full screen, with the 1P race HUD. Every hunk
+sits under `#if defined(PORT) && defined(GDX_PLATFORM_3DS)` or goes through
+`port/3ds/gfx/gdx3ds_fullview_shim.h`, whose macros are constants elsewhere; with both levers off
+`gdx_fv_k()` is -1 and every hunk is the stock code. Contract: the SIMULATION KEEPS ALL N PLAYERS.
+Every view still runs its camera, `Racer_Draw` (machineLod feeds the RNG and the CPU AI) and every
+HUD / menu call; only display-list output changes.
+
+- `ovl_i2/race.c` `Race_Draw`: latch k at the top (`gdx_fv_race_draw_begin`, -1 during the VS
+  end-of-race viewport transition so the stock results animation runs), release at the end. The
+  other views' sky / track / dressing / bodies / effects are dropped by `gdx_dl_skip`
+  (port/3ds/gdx3ds_c5tick.c), not here.
+- `game/camera.c` `Camera_Draw`: view k's viewport + scissor become `SCISSOR_BOX_FULL_SCREEN` and it
+  takes the 1P scissor inset; projection and frustum are untouched (already 4:3 in every count).
+- `game/racer.c` race-HUD tail: view k swaps the camera's 2D mirrors to full screen for the markers
+  and takes the 1P marker textures; other views' marker output is rewound.
+- `ovl_i3/hud.c` `Hud_DrawHud`: fullview draws `Hud_GdxFullviewDrawHud` — the case 2-4 call order
+  with k on the 1P layout (the [0][k] position-table slots get the [0][0] values) and every other
+  player's draws rewound. `Hud_DrawPosition` draws k's rank 12 px left of the 1P slot, because VS
+  has one digit and "/4", so the "/4" would otherwise touch TIME. `Hud_GdxFullviewDrawPortrait`
+  draws k's portrait and place label in the 1P portrait slot and does nothing else. Stock
+  `Hud_DrawRacePortraits` would draw the race leader and advance portrait state. Lives and KO
+  stars are mode-gated to GP/practice/death race and are skipped.
+- `ovl_i3/menus.c`, `minimap.c`: layout switches read `GDX_FV_NP` / `GDX_FV_NPI` (1P for k); other
+  players' per-player output and the 3P filler box / 4th minimap are rewound; k's minimap is drawn
+  at the 1P spot and 1P size. The 0.75 split-screen raster is magnified by the texture-rectangle
+  step, which is exactly 1<<10 when the lever is off.
+- `ovl_i3/background.c` `Background_DrawStars`: star points map from view k's quadrant to full screen.
+- `audio/{rom,disk}/lib/thread.c` `AudioThread_QueueCmd`: `gdx_fv_audio_cmd` centres the local
+  player's per-player channels (pan 0x3F) and scales the others' volume by 0.4. Only the queued
+  command's argument changes, so the sim never sees it.
+
+Gate: `[gstate]` hash + ext per tick identical, split vs every k, on race-4p-vs and
+race-vs2p-results (det=1, old and new model). Applies last.
+
 ## decomp-native-hud-elem-gate.patch (Phase 3 per-element top-screen gate)
 
 Builds on `decomp-3ds-hud-placement.patch`: turns the top-screen HUD's all-or-nothing suppression
@@ -1264,3 +1356,501 @@ behaviour this patch exists to unlock; FORCED ALL_TOP IN 2-4P holds for it too (
 gate inside `gdx_hud_top_element_mask`). Applies after `decomp-3ds-hud-placement.patch` (same
 functions, later context) and after `decomp-native-hud-lap-announce.patch` (needs
 `Hud_AdvanceLapAnnouncementsOnly` to already exist in `hud.c`); applies last in the stack.
+
+## decomp-3ds-ek-audio-disk-async.patch (`[debug] audio_disk_async`, o3dsekperf)
+
+Expansion Kit only (`src/audio/disk/lib/load.c`). `AudioLoad_ReadWriteDisk` hands a request from
+the ASYNC disk loader -- identified by its queue, `D_806F2350.mq`, the one the
+`AudioLoad_DiskLoad` state machine polls with `OS_MESG_NOBLOCK` -- to
+`gdx_leo_read_async()` (port/n64_leo.c), which runs the unchanged `LeoReadWrite` on the I/O
+worker in port/3ds/game/gdx3ds_disk_async.c and posts that queue when the bytes land. Every
+other request (the synchronous `AudioLoad_DiskDrive`, queue `D_806F2328`) still runs inline.
+The reset busy-drain in `AudioLoad_ProcessAsyncLoadDiskDrive` waits for the worker
+(`gdx_leo_async_wait_idle()`) instead of spinning on the queue.
+
+Why: the async loader was only async on console. `audio_disk_step_kb` (load-census patch) cut a
+course load to one LBA per producer tick, but that LBA's SD read still ran INSIDE the tick:
+emulator, ek-ta-dd, `[audioload]`: 141 consecutive race-load ticks with diskld/leorw 4.3-9.8 ms
+each; hardware (release-v1@78ff524f, Old 3DS, JP disk): producer ticks `for=24-30 ms` against
+the 16.7 ms a tick produces, and the ring under-runs through the race intro. With the lever off
+(`gdx_leo_read_async()` returns 0) the handler runs inline exactly as before. Default 1 on the
+Old 3DS, 0 on the New 3DS (port/3ds/include/gdx3ds_disk_async.h).
+
+ekaudio2 extends the hook by one argument: the machine's `bytesRemaining` goes to
+`gdx_leo_read_async()` as the read-ahead hint for `[debug] audio_disk_readahead_kb` (the bytes the
+load still wants after this request), so the worker can fetch the next LBAs in the same SD
+request.
+
+## decomp-3ds-ek-audio-sync-bulk.patch (`[debug] audio_sync_bulk_kb`, ekaudio2)
+
+Expansion Kit only (`src/audio/disk/lib/load.c`), 3DS only. `AudioLoad_SyncDma` offers a
+cartridge load to `gdx3ds_ek_audio_sync_bulk()` (port/3ds/game/gdx3ds_ek_audio_bulk.c) before its
+0x400-byte DMA walk; a load inside the streamed `audio_table` window is then read straight off
+`fzerox.o2r` into the destination in requests of up to the lever's size, and the walk is
+skipped. A decline (lever 0, stream not armed, `audio_stream_verify`, outside the window,
+16 KB or less, a failed read) runs the walk exactly as before. Not taken while `resetTimer > 16`, where
+`AudioLoad_Dma` itself transfers nothing.
+
+Why: the first audio tick of an EK boot is the persistent-sample load, and with the stream armed
+every 16th DMA of that walk is one 16 KB SD request on the producer (rc2 hardware log, Old 3DS: a
+`max=1054914us` tick before the boot prime timed out and under-ran; 18-21 ms per 16 KB fill).
+Default 256 (KB per request) on the Old 3DS, 0 on the New 3DS; `[debug] audio_sync_bulk_verify=1`
+re-reads every bulk range through the stream and compares (receipt `[audiobulk] verify ok= bad=`).
+Applies after
+`decomp-3ds-ek-audio-disk-async.patch` (same file).
+
+## decomp-3ds-ek-testdrive-scope.patch (S5b: the course editor's test drive on the NRR)
+
+Expansion Kit only in effect (`course_edit/` is an EK overlay; the `racer.c` hunk is inside
+`#ifdef EXPANSION_KIT`). The editor's TEST DRIVE draws a 1P race -- sky, course, gadgets, the one
+racer, minimap, speed -- from `func_xk2_800DF6FC` (`course_edit/191080.c`), never through
+`Race_Draw`, so the c5tick race scope (`RHEAD .. TRANS`) never opened for it and every NRR
+category drew it on the interpreter. Two files:
+
+- `src/overlays/course_edit/191080.c` `func_xk2_800DF6FC`: the test-run branch calls
+  `gdx_dl_testdrive_scope()` first (port/3ds/gdx3ds_c5tick.c: opens the race scope exactly as
+  `RHEAD` does, only under `[native] nrr_testdrive=1`, default 0; never hollow), and its
+  `Background_Draw` / `Course_Draw` / `Course_GadgetsDraw` calls take `Race_Draw`'s own 1P
+  `GDX_DLB(SKY|TRK|DRESS)` + `GDX_DL_SKIP(..., 0)` brackets, plus `RMID` around the racer setup so
+  the section clock charges it like the race. `game.c`'s `TRANS` marker closes the scope after the
+  mode's draw. With the lever off the scope never opens, `GDX_DL_SKIP` returns 0 outside it, and
+  the display list is the stock one.
+- `src/game/racer.c` `Racer_NrrMachStub`: the `GAMEMODE_COURSE_EDIT` decline (nimach) keeps
+  declining every course-edit draw except one inside the test drive's scope
+  (`gdx3ds_c5tick_testdrive_scope()`): `func_xk2_800DEE20` placed that racer with `Racer_Init` +
+  `Course_Init`, as a race does. The port's shadow / effects / dressing stubs take the same scope
+  (`gdx3ds_nrr_{shd,fx,dress}_game.c`). The track needs nothing: `Course_Init` re-bakes the
+  resident rings at the start of every test run (`decomp-native-track-resident-bake.patch`), so
+  each run's edited course gets its own `trkres` generation.
+
+Applies after `decomp-3ds-nrr-mach.patch` and `decomp-3ds-nimach.patch` (the stub and its decline);
+listed after the two EK audio patches (independent files).
+
+## decomp-3ds-mp-online.patch (`[net] mp_bot`, online multiplayer tests)
+
+`Racer_UpdateMovement` (racer.c), inside the `decomp-3ds-autodrive.patch` branch: when
+`gdx_autodrive_mix(racer->id)` answers non-zero (port/3ds/gdx3ds_autodrive.c; only for a racer
+an online session's START marked as a test bot, `[net] mp_bot = 1`), the CPU driver's inputs take
+a quarter of the player's exchanged stick X and its R/Z lean, so a bot race still depends on every
+console's pad. Off (no session, or no bot) it is one call returning 0. Applies last (after the
+autodrive patch it extends).
+
+## decomp-3ds-mp-sim.patch (lockstep: the simulation never reads draw state)
+
+`machineLod` is written by `Racer_Draw` -- per view, so it ends up holding the LAST view drawn,
+and it keeps a stale value on a frame the port skips drawing. Two places in the simulation read
+it here: `Racer_ReceiveDamage` (racer.c: a machine out of every view is never destroyed, its energy
+is held at 0.1) and `Cpu_BehaviorBilly` (cpu.c: that CPU driver only spins when seen); the other
+seven reads are routed by decomp-3ds-mp-vis.patch (below), so all nine go through one function. In a
+lockstep session (`gdx3ds_mp_active()`: `[net] mp` or an online race) two consoles draw
+different views, or skip different frames, so both reads go through
+`gdx_sim_machine_visible()` (port/3ds/gdx3ds_autodrive.c), which answers "visible" for every
+machine while a session runs and `machineLod != 0` otherwise: off a session the game is
+unchanged. Applies after decomp-3ds-mp-online.patch.
+
+## decomp-3ds-widescreen-cull.patch (`[display] widescreen`: the racer cull, simulation-safe)
+
+`src/game/racer.c` `Racer_Draw`, every `PORT` build. The PC port's `UltrawideMode` widens the
+racer visibility test from the 4:3 NDC band (+-1.0) to the hor+ band (+-`gdx_get_ultrawide_cull_xscale()`,
+1.25 on the 3DS's 5:3 top screen), and that test does more than pick what is drawn:
+`racer->machineLod != 0` is read by the racer update as "on screen" (spark / explosion /
+spin-out effects that draw `Math_Rand1/2`, racer.c ~4751/4789/4885/5304) and by the CPU AI
+(`ovl_i3/cpu.c:1082/1172`). Widening it as-is would move the RNG streams and the race.
+
+The patch keeps the wider test for DRAWING and hands the simulation the stock answer: a machine
+that passes the widened x test (and the stock y/depth tests) but fails the stock +-1.0 x test is
+recorded (`gdxWideOnly[]`, the main pass and the time-attack ghost pass), drawn like any other
+visible machine (shadow, body, highlight, boosters, markers), and at `Racer_Draw`'s single return
+gets `machineLod = unk_2B2 = unk_2B3 = 0` -- exactly what the stock pass leaves on a culled
+machine (the 3P/4P `machineLod++` and `unk_2B3` step-downs never move a 0). `Racer_Draw` runs per
+view, so each view's call restores before the next view's pass recomputes. Nothing after the
+restore draws.
+
+With `gdx_get_ultrawide_cull_xscale()` at 1.0 (every configuration but `[display] widescreen = 1`
+in a race; `port/3ds/gdx3ds_widescreen.h`) no machine can pass the wide test and fail the stock
+one, so the list stays empty and the display list is the stock one. Measured: `[gstate]` (and
+`gstate_ext`, which hashes the visibility bits) identical with the lever on and off. Credit: the
+widened cull itself is the G-Diffuser PC port's (Zorkats/G-Diffuser, decomp f7fd0fd, MIT/CC0).
+Applies last, after the mp-* patches (rebased onto decomp-3ds-mp-fullview.patch, which also edits
+`Racer_Draw`'s tail: the restore stays at the single return, after mp-fullview's HUD drop); touches only `Racer_Draw`.
+
+## decomp-3ds-ek-nodisk-audio.patch (EK without its disk: no disk, no disk audio)
+
+`src/audio/disk/lib/load.c` and `src/audio/disk/external.c`, the Expansion Kit's disk audio
+library only (files `GdxGameSources.cmake` excludes from the shipped EK=OFF source list, so **no
+byte of the default build changes**). While no disk is mounted (`gdx_leo_disk_mounted()`,
+port/n64_leo.c: the resident buffer or the SD stream is live):
+
+- `AudioLoad_SyncLoad` and `AudioLoad_AsyncLoad` refuse a `MEDIUM_LBA` entry before anything is
+  allocated, the way an allocation failure already fails the load (capped
+  `[audio-disk] SyncLoad/AsyncLoad REFUSED no disk` receipts). The async refusal still posts its
+  completion to `retQueue`, exactly as the cache-hit path does, so `Audio_DDBgmReadyInter`'s
+  sample-bank wait (`D_80771C7C`) is released; the load status stays not-loaded.
+- `Audio_CheckBgmLoad` stops waiting for a disk BGM that can never load (`sBgmRomLoading = false`).
+
+Why: with no `.ndd` every LBA read fails with `DRIVE_NOT_READY` and copies nothing, yet the loader
+marked the entry loaded, so the sequence player ran whatever the audio heap held. On
+test-combined's n3ds-ek (lever-off menus-longtail, no disk staged) that stale data spun the
+dedicated audio producer forever inside `AudioSynth_Update` while it held `sAudioCtxMutex`, and
+the game fiber parked behind it in `AudioThread_QueueCmd` (watchdog
+`frame=127(+0) fiber=5 aud=151/150 astage=1 ctx=0+1`). The heap's contents follow the binary's
+layout, so the hang came and went with unrelated merges (mp-online's exposed it). Filling the
+destination with defined data (sequence = END, font/bank = 0) was tried and still hung
+(garbage table sizes/fonts); refusing the loads without the two releases above froze the race
+countdown at "1", because `func_807424CC` (the countdown at `gRaceIntroTimer == 40`, and
+`sys_gfx.c`) waits for the BGM load. With a disk mounted nothing changes. Applies after
+`decomp-3ds-widescreen-cull.patch` (before the ek-vs-onepad and settings-backdrop-full fixes).
+
+## decomp-3ds-ek-vs-onepad.patch (EK main menu: VS BATTLE needs two controllers)
+
+`src/overlays/ovl_i6/main_menu.c` `MainMenu_Update`, `EXPANSION_KIT` + `PORT` builds only (the
+non-EK arm is untouched, so O3DS/N3DS builds compile the same code). Hardware report: "versus
+mode doesn't do anything". The US arm snaps the SELECT MODE cursor off `MODE_VS_BATTLE` onto
+`MODE_DEATH_RACE` while `gControllersConnected < 2`; the EK arm (the JP disk game's grid, built
+here as `VERSION_US`) never had that rule, so on a 3DS -- one pad -- the cursor could rest on VS,
+and A opened the player-count step only for case 1's `VERSION_US` clamp to bounce it back to the
+grid with the cancel sound. The patch gives the EK arm the US rule, before its no-disk
+Course Edit / Create Machine redirects. `[debug] pads=N` (N >= 2) and a multiplayer session (the
+input bridge reports the remote ports connected) still reach VS. Applies last.
+
+## decomp-3ds-settings-backdrop-full.patch (`[stereo] menu_depth`: the settings backdrop fills the frame)
+
+`src/game/object.c` `OBJECT_MACHINE_SETTINGS_BACKGROUND`, `PORT` + `__3DS__`, runtime-gated on
+`gdx3ds_stereo_menu_backdrop_full()` (port/3ds/gfx/gdx3ds_stereo.cpp: 1 with `[stereo] enabled`
+and `menu_depth` both on). Hardware report, 3D on: "on the machine settings page the background
+doesn't fill the screen". The page's flat grey (24,24,24) is the stock overscan-safe card
+`func_8007AC48` draws, 12..307 x 8..231, clipped by the menu scissor of the same box: on the top
+screen a grey card in a black frame (emulator, every leg: x 40..347, y 8..231 of 400x240). With
+menu_depth the card is a backdrop-sized draw that touches no screen edge, so the layout pushes
+it 4 px behind the screen and its free right edge lands on a different column in each eye
+(345 vs 349). With the lever on the patch opens the scissor, fills the whole frame with the same
+colour (`func_8007AD44`, 0..319 x 0..239) and restores the menu scissor (12, 8, 308, 232, as
+`MachineSelect_BackgroundDraw`'s widescreen arm does). A frame-wide draw touches the screen
+edges, so the stereo layer's edge rule keeps it on the plane: both eyes fill 0..399 x 0..239,
+every other pixel of the page unchanged. Lever off (the shipped default): the stock card, the
+same display list as before. Applies last.
+
+mp-polish: the gate no longer needs menu_depth. Only the New 3DS ini turned menu_depth on, so the
+Old 3DS (and any 2D build) still showed the grey card in a black frame (hardware: "old 3ds still
+had the non-filled grey background"). `gdx3ds_stereo_menu_backdrop_full()` now answers 1 with
+menu_depth on, else `[ui] settings_backdrop_full` (default 1; 0 = the stock card as before).
+Menu display list only: no simulation state is touched.
+
+## decomp-3ds-mp-vis.patch (MP30: every simulation read of `machineLod` is sim-derived)
+
+Extends decomp-3ds-mp-sim.patch to the seven reads it left: `Racer_ReceiveDamage`'s crash
+debris (racer.c), `Racer_HitWall`'s wall sparks, `Racer_UpdateFromControls`'s spin-out debris
+(three `Math_Rand1` + one `Math_Rand2` per spawn), its crash explosion and its random body sparks
+(six more `Math_Rand*` calls), `Racer_Update`'s pair-collision sparks, and `Cpu_GenerateInputs`'s
+`sp70` branch (cpu.c). Each becomes `GDX_SIM_RACER_VISIBLE(racer)` / `GDX_SIM_VISIBLE(racer)`,
+i.e. `gdx_sim_machine_visible(racer->machineLod)` (port/3ds/gdx3ds_autodrive.c): `machineLod != 0`
+outside a session (the stock expression, so single player is unchanged) and 1 for every machine
+in one. Constant 1 is the stock VS behaviour, not a new rule: `Racer_Update` already sets every
+racer's `machineLod` to 1 at the top of each tick whenever `gNumPlayers != 1`, before every one of
+these reads, so a 2-4 player race never saw `Racer_Draw`'s value; the function keeps that true
+whatever the draw side does. In a session the digest also folds both visibility masks
+(`gdx_mpo_vis_hash`, port/decomp_port.c), so a draw-side divergence fails on its tick. Applies
+last; touches only those seven expressions and the macro next to mp-sim's declaration.
+
+## decomp-3ds-mp-ekhold.patch (MP30: the Expansion Kit countdown hold is a lockstep event)
+
+`Racer_Update` (racer.c, `EXPANSION_KIT`) holds `gRaceIntroTimer` at 40 while
+`func_807424CC()` says this console's 64DD disk BGM load is still in flight. Load times differ
+per console, so in a session the race would start on different ticks and desync. The test
+becomes `gdx_mp_ek_bgm_hold(func_807424CC() != 0, sRaceFrameCount)` (port/3ds/gdx3ds_autodrive.c):
+off a session it returns its first argument (stock); in one it holds until the first tick whose
+exchanged lockstep pads all carry `GDX_MP_PAD_BGM_READY` (bit 6, no N64 button; each console sets
+it from `gdx_mp_local_bgm_ready()`, added here, and the session strips it before the game reads
+the pad; a removed player counts as ready), or until 180 held ticks counted from
+`sRaceFrameCount`, whichever is first -- both decided from data every console holds identically.
+`[net] mp_bgm_hold_until = N` (test lever) withholds one console's bit until race tick N.
+Receipt: `[mp] ek hold: countdown released at race frame F after H held ticks (...)`. Applies
+last; non-EK builds compile only `gdx_mp_local_bgm_ready` (always 1).
+
+## decomp-3ds-mp-racers.patch (MP30: VS COM with 8, 16 or 30 machines)
+
+The online / NEARBY START packet carries a machine count (`racers`: 0 = stock 4, else 4..30,
+VS COM only; the host picks it on the MACHINES lobby row, `[net] mp_racers` sets the default).
+`Race_Init` VS COM sets `gTotalRacers = gdx_mp_vs_total_racers(4)` (port/3ds/gdx3ds_autodrive.c:
+the stock 4 off a session). `func_80089934` fills the CPU field past 4 with
+`Racer_GdxFillCpuField` (same Rand2 character / Rand1 skin draws, re-drawn until the character
+is unused, so 30 machines show 30 pilots). Every VS table (`gVsRacePlayerPoints`,
+`gVsRacePlayerVictoryCount`, `sVsRacePositionPoints`, `sVsRaceRacerCountPositionPoints`, the
+results-screen arrays) is sized for 4 racers, and the stock award indexed them by racer and
+place up to `gTotalRacers` -- an out-of-bounds sim write with more. With more than 4 racers the
+award and `Menus_DrawVsResultsScreen` rank the human players among themselves
+(`gdx_vs_field()` / `gdx_vs_place()`, macros `GDX_VS_FIELD` / `GDX_VS_PLACE` in menus.c);
+with 4 or fewer they are `gTotalRacers` and `position`, byte-identical to stock.
+`Menus_DrawPlayerWinner`'s `sortedPlayersByPosition` grows to `TOTAL_RACER_COUNT`. Applies last.
+
+## decomp-3ds-mp-dropcpu.patch (MP30: a dropped human becomes a CPU at its removal tick)
+
+With `[net] mp_drop = cpu` (the default; in the sim-ABI word) a player removed from a session
+keeps racing: from its agreed removal tick T `gdx_autodrive_racer` (port/3ds/gdx3ds_autodrive.c)
+answers 1 for it (`gdx3ds_mp_drop_cpu_racer`, net/gdx3ds_mp.c and gdx3ds_mp_online.c, from the
+removal tick every console holds), so `Racer_UpdateMovement` drives it with `Cpu_GenerateInputs`
+(throttle and steering, as the other autodriven racers). Unlike the test bots it takes no share
+of its (neutral) pad (`gdx_autodrive_mix` 0) and its energy is not pinned: the patch makes the
+autodrive branch's `racer->energy = racer->maxEnergy` conditional on the new
+`gdx_autodrive_pin_energy(id)`, 1 for the autodrive lever and the bots (stock behaviour), 0 for a
+taken-over racer. `retire` (the old behaviour) and `coast` remain. Applies last.
+
+## decomp-3ds-mp-rambot.patch (MP30 test lever: ram-mode bots)
+
+`[net] mp_bot = 2` (synced as START `ramMask`, a subset of `botMask`) makes a lockstep test bot
+aggressive: the autodrive branch of `Racer_UpdateMovement` keeps the CPU driver's full buttons
+(boosts, spin and side attacks) when the new `gdx_autodrive_full_buttons(id)`
+(port/3ds/gdx3ds_autodrive.c) says so, instead of masking to `BTN_A`; the bot's jittered pad
+adds R, Z and Z+R; and `gdx_autodrive_pin_energy` is 0 for it, so machines are destroyed.
+The 30-machine lockstep tests use it to drive the bump / attack / destruction paths. Off a
+session, and for plain bots, the mask is applied as before. Applies last.
+
+## decomp-3ds-mp-grid.patch (MP30: the starting grid of a VS field with more than 4 machines)
+
+Two stock assumptions of a one-row (at most 4 machines) VS grid, both found by the 30-machine
+emulator runs (racer 4 had a NaN position from the first tick; the NaN spread through the
+collisions into every machine's energy: empty energy bars, mass retirements):
+
+- cpu.c `func_i3_80115E74`: in multiplayer it renumbers racers 0..3 to positions 1..4 after
+  handing racers 1..N-1 positions 1..N-1, which with more than 4 racers left racer 4 sharing
+  position 4 with racer 3 and position N unused, so `Racer_SetupStartPositions` never placed
+  racer 4. With `gTotalRacers > 4` it numbers every racer.
+- racer.c `Racer_SetupStartPositions`: the step back between machines is 100 units in 1P modes
+  but 0.1 in multiplayer (unused past the first row in stock VS); with `gTotalRacers > 4` it is
+  the 1P / GP one, so rows 2..8 do not stack on row 1.
+
+Stock (4 or fewer racers) is unchanged. Applies last.
+
+## decomp-3ds-bui-title-demo-hold.patch (`[ui] bottom_menus`: no attract demo under an open menu flow)
+
+`src/audio/{rom,disk}/external.c`, `PORT`. The title screen arms its attract demo from the title
+BGM's position (and, under the det audio pin, by tick count through `gdx_det_title_demo_step`).
+A bottom-screen menu flow opened on the title (MULTIPLAYER, the name keyboard ...) takes the
+buttons from the game, so the title sees no input and the demo would start under the player.
+The patch ORs `gdx_title_demo_held()` (port/gdx_determinism.c; set by port/3ds/gdx3ds_bui.c while
+a flow is open on the title) into the existing `gdxDetTitleDemoPin` arm guard: held = the pin's
+"never armed" behaviour, and `gdx_det_title_demo_step` does not arm by tick count either. Not
+held (no flow open, and always with bottom_menus=0) the expression is the one before the patch,
+so replays and det runs are unchanged.
+
+## decomp-3ds-mp-stockpick.patch (multiplayer: each player picks with the stock top-screen menus)
+
+`src/game/game.c`, `src/overlays/ovl_i4/machine.c`, `src/overlays/course_select/course_select.c`,
+`PORT`. In a multiplayer room every player picks a machine and engine setting (the host also the
+course) with the game's own 1P MACHINE SELECT / MACHINE SETTINGS / COURSE SELECT, run locally on
+each console (port/3ds/game/gdx3ds_mp_pick_game.c). game.c passes each mode update's result
+through `gdx_mp_pick_filter` (a final confirm is recorded as the player's pick and the confirmed
+screen stays; MACHINE SELECT's B is ignored: a round always ends in a pick), and skips
+`Save_UpdateCourseCharacterSave` while a pick runs.
+machine.c: no `Save_UpdateCharacterSave` read (the engine slider starts at the lobby's value) and
+no menu-BGM stop on the confirm (no race follows it). course_select.c: the X cup (a generated
+course) is hidden as in time attack (`GDX_CS_NO_X_CUP`), and `gdx_mp_pick_course_refused` turns
+the confirm of a course multiplayer cannot race (the EDIT cup, for now) into the error sound.
+Every change is gated on `gdx_mp_pick_active()`, 0 outside a room's picker: single player, replays
+and det runs take the unpatched paths.
+
+## decomp-3ds-font-nullread.patch (a NULL string in a stock font draw: log it, draw nothing)
+
+ovl_i2/font.c: `Font_GetStringWidth` and `Font_DrawString` return 0 / the unchanged display list for
+a NULL string and log `[nullread] <fn> str=NULL caller=<pc> (#n)` (the first 8). The b5f620a New 3DS
+host crash was this read (CourseSelect_NameDraw -> Font_GetStringWidth with gCurrentTrackName NULL
+after the MP pickers restored it, fixed in gdx3ds_mp_pick_game.c). Hardware faults on a NULL read;
+the emulator reads zeros, so the NEARBY gate fails on any `[nullread]` line instead. A valid string
+takes the unpatched path, so det runs are unchanged.
+
+## decomp-3ds-mp-vs-overlay-bounds.patch (MP30: the VS race-over overlays stop at 4 racers)
+
+ovl_i3/menus.c, the VS branch of the race HUD: the per-racer loop (final lap, BOOSTER OK, the
+winner / finish-time / max-speed / retire overlays) ran to gTotalRacers, which mp30 raises to 16 or
+30, while every per-player array it feeds is [4] as in the stock game. Once every player was done
+(D_800E5FBC), Menus_DrawPlayerWinner(i) clamped sPlayerWinnerLoserFinishGameoverTimer[i] to 600 for
+i up to 15, and index 15 is sCourseMinimapTex in the EK link: the bottom-screen race map then read
+from 0x258 and both consoles faulted at the finish (test-combined 90049af). The loop now stops at 4;
+a field of 4 or less (every stock and single-player race) runs exactly as before. Applies last.
+
+## decomp-3ds-o3ds60-mp-hud.patch (o3ds60: `[ui] mp_hud_placement`)
+
+`src/overlays/ovl_i3/menus.c`, `Menus_Draw` only. Applies last. With `[ui] mp_hud_placement = 1`
+(default on both models since mp-polish; `port/3ds/gdx3ds_bottomhud.c`) the HUD placement predicates
+(`port/gdx_hud_placement.c`) answer for an MP fullview race's local view as they do for the 1P
+race, instead of forcing ALL_TOP for `gNumPlayers > 1`; the RANK / SPEED / PORTRAITS / MINIMAP call
+sites already follow them. This patch covers the one call site that did not: when the top HUD is
+suppressed in a fullview build, `Hud_DrawHud` still runs (its fullview body calls every player's HUD
+functions: lap announcements, interval bookkeeping, the reverse warning's SE) and only its display
+list output is rewound -- the 1P path's `Hud_AdvanceLapAnnouncementsOnly(0)` covers player 0's
+announcer alone. Outside fullview (`GDX_FV_K() < 0`) the branch is never taken, so every other
+build and mode is unchanged. Render only: nothing the simulation reads is written.
+
+## decomp-3ds-mp-polish.patch (mp-polish: per-console announcer, BGM stop, MP race camera, settings fill)
+
+`PORT` + 3DS hooks, mostly into `port/3ds/game/gdx3ds_fullview_game.c`. Applies last.
+Hardware report (New 3DS host + Old 3DS guest, d9deb37): "you got boost power plays from host when
+second player crosses a lap, but doesnt play when host crosses a lap after. should play on their
+own screen" and "the changes for the widescreen view may have shifted the camera to be tilted
+'downward'".
+
+- `src/overlays/ovl_i3/hud.c`: the lap-2 (`NA_SE_17`, "you got boost power") and final-lap
+  (`NA_SE_18`) lines are guarded by global once-flags (`sSecondLapStarted` / `sFinalLapStarted`),
+  so the first human to reach the lap fired them -- on every console, since every console runs
+  every player's HUD logic. The four triggers (`Hud_UpdatePlayerHudInfo`,
+  `Hud_AdvanceLapAnnouncementsOnly`) now also require `gdx_fv_announce_for(playerIndex)`: true for
+  every player outside a fullview MP race (stock), only the local player inside one. The flags
+  then latch on the local player's lap, so each console announces its own player's lap.
+- `src/game/racer.c` (finish): stock VS stops the BGM when the first racer finishes; in an MP
+  race the console stops it when its own player finishes (`gdx_fv_local_player()`), as 1P does.
+- `src/game/camera.c` (`Camera_Update`, after `Camera_UpdateFromSettings`): `gdx_fv_cam_reframe`.
+  The VS 2P camera settings (`kWidescreenCameraRaceSettings`, `D_800D544C`) frame a half-height
+  strip: fov 100 vs 1P 75 and frustum centre -15 vs 1P 77, which pitches the view down (horizon
+  near the top of the screen) once fullview shows that view full screen. In a 2P MP session
+  (`[net] mp_fullview_cam`, default 1, part of the sim-ABI word; off-session `[debug]
+  fullview_cam_local=1` with `fullview_player`) the camera's fov and frustum centre are mapped to
+  the 1P values for the same camera setting; distance, pitch and the settings themselves are
+  untouched. Every view of the session takes it, so both consoles' `machineLod` draw masks stay
+  equal (the lockstep digest folds them); the simulation never reads machineLod in a session
+  (decomp-3ds-mp-vis.patch). 1P and local VS without the lever: unchanged.
+- `src/game/object.c` + `src/overlays/ovl_i2/transition.c`: the settings backdrop now fills the
+  frame by default (see decomp-3ds-settings-backdrop-full.patch), past the overscan box the
+  transitions cover with the borders on, so the exit fade / blackout left a grey rim (emulator,
+  O3DS, `race-mutecity-start` tick 3224). `Object_Draw` records the game frame it filled;
+  `Transition_Draw` that frame opens its scissor and takes the borders-removed (full-frame)
+  fills. Every other frame: unchanged.
+
+## decomp-3ds-mp-vs-menu.patch (mp-menus: the VS icon opens the bottom screen's MULTIPLAYER menu)
+
+`src/overlays/ovl_i6/main_menu.c` `MainMenu_Update`, `PORT` builds only. On a 3DS (one pad) the
+SELECT MODE cursor used to skip VS BATTLE (the US arm's rule, and the EK arm's since
+decomp-3ds-ek-vs-onepad.patch), and multiplayer lived behind a MULTIPLAYER tile on the bottom
+screen's Home. Now, while fewer than two controllers are connected and the bottom-screen menus
+offer it (`gdx_mp_vs_menu_available()`, weak, defined by `port/3ds/gdx3ds_bui.c`: `[ui]
+bottom_menus` on), the cursor may rest on VS and A / START there calls `gdx_mp_vs_menu_open()`:
+the bottom screen opens MULTIPLAYER (NEARBY / ONLINE) and the top screen stays on the grid. The
+rooms' races still run as stock VS (`GAMEMODE_VS_2P..4P`, unchanged). Two or more controllers
+(`[debug] pads=N`, a running session) keep the stock VS player-count step, and without the hooks
+(weak NULL) both snaps are the stock rule. Applies last.
+
+## decomp-3ds-unlock-3ds-code.patch (a 3DS-native unlock-everything code at SELECT MODE)
+
+`src/overlays/ovl_i6/main_menu.c` `MainMenu_UnlockEverythingUpdate`, `PORT` builds only. The
+stock code (L, Z, R, C-Up, C-Down, C-Left, C-Right, START at SELECT MODE) cannot be entered on a
+3DS: no 3DS button maps to N64 L (`port/3ds/os/gdx3ds_os_ctru.c`: 3DS L and X are Z) and an Old
+3DS has no C-stick. The patch adds a second code, checked on press edges beside the stock one:
+3DS L, R, D-Up, D-Down, D-Left, D-Right, START (N64 Z, R, D-pad, START). Its completion is the
+stock completion's steps exactly (`gSettingEverythingUnlocked`, `Save_SaveSettingsProfiles`,
+`NA_SE_46`, the background's flourish); the stock code still works. The D-pad moves the SELECT
+MODE cursor while it is typed (harmless). `[unlock] 3ds code ...` lines under the unlock
+diagnostic gate. User-facing: `docs/CHEATS.md`. Applies last.
+
+## decomp-3ds-mp-fullbleed.patch (mp-fullbleed: the MP fullview view full bleed under `[display] widescreen`)
+
+`PORT` + 3DS only, draw layout only. Applies last (after decomp-3ds-mp-polish.patch).
+Hardware report (New 3DS, `[display] widescreen = 1`): the multiplayer race view kept the overscan
+borders while the single-player race was full bleed.
+
+A VS race published the SPLIT widescreen frame kind (`port/input_bridge.c`), so the one
+full-screen fullview view never got `RemoveBorders`: it kept the 296x224 CRT-safe frame (bands
+under `border_mode` 0, a stretched non-5:3 picture under 1-3), while the 1P race renders the whole
+320x240 frame at 5:3. A fullview frame now publishes the 1P kind (`gdx_fv_wide_single_view`,
+`port/3ds/game/gdx3ds_fullview_game.c`; `[net] mp_fullview_wide`, default 1, 0 = the split kind
+as in 06c5264). `RemoveBorders` only opens the `SCISSOR_BOX_FULL_SCREEN` viewport, scissor and CPU
+mirrors (in a VS race only the local view uses that box; every other view keeps its half box and
+is dropped anyway) and the backend's border scale: nothing the simulation or the lockstep digests
+read. This patch moves the local HUD to match:
+
+- `src/overlays/ovl_i3/hud.c` (`Hud_GdxFullviewDrawHud`): Hud_DrawHud case 1's anchor scopes
+  (TIME, timer and energy right; LAP left; interval and reverse centred) when
+  `gdx_widescreen_ui_active()` and `GDX_FV_WIDE_1P(k)`.
+- `src/overlays/ovl_i3/menus.c`: the minimap / rank / speed anchors take the 1P rules for the
+  local view (`GDX_RACE_ANCHOR_NP`), and the fullview portrait takes the 1P portrait's
+  ANCHOR_LEFT.
+
+With `[display] widescreen = 0` (no anchors, no frame kinds) or `mp_fullview_wide = 0` every
+emitted command is as before.
+
+## decomp-3ds-snapshot.patch (mp-snapshot: game-state snapshot / restore, the synctest gate)
+
+`PORT` + 3DS only. Applies last. Step 1 of rollback / run-ahead
+(`artifacts/mp-netcode-research/rollback.md`): the decomp side of `port/3ds/gdx_snapshot.c`
+(contract `port/gdx_snapshot.h`). With `[debug] snap_test = 0` and `snap_probe = 0` (the
+defaults) every hook below is one int test returning 0, and the section attributes only reorder
+objects inside `.bss`: the simulation is unchanged.
+
+The link's script is the installed `3dsx.ld` plus two INCLUDE fragments
+(`port/3ds/gdx3ds_snapshot_{data,bss}.ld`, generated by `port/3ds/gdx3ds_snapshot_ld.cmake`)
+that gather every decomp TU's `.data` / `.bss` / COMMON (audio, framebuffers, RSP buffers, the
+static display-list segment, save buffers and the leo font excluded by file) into one `.data`
+block and one `.bss` block: the snapshot. This patch handles the objects whose FILE belongs in the
+snapshot but which must not be restored, and the side effects a resimulated tick must not repeat:
+
+- `include/gdx_snap_section.h` (new): `GDX_NOSNAP` (boot / course-load tables, watched by the gate:
+  a race tick must not write them), `GDX_NOSNAP_DRAW` (course-load tables the draw pass rewrites
+  every frame before reading them; not watched), `GDX_NOSNAP_SCHED` (scheduler objects; never
+  rewound, not watched). Empty off the 3DS build.
+- `src/sys/sys_main.c`: every thread stack, OSThread, OSMesgQueue and OSMesg buffer ->
+  `GDX_NOSNAP_SCHED`. They describe the same parked state at every tick boundary; rewinding them
+  under the scheduler would corrupt it.
+- `src/sys/math.c` `gSinTable`, `src/sys/sys_gfx.c` `sGdxCourseTrackStage` (a ROM staging buffer),
+  `src/overlays/ovl_i6/options_menu.c` `D_i6_8011FB18` (menu vertex buffers) -> `GDX_NOSNAP`
+  (-35 KB).
+- `src/game/game_context.c` `gSegmentChunks` -> `GDX_NOSNAP_DRAW` (-98 KB). Built at course load;
+  during a race only Course_Draw's chunk cull writes it (`depth` / `drawState`, recomputed for
+  every chunk each frame before Course_Draw / Course_GadgetsDraw read them). The first gate run
+  flagged it as "NOSNAP changed" every window, which is how it got its own class.
+- `src/overlays/ovl_i3/cpu.c` `func_i3_80116C4C`: registers the CPU-AI buffer
+  (`D_i3_8013DBE8`, 0x400 bytes in the RDRAM arena, outside the linked image) as dynamic snapshot
+  slot 0 at every race init.
+- `src/audio/{rom,disk}/lib/thread.c` `AudioThread_QueueCmd`: dropped during a resimulated tick
+  (every command it would queue was already queued by the real tick it repeats). The audio
+  libraries stay OUT of the snapshot: the audio producer thread owns that state, and the simulation
+  only writes it.
+- `src/audio/{rom,disk}/external.c` `Audio_PlayerTriggerSEStart`, `Audio_TriggerSystemSE`,
+  `Audio_Chakuchi`: the one-shot SE gate. Outside a resim it only records (tick, kind, args) while a
+  probe window is open; inside one it suppresses the call and counts whether the real ticks
+  already played it (de-dup) or not (new).
+
+Misses the gate (`[debug] snap_test = 1`: save at a random tick, run N = 1..8 real ticks, restore,
+resimulate them silently, compare the whole image byte for byte) found, and their fixes. The full
+list with the port-side fixes is in `port/3ds/gdx_snapshot.c`'s header:
+
+1. `gSegmentChunks` tripped the NOSNAP watch every window (Course_Draw rewrites `depth` /
+   `drawState`): reclassified `GDX_NOSNAP_DRAW` (above).
+2. Draw-side bytes (Racer `shadowMatrixInit`, course.c's chunk groups, display-list cursors, the
+   texture registry) differed in the heavy stretches of race-gp-cup: the C5TICK hollow build
+   (decomp-3ds-c5tick-dlb.patch's `GDX_DL_HOLLOW()`) follows a frameskip prediction that reads the
+   governor's clock. Port fix: the prediction is a recorded per-tick input.
+3. The texture registry `D_800E33E0` (lazily registered glyphs carve arena memory) differed: the
+   port's arena bump cursor was outside the snapshot. Port fix: it is snapshot state.
+
+The gameplay digest matched in every miss window: all three were draw-side or allocator state.
+
+## decomp-3ds-stereo-sky-margin.patch (3D: the sky / venue floor / clouds reach past each eye's edge)
+
+`src/overlays/ovl_i3/background.c` `Background_Update`, `PORT` builds. Applies last. New 3DS
+report: with the 3D slider all the way up, a band of clear colour at the left and right edges
+of the top screen where the background should be (one edge per eye). The frame-replay eye
+skew (`port/3ds/gfx/STEREO.md`) shifts far geometry sideways by up to the far-plane parallax,
+`[stereo] iod` x slider px per eye (12 px at full slider, up to 40 px with the 3D-depth
+setting). The skybox, venue-floor and cloud quads are built only a few % wider than the screen
+(`horizontalRange`, the PORT `wideFactor` = 1.02 x the hor+ width), so one edge of each eye
+uncovered: the left eye's right edge, the right eye's left edge.
+
+The patch multiplies `horizontalRange` by `1 + gdx3ds_stereo_edge_shift_ndc()` after
+`verticalRange` is fixed (the sky gradient does not stretch). The floor and cloud textures are
+world-anchored and the skybox texture is constant across x, so only the coverage grows. The
+shift (`port/3ds/gfx/gdx3ds_stereo.cpp`) is the largest per-eye skew of this frame in NDC-x
+(`sep` at the far plane, `k*dc` at the near one) and exactly 0 while the right-eye pass is off:
+2D, the Old 3DS default and slider-down frames build byte-identical vertices. Same number of
+quads and triangles in 3D: no draw is added, only the off-screen part of three quads grows (the
+GPU clips it).
+
+Not widened: the course chunk / racer cull (`gdx_get_ultrawide_cull_xscale()`). Tried with the
+same shift added to the `widescreen_cull_pct` margin: +2.5 % track draws/frame at `iod = 12`,
++9 % at `iod = 40`, and not one pixel changed in 116 eye images of the DD-1 replay at either
+setting -- the 1.15 margin already covers the eye shift for chunk centres. Reverted.
+
+Emulator (`gdx-dev retro run --3d --depth-3d 100`, N3DS-EK, DD-1 replay `eksky-gp-dd1-tun`,
+widescreen = 1): at `iod = 40` uncovered bands up to 70 px wide in 81 of the 100 race-eye images;
+with the patch 8, the dark-scenery baseline the detector also flags at `iod = 12`. At the
+default `iod = 12` the margin is nearly used up (13 px on the right in that scene for a 12 px
+shift): the patch closes 1-5 px notches where the floor's far corner meets the right edge of the
+left eye (5 images); on hardware the band reached ~8 px. 2D (no `--3d`, N3DS, race-pause):
+`fhdiff` 373/373 frame hashes identical, all 57 top-screen SHOTs byte-identical.

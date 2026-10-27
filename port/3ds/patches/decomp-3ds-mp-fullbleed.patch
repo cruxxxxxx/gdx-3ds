@@ -1,0 +1,145 @@
+diff --git a/src/overlays/ovl_i3/hud.c b/src/overlays/ovl_i3/hud.c
+--- a/src/overlays/ovl_i3/hud.c
++++ b/src/overlays/ovl_i3/hud.c
+@@ -1195,13 +1195,32 @@
+         if ((j) != (k)) {             \
+             gfx = gdxFvMark;          \
+         }                             \
++    } while (0)
++
++/* mp-fullbleed (decomp-3ds-mp-fullbleed.patch): under the 1P widescreen frame kind the local HUD
++ * takes Hud_DrawHud case 1's anchor scopes (TIME / timer / energy right, LAP left, the interval
++ * and the reverse warning centred); 0 = unanchored (widescreen off, or [net] mp_fullview_wide = 0). */
++#define GDX_FV_ANCHOR_SET(on, mode)          \
++    do {                                     \
++        if (on) {                            \
++            gSPSetExtraGeometryMode(gfx++, mode); \
++        }                                    \
++    } while (0)
++#define GDX_FV_ANCHOR_CLEAR(on, mode)          \
++    do {                                       \
++        if (on) {                              \
++            gSPClearExtraGeometryMode(gfx++, mode); \
++        }                                      \
+     } while (0)
+ 
+ static Gfx* Hud_GdxFullviewDrawHud(Gfx* gfx, s32 k) {
++    extern int gdx_widescreen_ui_active(void); // port/input_bridge.c
+     s32 npi = gNumPlayers - 1;
+     s32 j;
++    s32 wide = gdx_widescreen_ui_active() && GDX_FV_WIDE_1P(k);
+ 
+     Hud_GdxFullviewLayout(k);
++    GDX_FV_ANCHOR_SET(wide, G_EX_WIDESCREEN_ANCHOR_RIGHT);
+ 
+     // Time (the 1P label; pure drawing)
+     gDPPipeSync(gfx++);
+@@ -1217,18 +1236,22 @@
+     for (j = 0; j < gNumPlayers; j++) {
+         GDX_FV_HUD_CALL(j, k, Hud_UpdatePlayerHudInfo(gfx, (j == k) ? 0 : npi, j));
+     }
++    GDX_FV_ANCHOR_CLEAR(wide, G_EX_WIDESCREEN_ANCHOR_RIGHT);
+     for (j = 0; j < gNumPlayers; j++) {
+         GDX_FV_HUD_CALL(j, k,
+                         Hud_UpdateRaceIntervalInfo(gfx, (j == k) ? 0 : npi, j, ((j == k) || (npi < 2)) ? 1.0f : 0.75f));
+     }
+ 
+     // Energy Bar
++    GDX_FV_ANCHOR_SET(wide, G_EX_WIDESCREEN_ANCHOR_RIGHT);
+     gDPPipeSync(gfx++);
+     gDPLoadTextureBlock(gfx++, aHudEnergyTex, G_IM_FMT_RGBA, G_IM_SIZ_16b, 72, 16, 0, G_TX_NOMIRROR | G_TX_WRAP,
+                         G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
+     for (j = 0; j < gNumPlayers; j++) {
+         GDX_FV_HUD_CALL(j, k, Hud_DrawEnergyOutlineRectangle(gfx, (j == k) ? 0 : npi, j));
+     }
++    GDX_FV_ANCHOR_CLEAR(wide, G_EX_WIDESCREEN_ANCHOR_RIGHT);
++    GDX_FV_ANCHOR_SET(wide, G_EX_WIDESCREEN_ANCHOR_LEFT);
+ 
+     // Lap
+     gDPPipeSync(gfx++);
+@@ -1245,10 +1268,13 @@
+     for (j = 0; j < gNumPlayers; j++) {
+         GDX_FV_HUD_CALL(j, k, Hud_DrawLapCounter(gfx, (j == k) ? 0 : npi, j));
+     }
++    GDX_FV_ANCHOR_CLEAR(wide, G_EX_WIDESCREEN_ANCHOR_LEFT);
+ 
++    GDX_FV_ANCHOR_SET(wide, G_EX_WIDESCREEN_ANCHOR_RIGHT);
+     for (j = 0; j < gNumPlayers; j++) {
+         GDX_FV_HUD_CALL(j, k, Hud_DrawEnergyBar(gfx, (j == k) ? 0 : npi, j));
+     }
++    GDX_FV_ANCHOR_CLEAR(wide, G_EX_WIDESCREEN_ANCHOR_RIGHT);
+     for (j = 0; j < gNumPlayers; j++) {
+         GDX_FV_HUD_CALL(j, k, Hud_DrawReverse(gfx, (j == k) ? 0 : npi, j));
+     }
+diff --git a/src/overlays/ovl_i3/menus.c b/src/overlays/ovl_i3/menus.c
+--- a/src/overlays/ovl_i3/menus.c
++++ b/src/overlays/ovl_i3/menus.c
+@@ -28,6 +28,7 @@
+ #define GDX_FV_LOCAL(j) 0
+ #define GDX_FV_NPI(npi, j) (npi)
+ #define GDX_FV_NP(j) gNumPlayers
++#define GDX_FV_WIDE_1P(j) 0
+ #endif
+ 
+ s16 sRaceFinishSaveTriggered;
+@@ -5610,7 +5611,17 @@
+        lap-flash timer (Hud_UpdatePlayerHudInfo), which hud.c must keep anchored the same way. */
+     return (playerIndex < 2) ? G_EX_WIDESCREEN_ANCHOR_LEFT : 0;
+ }
++
++#if defined(PORT) && defined(GDX_PLATFORM_3DS)
++/* mp-fullbleed (decomp-3ds-mp-fullbleed.patch): the anchor rules above for player `j`'s overlays.
++   A fullview frame that publishes the 1P widescreen kind (RemoveBorders, the whole 5:3 frame) is
++   anchored like the 1P race; every other frame, and [net] mp_fullview_wide = 0, keeps the split
++   rules. Draw layout only. */
++#define GDX_RACE_ANCHOR_NP(j) (GDX_FV_WIDE_1P(j) ? 1 : gNumPlayers)
++#else
++#define GDX_RACE_ANCHOR_NP(j) gNumPlayers
+ #endif
++#endif
+ 
+ Gfx* Menus_Draw(Gfx* gfx) {
+     s32 i = 0;
+@@ -5797,7 +5808,15 @@
+                     if (GDX_FV_LOCAL(i) && gdxHudPortraitsOnTop) {
+                         /* fullview: the local player's portrait + place at the 1P slot (hud.c) */
+                         extern Gfx* Hud_GdxFullviewDrawPortrait(Gfx* gfx, s32 k);
++                        /* mp-fullbleed: the 1P portrait's ANCHOR_LEFT under the 1P widescreen kind */
++                        s32 gdxFvPortraitAnchor = gdxWideHud && GDX_FV_WIDE_1P(i);
++                        if (gdxFvPortraitAnchor) {
++                            gSPSetExtraGeometryMode(gfx++, G_EX_WIDESCREEN_ANCHOR_LEFT);
++                        }
+                         gfx = Hud_GdxFullviewDrawPortrait(gfx, i);
++                        if (gdxFvPortraitAnchor) {
++                            gSPClearExtraGeometryMode(gfx++, G_EX_WIDESCREEN_ANCHOR_LEFT);
++                        }
+                     }
+ #endif
+                     if ((gGameMode != GAMEMODE_DEATH_RACE) && (sPlayerGameoverState[i] == PLAYER_GAMEOVER_NONE) &&
+@@ -5807,7 +5826,7 @@
+ #endif
+                     ) {
+ #ifdef PORT
+-                        gdxRaceAnchor = GdxRaceMinimapAnchor(gNumPlayers, i, gdxWideHud, gdxWideSplitHud);
++                        gdxRaceAnchor = GdxRaceMinimapAnchor(GDX_RACE_ANCHOR_NP(i), i, gdxWideHud, gdxWideSplitHud);
+                         if (gdxRaceAnchor != 0) {
+                             gSPSetExtraGeometryMode(gfx++, gdxRaceAnchor);
+                         }
+@@ -5851,7 +5870,7 @@
+                     if (gdxHudRankOnTop) {
+ #endif
+ #ifdef PORT
+-                    gdxRaceAnchor = GdxRacePositionAnchor(gNumPlayers, i, gdxWideHud, gdxWideSplitHud);
++                    gdxRaceAnchor = GdxRacePositionAnchor(GDX_RACE_ANCHOR_NP(i), i, gdxWideHud, gdxWideSplitHud);
+                     if (gdxRaceAnchor != 0) {
+                         gSPSetExtraGeometryMode(gfx++, gdxRaceAnchor);
+                     }
+@@ -5873,7 +5892,7 @@
+ #endif
+                 ) {
+ #ifdef PORT
+-                    gdxRaceAnchor = GdxRaceSpeedAnchor(gNumPlayers, i, gdxWideHud, gdxWideSplitHud);
++                    gdxRaceAnchor = GdxRaceSpeedAnchor(GDX_RACE_ANCHOR_NP(i), i, gdxWideHud, gdxWideSplitHud);
+                     if (gdxRaceAnchor != 0) {
+                         gSPSetExtraGeometryMode(gfx++, gdxRaceAnchor);
+                     }

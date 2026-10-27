@@ -2909,8 +2909,8 @@
           "bg": null,
           "touch": false,
           "action": null,
-          "source": "gdx3ds_bottomhud.c:430-447 DashDimBackground, :666-672 DashPaintBaked, gdx3ds_bottomhud_assets.h kDashAsset_background",
-          "notes": "UNCERTAIN exact colour: this is a baked pink checker-pattern texture (kDashAsset_background, 320x240 RGB565), darkened ~35% and desaturated ~20% toward its own luma by DashDimBackground at bake time. #7A5566 is a rough average guess, not a decoded pixel value. Painted once per race (sWasValid 0->1 edge), not every tick."
+          "source": "gdx3ds_bottomhud.c:430-447 DashDimBackground, :666-672 DashPaintBaked, gdx3ds_hudbake.h gDashAssetBackground",
+          "notes": "UNCERTAIN exact colour: this is a baked pink checker-pattern texture (gDashAssetBackground, 320x240 RGB565), darkened ~35% and desaturated ~20% toward its own luma by DashDimBackground at bake time. #7A5566 is a rough average guess, not a decoded pixel value. Painted once per race (sWasValid 0->1 edge), not every tick."
         },
         {
           "id": "dash-header-panel",
@@ -2924,7 +2924,7 @@
           "bg": null,
           "touch": false,
           "action": null,
-          "source": "sDashWidgets['header'] (DASHW_HEADER), gdx3ds_bottomhud_assets.h kDashAssetWidgets['header'], gdx3ds_bottomhud.c:DashPaintHeaderLive",
+          "source": "sDashWidgets['header'] (DASHW_HEADER), gdx3ds_hudbake.h kDashAssetWidgets['header'], gdx3ds_bottomhud.c:DashPaintHeaderLive",
           "notes": "Baked backdrop (flat panel + chrome) with two live text zones cut into it via DashBakeSkipCell: col<150 (course name) and col>=230 (racer count); cols 150-229 stay baked chrome. Both live zones are now painted together, dirty-checked, by a single DashPaintHeaderLive function (hardware feedback round item 5 folded the racer-count fix into the same widget as the pre-existing course-name live text)."
         },
         {
@@ -3060,7 +3060,7 @@
           "touch": false,
           "action": null,
           "source": "gdx3ds_bottomhud.c DashPaintStandingsPortraits (kDashGlyphPortrait[snap->top5Character[0]], num=7 den=8 -> 28x28)",
-          "notes": "NEW (hardware feedback round item 2): real character portrait texture, extracted at build time from the game's own .o2r archive (tools/gen_nibottom_bottomhud_glyphs.py PORTRAIT_NAMES, matching gCharacterPortraitTextures[] order) and keyed live by whichever racer currently holds this standings row. Top-2 rows (this one and row 1) are drawn bigger (28x28) than rows 2-4 (20x20), per the hardware note's 'top 2 racers have bigger portraits' framing. Cell is flat-filled (#1A1041-ish, 0x1041 RGB565) first so empty rows (fewer than 5 live racers) still read cleanly."
+          "notes": "NEW (hardware feedback round item 2): real character portrait texture, baked at boot from the user's own .o2r archive (gdx3ds_hudbake.c kPortraitTexName, matching gCharacterPortraitTextures[] order) and keyed live by whichever racer currently holds this standings row. Top-2 rows (this one and row 1) are drawn bigger (28x28) than rows 2-4 (20x20), per the hardware note's 'top 2 racers have bigger portraits' framing. Cell is flat-filled (#1A1041-ish, 0x1041 RGB565) first so empty rows (fewer than 5 live racers) still read cleanly."
         },
         {
           "id": "dash-standings-swatch-0",
@@ -3284,7 +3284,7 @@
           "bg": null,
           "touch": false,
           "action": null,
-          "source": "sDashWidgets['lap'] (DASHW_LAP), gdx3ds_bottomhud_assets.h kDashAssetWidgets['lap'], gdx3ds_bottomhud.c DashBakeSkipCell",
+          "source": "sDashWidgets['lap'] (DASHW_LAP), gdx3ds_hudbake.h kDashAssetWidgets['lap'], gdx3ds_bottomhud.c DashBakeSkipCell",
           "notes": "Baked label (aLapTex), painted once per race. Widget moved down 26px (y 26->52) this round to make room for the new KO-stars box above it (see dash-ko-stars-box)."
         },
         {
@@ -3314,7 +3314,7 @@
           "bg": null,
           "touch": false,
           "action": null,
-          "source": "sDashWidgets['timer'] (DASHW_TIMER), gdx3ds_bottomhud_assets.h kDashAssetWidgets['timer'], gdx3ds_bottomhud.c DashBakeSkipCell",
+          "source": "sDashWidgets['timer'] (DASHW_TIMER), gdx3ds_hudbake.h kDashAssetWidgets['timer'], gdx3ds_bottomhud.c DashBakeSkipCell",
           "notes": "Baked label (aHudTimeTex). Widget moved down 26px (y 59->85) this round, same KO-stars-box reshuffle as dash-lap-label."
         },
         {
@@ -3344,7 +3344,7 @@
           "bg": null,
           "touch": false,
           "action": null,
-          "source": "sDashWidgets['timer'] (DASHW_TIMER), gdx3ds_bottomhud_assets.h kDashAssetWidgets['timer'], gdx3ds_bottomhud.c DashBakeSkipCell",
+          "source": "sDashWidgets['timer'] (DASHW_TIMER), gdx3ds_hudbake.h kDashAssetWidgets['timer'], gdx3ds_bottomhud.c DashBakeSkipCell",
           "notes": "Baked label (aBestTex)."
         },
         {
@@ -3374,7 +3374,7 @@
           "bg": null,
           "touch": false,
           "action": null,
-          "source": "sDashWidgets['gap'] (DASHW_GAP), gdx3ds_bottomhud_assets.h kDashAssetWidgets['gap'], gdx3ds_bottomhud.c DashBakeSkipCell",
+          "source": "sDashWidgets['gap'] (DASHW_GAP), gdx3ds_hudbake.h kDashAssetWidgets['gap'], gdx3ds_bottomhud.c DashBakeSkipCell",
           "notes": "Baked label (Font2). Widget moved down 26px (y 129->155) this round, same KO-stars-box reshuffle as dash-lap-label/dash-time-label."
         },
         {
@@ -3449,7 +3449,7 @@
           "bg": null,
           "touch": false,
           "action": null,
-          "source": "sDashWidgets['energy_bar'] (DASHW_ENERGY_BAR), gdx3ds_bottomhud.c DashPaintEnergyFrame, gdx3ds_bottomhud_assets.h kDashAssetWidgets['energy_bar']",
+          "source": "sDashWidgets['energy_bar'] (DASHW_ENERGY_BAR), gdx3ds_bottomhud.c DashPaintEnergyFrame, gdx3ds_hudbake.h kDashAssetWidgets['energy_bar']",
           "notes": "FIXED (hardware feedback round item 1): \"Energy bar isn't flat... it has 'overflow' that is cut off on top.\" The baked art for this widget turned out to be a frozen flattened screenshot (not a reusable empty frame), so cols 54+ (the whole frame/fill zone) are now skipped at bake time and replaced with a small procedural flat panel (DashFillRect, fill #3885) + pink border (DashStrokeRect, #FB76) drawn once per race -- chosen over resizing/cropping the baked art because the baked pixels simply didn't contain a clean frame to crop to. Cols 7-53 (the 'ENERGY' label) stay baked, since that part of the original art was clean. The live fill rect inside the frame is unchanged -- see dash-energy-bar-fill."
         },
         {
@@ -3486,7 +3486,7 @@
           "bg": null,
           "touch": false,
           "action": null,
-          "source": "gdx3ds_bottomhud.c DashPaintBackdropBackground (factored out of DashPaintBaked), gdx3ds_bottomhud_assets.h kDashAsset_background",
+          "source": "gdx3ds_bottomhud.c DashPaintBackdropBackground (factored out of DashPaintBaked), gdx3ds_hudbake.h gDashAssetBackground",
           "notes": "Identical bake and dimming as dash-background in the 'dash' screen -- the SAME 150 KB RGB565 checker texture, reused as-is (see this screen's own top-level notes). UNCERTAIN exact colour, same caveat as dash-background."
         },
         {

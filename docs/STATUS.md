@@ -26,6 +26,7 @@ per console. "Verified" means run and checked on a physical console, not just an
 | Local multiplayer (2–4 player split-screen) | 🟡 — plays; not soak-tested on hardware | 🟡 — plays; not soak-tested on hardware |
 | Stereoscopic 3D (3D slider) | 🟡 — on by default (part of `o3ds-auto`); plays, not yet a locked 60 fps, exact hardware figure not confirmed for this release | ⚪ — on by default (part of `n60`); supported in code, not separately hardware-measured yet |
 | HOME menu / sleep / power-off | ✅ | ✅ |
+| True widescreen races (`[display] widescreen = 1`, default off; from the PC port's widescreen options) | ⚪ — emulator-tested; costs frame rate in crowded races, hardware test pending | ⚪ — emulator-tested (2D, 3D, VS); hardware test pending |
 
 ## Native renderer (on by default on both consoles)
 

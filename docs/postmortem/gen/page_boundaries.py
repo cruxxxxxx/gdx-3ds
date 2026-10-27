@@ -7,62 +7,15 @@ def link(url, text):
 
 def build(D):
     b = []
-    b.append('<p class="eyebrow">07 · Pushing the boundaries</p><h1>Pushing the boundaries</h1>')
-    b.append('<p class="lede">Two comparisons. First against this port\'s own New 3DS build: what the Old 3DS forced that the New 3DS '
-             'never needed, and what comes back the other way. Then against other N64 projects on the 3DS, from their own READMEs and '
-             'press, each claim linked. Where we could not check something, the page says so.</p>')
-
-    b.append('<h2>Against our own New 3DS build</h2>')
-    b.append('<p>The first phase (2026-08-11 to 09-03) shipped the New 3DS build on a render-thread approach: '
-             'libultraship\'s display-list interpreter, moved to its own CPU core so it runs a frame ahead of the game. '
-             'The Old 3DS has no second core to give that interpreter, so the second phase (09-07 to 10-19) built a '
-             'different route: a native renderer that skips the per-frame display-list walk for the geometry a race '
-             'spends its time on. At v1.0.0, with no <code>gdiffuser.ini</code>, that native renderer is the default on '
-             'both consoles: <code>[perf] preset = auto</code> resolves the New 3DS to the same n60 lever set as the Old '
-             '3DS, render thread off. The render-thread path is still built in and reachable with an explicit ini. The '
-             'table below compares the two approaches on their own terms.</p>')
-    b.append(table(["", "New 3DS build", "Old 3DS build"], [
-        ["Race renderer", "libultraship's display-list interpreter (Fast3D) on its own CPU core, one frame ahead of the game — the first-phase architecture, still built in and reachable with an explicit ini, but not the v1.0.0 default (see note above)", "The native renderer: one small loop per race category over a game-state snapshot, writing PICA200 command words directly; the interpreter remains for menus and the long tail of other screens"],
-        ["What limits the frame", "CPU instruction count in the interpreter and the bridge that feeds it (the GPU itself was not the bottleneck: about 0.4 ms per frame in the emulator)", "Instruction-cache misses, not instruction count: at 268 MHz with no L2 cache, the render path ran at 4.34 cycles per instruction with 43.6% of cycles stalled on instruction fetch, so the interpreter's own code did not reliably fit the 16 KB L1 instruction cache"],
-        ["Cores", "A render thread on the second core, one frame ahead of the game, when that path is selected; core 2 backs the audio threads under the v1.0.0 default (native renderer, render thread off)", "No second core. One core does everything but audio, which gets a 60% share of the other (raised from an initial 30% default after a hardware A/B showed 30% caused heavy audio padding)"],
-        ["Memory", "124 MB app-mode budget, 16 MiB RDRAM arena", "64 MB app-mode budget (half the console's 128 MB FCRAM is reserved for the system); RDRAM arena halved to 8 MiB plus a 16 MiB linear-heap pin, 38.9 MB of heap left for the game"],
-        ["Audio", "Headroom to spare in the synthesis budget", "Synthesis' CPU share was tight enough against that grant that it was raised from an initial 30% to 60% during the port: narrowing the audio lock (−20 ms of race-wall waiting per frame) and hand-tuned ARMv6 SIMD decode kernels (2.2× cheaper) closed the gap"],
-        ["Stereo 3D", "Per draw: the packed vertex buffers replayed with a second matrix for the right eye — the first-phase mechanism, used when the render-thread path is selected; the v1.0.0 default uses the Old 3DS's per-frame mechanism instead (next column)", "Per frame: the recorded command stream resubmitted for the right eye with a per-eye uniform, interleaved in chunks, with its own swap-pacing mode"],
-        ["Hardware result", "Full Grand Prix, end of the first phase: median " + esc(D["final_median"]) + " fps, p10 " + esc(D["final_p10"]) + ", " + esc(D["final_cap"]) + " of frames at the 60 cap", "16.5 ms median frame time on a full 2D Grand Prix race, 0 hitches; 59–60 fps in 3D on most Grand Prix courses, with the heaviest courses (Silence, Sand Ocean) able to trip the frame-skip safety net to a steady 30 fps mid-race — see <a href=\"old-3ds.html\">Old 3DS</a> for the full campaign. Measured with a different harness (frame time and a vblank-hold share, not the fps/p10/cap-% stats above), so not directly stacked against the New 3DS row"],
-        ["Correctness gate", "Exact parity with the interpreter checked for every performance lever, on and off", "The game's own per-tick state hash must match exactly; pixels are checked within a tolerance; an on-console verify mode re-checks every GPU command word the native path writes"],
-    ]))
-    b.append('<h3>What the Old 3DS forced that the New 3DS never needed</h3>')
-    b.append('<ul>'
-             '<li><b>Leaving the display list in races.</b> On the New 3DS, a faster interpreter on its own core was enough. On a CPU a third '
-             'the clock speed with no L2 cache, it was not: the interpreter\'s own code did not reliably fit in cache, so races stopped walking '
-             'the display list at all.</li>'
-             '<li><b>A hardware profiler.</b> Emulator timings stopped predicting hardware results on the Old 3DS, because the emulator used '
-             'does not model the instruction cache, the console\'s memory permissions, or how long some operations actually take to complete. '
-             'Several Old 3DS regressions (a performance round that showed no gain on hardware after winning in the emulator, an early build '
-             'that froze on boot, a boot crash traced to a VRAM framebuffer the CIA maps read-only) only came to light once a real hardware '
-             'performance counter, or the console itself, was read.</li>'
-             '<li><b>A memory diet.</b> A smaller RAM arena, streamed rather than fully-resident audio data, capped texture uploads, a pinned '
-             'heap layout, and a high-water-mark measurement in place of a free-list number that had been misread as headroom. Even after the '
-             'diet, the Old 3DS build has a memory ceiling: a single large asset load can still exhaust the budget on heavy content, which is '
-             'listed as a known issue for this release.</li>'
-             '<li><b>Frame pacing as a design problem.</b> With only a millisecond or two of margin per frame, when the screen swap is '
-             'requested matters as much as the work done before it: a dedicated swap gate, an end-of-frame mode, and a race-scoped frame-skip '
-             'guard that knows not to trip during an intro.</li>'
-             '</ul>')
-    b.append('<h3>What carries back to the New 3DS</h3>')
-    b.append(table(["Change", "Status on the New 3DS"], [
-        ["A fix for a freeze when backlight/HOME handling toggled the screen off", "Applies to both models. The New 3DS build never showed the freeze in practice, because no New 3DS HOME test happened to run with the bottom screen off"],
-        ["A save-persistence fix for a rare corrupted save on power loss", "The underlying cause is in how the SD card's filesystem handles a file rename, not anything model-specific, so the New 3DS build is believed to carry the same fix; not separately confirmed on a New 3DS log"],
-        ["A never-blocking file log and hitch-detection receipts", "Model-independent; applies to both"],
-        ["The native renderer, NRR, the per-eye stereo resubmit, and the end-of-frame pacing/frame-skip stack built for the Old 3DS", "Carried back as the v1.0.0 default: with no ini, <code>preset = auto</code> resolves the New 3DS to the same n60 lever set, render thread off. An explicit ini can still select the old render-thread/per-draw-stereo path instead"],
-        ["The two audio tuning levers added for the Old 3DS's tighter CPU-share budget (<code>audio_ctx_narrow</code>, <code>audio_simd</code>)", "Also on by default for the New 3DS now, bundled into the same n60 preset, even though the New 3DS was never short on audio headroom"],
-        ["The Old 3DS's reduced-memory build profile", "Off for the New 3DS build, which is otherwise unchanged by the Old 3DS work"],
-    ]))
-
-    b.append('<h2>Against the field</h2>')
-    b.append('<p>Searched on 2026-10-08, with results still current at release. Every row is what the project or the press says about '
-             'itself; none of these figures were measured by us, and the games differ in load, so this is not a benchmark. Our own figures '
-             'come from our hardware logs.</p>')
+    b.append('<p class="eyebrow">06 · Pushing the boundaries</p><h1>Pushing the boundaries</h1>')
+    b.append('<p class="lede">How this port compares with other N64 projects on the 3DS, from their own READMEs and press, each claim '
+             'linked. Searched on 2026-10-08, still current at release. None of their figures were measured by us, and the games '
+             'differ in load, so this is a comparison of claims, not a benchmark.</p>')
+    R0 = [["<b>G-Diffuser 3DS (this project)</b>", '<a href="native.html">The road to 60, all over again</a>',
+           "F-Zero X decomp on libultraship; own F3DEX2 walker plus a native race renderer writing PICA200 command words",
+           "Old 3DS: 2D races at 60 (median frame 16.5 ms); 3D 59–60 on most courses, CPU-bound, some step to 30. New 3DS: 3D races at 60 "
+           "in every window. Native 60 Hz logic, no interpolation (our hardware logs)",
+           "Yes"]]
     R = [
         ["Super Mario 64 3DS port (mkst)", link("https://github.com/mkst/sm64-port/tree/3ds-port", "mkst/sm64-port, branch 3ds-port"),
          "Decomp PC port; renderer details not in the README",
@@ -96,7 +49,8 @@ def build(D):
         ["Star Fox 64 3D (2011)", link("https://www.nintendolife.com/reviews/2011/09/star_fox_64_3d_3ds", "Nintendo Life review"),
          "Remake", "Numeric frame rate: not found", "Yes"],
     ]
-    b.append(table(["Project", "Source", "Approach", "What it says about Old / New 3DS performance", "Stereo 3D"], R))
+    b.append('<h2>The field</h2>')
+    b.append(table(["Project", "Source", "Approach", "What it says about Old / New 3DS performance", "Stereo 3D"], R0 + R))
     b.append('<h3>What we can and cannot say</h3>')
     b.append('<ul>'
              '<li>We found no other N64 decompilation, recompilation or emulator project on the 3DS that claims a sustained 60 fps on an '
@@ -105,7 +59,8 @@ def build(D):
              '<li>Every renderer we found interprets N64 display lists (Fast3D / F3DEX2 translated to citro3d). We found none that, like this '
              'project\'s native renderer, skips display-list construction for whole categories of geometry and writes precomputed PICA200 '
              'command words instead.</li>'
-             '<li>Our 60 is <b>race-only</b>: menus still run on the interpreter with frame skipping, and the post-race results table is '
+             '<li>Our 60 was <b>race-only</b> at v1.0.0: menus ran on the interpreter with frame skipping. Since v1.1.0 the menus, '
+             'transitions, course select and machine select draw natively too; the post-race results table is '
              'still heavy. Several of the projects above target the whole game and interpolate instead; that is a different trade, not a lesser one.</li>'
              '<li>No other native F-Zero X port on the 3DS was found. Wololo (2020), citing a Reddit compatibility list, names F-Zero X among the games with "playable performance" on the New 3DS under DaedalusX64.</li>'
              '<li>Not verified: Old 3DS frame rates for the SM64 port and DaedalusX64 (the sources are forum threads that returned HTTP 403), '

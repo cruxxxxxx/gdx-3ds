@@ -255,12 +255,12 @@ void ResolveHleFast() {
     // `rshift = (scale < 12) ? 12 - scale : 0` clamp. Found against this ROM's own
     // race-mutecity-start capture (a scale-13 frame, tick 2): unclamped, this file's
     // `nibble << shift` overshoots by 1-3 bits past mupen's reference, exactly 2x on the
-    // reported sample. n60-3d12: default ON on Old 3DS (card n60-3d11 "ALL",
-    // hardware-confirmed), off on New 3DS, unchanged; `adpcm_scale_clamp = 0` in the ini still
-    // forces the old unclamped shift on either model.
-    const int adpcmScaleClampDefault = gdx3ds_is_old3ds();
-    const int adpcmScaleClamp =
-        gdx3ds_config_get_int("debug", "adpcm_scale_clamp", adpcmScaleClampDefault) != 0 ? 1 : 0;
+    // reported sample. n60-3d12 made it default ON on Old 3DS (card n60-3d11 "ALL",
+    // hardware-confirmed). v1.0.1: default ON on New 3DS too -- the overshoot is a decode bug
+    // in the ROM's own ADPCM data, not a CPU-budget trade, and v1.0 New 3DS players reported
+    // exactly its symptom (crackle, worst on SFX transients). `adpcm_scale_clamp = 0` in the
+    // ini still forces the old unclamped shift on either model.
+    const int adpcmScaleClamp = gdx3ds_config_get_int("debug", "adpcm_scale_clamp", 1) != 0 ? 1 : 0;
     gdx_audio_hle_set_adpcm_scale_clamp(adpcmScaleClamp);
     if (adpcmScaleClamp) {
         gdx_port_logf("[audiocrk] adpcm_scale_clamp=1: A_ADPCM residual shift capped at 12 for "

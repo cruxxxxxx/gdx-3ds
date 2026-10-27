@@ -1,0 +1,225 @@
+# race-vs2p-results: VS BATTLE 2 PLAYERS to the VS results (plan S6).
+# Needs --ini debug.pads=2 --ini debug.autodrive=1. The walk is
+# race-4p-vs.gdxs with both player-count DOWNs released (2P).
+# Port 2 mirrors port 1 (input_bridge.c): A held + stick right
+# from 3300 drives P2 into the wall until it RETIREs (~5400);
+# autodrive=1 takes P1 (racer 0) over the 3 laps of MUTE CITY.
+# P1 crosses the line ~9800: the WINNER card per view, then the
+# VS TOTAL RANKING table with its Select Course / Quit menu
+# (A at 9200..10400 walks it). 10900 DOWN (Quit), 11000 UP,
+# 11100 A: Select Course, back to COURSE SELECT (mode 10).
+# SHOTs hand-placed: every 300 ticks of the race, every 100
+# around the finish and the result screens.
+build ni-strict-census@bbd92ab
+seed1 0x1234abcd
+seed2 0x0fedcba9
+pins renderthread=0 det=1 pads=2 autodrive=1
+at 400
+press START 15 0
+at 660
+press RIGHT 12 0
+at 760
+press RIGHT 12 0
+at 860
+press RIGHT 12 0
+at 960
+wait 1
+at 1060
+press A 12 0
+at 1180
+wait 1
+at 1240
+wait 12
+at 1320
+wait 12
+at 1420
+wait 1
+at 1480
+press A 12 0
+at 1600
+wait 1
+at 1660
+press A 15 0
+at 1790
+wait 1
+at 1910
+press A 15 0
+at 2040
+wait 1
+at 2160
+press A 15 0
+at 2290
+wait 1
+at 2410
+press A 15 0
+at 2540
+wait 1
+at 2660
+press A 15 0
+at 2790
+wait 1
+at 2910
+press A 15 0
+at 3040
+wait 1
+at 3160
+press A 15 0
+at 3290
+wait 1
+at 3300
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+hold A 80 35 0
+at 6001
+wait 1
+shot v6000
+at 6301
+wait 1
+shot v6300
+at 6601
+wait 1
+shot v6600
+at 6901
+wait 1
+shot v6900
+at 7201
+wait 1
+shot v7200
+at 7501
+wait 1
+shot v7500
+at 7801
+wait 1
+shot v7800
+at 8101
+wait 1
+shot v8100
+at 8401
+wait 1
+shot v8400
+at 8701
+wait 1
+shot v8700
+at 9001
+wait 1
+shot v9000
+at 9200
+press A 12 0
+at 9350
+wait 1
+shot v9350
+at 9450
+wait 1
+shot v9450
+at 9550
+wait 1
+shot v9550
+at 9600
+press A 12 0
+at 9650
+wait 1
+shot v9650
+at 9750
+wait 1
+shot v9750
+at 9850
+wait 1
+shot v9850
+at 9950
+wait 1
+shot v9950
+at 10000
+press A 12 0
+at 10050
+wait 1
+shot v10050
+at 10150
+wait 1
+shot v10150
+at 10250
+wait 1
+shot v10250
+at 10350
+wait 1
+shot v10350
+at 10400
+press A 12 0
+at 10450
+wait 1
+shot v10450
+at 10550
+wait 1
+shot v10550
+at 10650
+wait 1
+shot v10650
+at 10750
+wait 1
+shot v10750
+at 10850
+wait 1
+shot v10850
+at 10900
+press DOWN 12 0
+at 10950
+wait 1
+shot v10950
+at 10960
+wait 1
+shot rank_quit
+at 11000
+press UP 12 0
+at 11050
+wait 1
+shot v11050
+at 11060
+wait 1
+shot rank_select
+at 11100
+press A 12 0
+at 11150
+wait 1
+shot v11150
+at 11250
+wait 1
+shot v11250
+at 11350
+wait 1
+shot v11350
+at 11450
+wait 1
+shot v11450
+at 11550
+wait 1
+shot v11550
+at 11650
+wait 1
+shot v11650
+len 11800

@@ -82,6 +82,9 @@ devdocs/
 
 # Session build/scratch artifacts
 build_x64/
+# Local dev reports and hardware logs (tools/dev/gdxdev/hwrun.py writes artifacts/hw-*.log); never
+# part of the published tree.
+/artifacts/
 __pycache__/
 .allyrc
 

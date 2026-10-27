@@ -116,6 +116,25 @@ int gdx3ds_nrr_ni_view(int cat);
 /* 1 when a non-race 3D scene may open its scope (c5tick gdx_dl_scene): the master on, the records bit,
  * one view. */
 int gdx3ds_nrr_scene_ok(void);
+/* ni_view bit 11 (native-vs): [native] ni_race's span programs also run in the frames of a 2-4P race
+ * (VS, the 2P/4P attract demos), whose walk between the markers is otherwise the stock walker
+ * (NiRaceScope, gdx_rt_glue.cpp, refuses VS 2P-4P without it). Needs ni_race on; independent of the
+ * category bits (a span is the root words between whatever markers the frame has). */
+#define NRR_NI_VIEW_RACE 0x800
+/* o3ds60 [native] ni_fullview (default 0; the Old 3DS preset 0x97A = trk sky dress shd fx deco +
+ * the race spans): ni_view's bits that also apply while the race is drawn MP fullview (one local
+ * view of a 2-4P lockstep race, full screen: game/gdx3ds_fullview_game.c), so that view takes the
+ * NRR the 1P race takes instead of the interpreter. Read: the category bits (NRR_NI_FULLVIEW_CATS,
+ * game side, inside Race_Draw's fullview latch) and NRR_NI_VIEW_RACE (render side, with
+ * [native] ni_race: the span programs in a frame whose race runs fullview; gdx_rt_glue.cpp). The
+ * records bit stays ni_view's. Render only (the views' visibility pass and every simulation read
+ * are unchanged). Receipt: `[nrr] init ... ni_fullview=0x...`, `[nirace] init ... fv=1`. */
+#define NRR_NI_FULLVIEW_CATS 0x1FF
+#define NRR_NI_FULLVIEW_BITS (NRR_NI_FULLVIEW_CATS | NRR_NI_VIEW_RACE)
+/* 1 when the master is on and ni_fullview has NRR_NI_VIEW_RACE. */
+int gdx3ds_nrr_ni_fullview_race(void);
+/* 1 when the master is on and ni_view has NRR_NI_VIEW_RACE. */
+int gdx3ds_nrr_ni_view_race(void);
 /* A category's view scope: 1 for the 1P race's view 0, and for view `view` < `players` of a 2-4P race
  * when [native] ni_view has the category's bit; 0 otherwise. `players` = the game's gNumPlayers. */
 int gdx3ds_nrr_view_ok(int cat, int view, int players);
@@ -349,6 +368,15 @@ void NrrDraw2DScene(NrrCtx* c, const float* verts, uint32_t nVerts);
  * takes the [anchor] class (the depth of the machine it labels) instead of screen depth -- the
  * per-draw loop's rule for the same rectangle. A no-op in mono. */
 void NrrStereoAnchor(NrrCtx* c, float primDepth);
+/* mstereo [stereo] menu_depth: the next 2D draw (`*verts`, `*nVerts` packed vertices) of a menu frame
+ * takes its coverage layer's row (gdx3ds_stereo_menu_ui_row). A batch whose rectangles change layer
+ * (gdx3ds_stereo_menu_run_end) is drawn here run by run, each at its own row, up to
+ * its last run, and `*verts` / `*nVerts` are advanced to that last run, which the caller draws.
+ * Cold; a no-op outside a stereo replay frame. */
+void NrrStereoMenuRow(NrrCtx* c, float** verts, uint32_t* nVerts);
+uint32_t gdx3ds_stereo_menu_run_end(const float* verts, uint32_t nVerts, uint32_t stride, uint32_t first);
+/* 1 while the open frame takes the menu depth layout (gdx3ds_stereo.h). */
+int gdx3ds_stereo_menu_frame(void);
 /* gpuxf draw: upload the 28-vec4 uniform block (shadowed), bind verts, indexed draw. idx may
  * live in the ring or in resident linear memory. The projection uniform holds the backend's 3D
  * scene map for a mono draw (the fixup, or the border mode's scene matrix) -- [n60mach]: it used

@@ -4,6 +4,7 @@
 
 #include <string.h>
 
+#define GDX_STEADY_UP_PCT_DEFAULT 80u /* a step up needs the p90 render to fit D-1 at 80% */
 #define GDX_STEADY_UP_DWELL_TICKS 120u /* ~2 s of logic at the current D before stepping up */
 #define GDX_STEADY_UP_DWELL_MAX_TICKS 960u /* the backoff cap: ~16 s */
 #define GDX_STEADY_STABLE_TICKS 1200u /* ~20 s at one D resets the backoff */
@@ -30,10 +31,59 @@ void gdx_steady_init(GdxSteadyCtl* ctl, int dMin, int dMax, int dStart, uint64_t
     ctl->margin = margin;
     ctl->upDwell = GDX_STEADY_UP_DWELL_TICKS;
     ctl->robust = 1;
+    ctl->upPct = GDX_STEADY_UP_PCT_DEFAULT;
+    ctl->d1HoldSlots = 16u;
 }
 
 void gdx_steady_set_robust(GdxSteadyCtl* ctl, int on) {
     ctl->robust = on ? 1 : 0;
+}
+
+void gdx_steady_set_up_pct(GdxSteadyCtl* ctl, unsigned pct) {
+    if (pct < 50u) {
+        pct = 50u;
+    } else if (pct > 100u) {
+        pct = 100u;
+    }
+    ctl->upPct = pct;
+}
+
+void gdx_steady_set_d1_hold_pct(GdxSteadyCtl* ctl, unsigned pct) {
+    ctl->d1HoldPct = pct > 100u ? 100u : pct;
+}
+
+void gdx_steady_set_d1_hold_slots(GdxSteadyCtl* ctl, unsigned slots) {
+    if (slots < 16u) {
+        slots = 16u;
+    } else if (slots > 64u) {
+        slots = 64u;
+    }
+    ctl->d1HoldSlots = slots;
+}
+
+void gdx_steady_set_d1_retry(GdxSteadyCtl* ctl, unsigned long ticks, unsigned pct) {
+    if (pct < 50u) {
+        pct = 50u;
+    } else if (pct > 100u) {
+        pct = 100u;
+    }
+    ctl->d1RetryTicks = ticks;
+    ctl->d1RetryPct = pct;
+}
+
+static void ChangeD(GdxSteadyCtl* ctl, int d);
+
+void gdx_steady_pin_min(GdxSteadyCtl* ctl, int dMin) {
+    if (dMin < 1) {
+        dMin = 1;
+    } else if (dMin > ctl->dMax) {
+        dMin = ctl->dMax;
+    }
+    ctl->dMin = dMin;
+    if (ctl->d < dMin) {
+        ChangeD(ctl, dMin);
+        ctl->lastWasUp = 0; /* a pin is not a failed step up: no backoff */
+    }
 }
 
 /* ROBUST: a skip tick more than half a vblank over the average is a stall (the hardware's SD
@@ -69,6 +119,15 @@ void gdx_steady_note_skip(GdxSteadyCtl* ctl, uint64_t skipCost) {
 }
 
 static int PopCount(uint32_t v) {
+    int n = 0;
+    while (v != 0) {
+        v &= v - 1u;
+        n++;
+    }
+    return n;
+}
+
+static int PopCount64(uint64_t v) {
     int n = 0;
     while (v != 0) {
         v &= v - 1u;
@@ -196,7 +255,10 @@ static void ChangeD(GdxSteadyCtl* ctl, int d) {
     ctl->ticksAtD = 0;
     ctl->missBits = 0;
     ctl->hardMissBits = 0;
+    ctl->d1MissBits = 0;
 }
+
+static int D1Holds(GdxSteadyCtl* ctl);
 
 static int TryStepDown(GdxSteadyCtl* ctl) {
     int want;
@@ -204,6 +266,9 @@ static int TryStepDown(GdxSteadyCtl* ctl) {
         return 0;
     }
     if (ctl->d >= ctl->dMax || ctl->rwN < GDX_STEADY_DOWN_MIN_SAMPLES) {
+        return 0;
+    }
+    if (D1Holds(ctl)) {
         return 0;
     }
     /* Misses from isolated hitches (a load frame, a SHOT write) are not a slot that is too
@@ -226,7 +291,7 @@ static int TryStepUp(GdxSteadyCtl* ctl) {
     if ((ctl->missBits & GDX_STEADY_UP_CLEAN_MASK) != 0 || ctl->rwN < GDX_STEADY_UP_MIN_SAMPLES) {
         return 0;
     }
-    if (!SlotFits(ctl, ctl->d - 1, gdx_steady_rw_pct(ctl, 90), 80, 100)) {
+    if (!SlotFits(ctl, ctl->d - 1, gdx_steady_rw_pct(ctl, 90), ctl->upPct, 100)) {
         return 0;
     }
     ChangeD(ctl, ctl->d - 1);
@@ -247,11 +312,33 @@ static int TryStepUp(GdxSteadyCtl* ctl) {
  *         a quarter of the ring spikes, and the spike-free p90 fits D-1 at 80%.
  * A heavier scene is not a spike: its third over-2x render in 8 slots is no longer isolated,
  * so it counts as a hard miss and steps D down within four slots. */
+/* o3ds60 d1HoldPct: D = 1 with at most (100 - pct)% of the last d1HoldSlots slots missed (a stint
+ * younger than the window counts its unseen slots as hits) stays at D = 1. */
+static uint64_t D1HoldMask(unsigned slots) {
+    return slots >= 64u ? ~(uint64_t)0 : (((uint64_t)1 << slots) - 1u);
+}
+
+static int D1Holds(GdxSteadyCtl* ctl) {
+    const unsigned slots = ctl->d1HoldSlots < 16u ? 16u : ctl->d1HoldSlots;
+    const unsigned misses = (unsigned) PopCount64(ctl->d1MissBits & D1HoldMask(slots));
+    if (ctl->d1HoldPct == 0u || ctl->d != 1) {
+        return 0;
+    }
+    if (misses * 100u > (100u - ctl->d1HoldPct) * slots) {
+        return 0;
+    }
+    ctl->d1Holds++;
+    return 1;
+}
+
 static int TryStepDownRobust(GdxSteadyCtl* ctl) {
     const int hard = PopCount(ctl->hardMissBits & GDX_STEADY_DOWN_WINDOW_MASK) >= GDX_STEADY_DOWN_MISSES;
     const int flood = PopCount(ctl->missBits & GDX_STEADY_DOWN_WINDOW_MASK) >= GDX_STEADY_FLOOD_MISSES;
     int want;
     if ((!hard && !flood) || ctl->d >= ctl->dMax || ctl->rwN < GDX_STEADY_DOWN_MIN_SAMPLES) {
+        return 0;
+    }
+    if (D1Holds(ctl)) {
         return 0;
     }
     if (hard) {
@@ -269,11 +356,33 @@ static int TryStepDownRobust(GdxSteadyCtl* ctl) {
     return 1;
 }
 
+/* o3ds60 d1RetryTicks: the D = 2 -> 1 step (see gdx_steady_set_d1_retry). */
+static int D1RetryApplies(const GdxSteadyCtl* ctl) {
+    return ctl->d1RetryTicks != 0u && ctl->d == 2 && ctl->dMin == 1;
+}
+
+static unsigned long UpDwellNow(const GdxSteadyCtl* ctl) {
+    if (D1RetryApplies(ctl)) {
+        const unsigned long cap = 2u * ctl->d1RetryTicks;
+        const unsigned long dwell = ctl->upDwell < ctl->d1RetryTicks ? ctl->d1RetryTicks : ctl->upDwell;
+        return dwell > cap ? cap : dwell;
+    }
+    return ctl->upDwell;
+}
+
+static int UpFits(const GdxSteadyCtl* ctl) {
+    const uint64_t p90 = RwPctClean(ctl, 90, GDX_STEADY_RING);
+    if (D1RetryApplies(ctl)) {
+        return p90 * 100u <= ctl->period * ctl->d1RetryPct;
+    }
+    return SlotFits(ctl, ctl->d - 1, p90, ctl->upPct, 100);
+}
+
 static int TryStepUpRobust(GdxSteadyCtl* ctl) {
     if (ctl->ticksAtD >= GDX_STEADY_STABLE_TICKS) {
         ctl->upDwell = GDX_STEADY_UP_DWELL_TICKS;
     }
-    if (ctl->d <= ctl->dMin || ctl->ticksAtD < ctl->upDwell || ctl->rwN < GDX_STEADY_UP_MIN_SAMPLES) {
+    if (ctl->d <= ctl->dMin || ctl->ticksAtD < UpDwellNow(ctl) || ctl->rwN < GDX_STEADY_UP_MIN_SAMPLES) {
         return 0;
     }
     if ((ctl->hardMissBits & GDX_STEADY_UP_CLEAN_MASK) != 0 ||
@@ -283,8 +392,11 @@ static int TryStepUpRobust(GdxSteadyCtl* ctl) {
     if (PopCount(ctl->rwSpikeMask) > GDX_STEADY_UP_MAX_SPIKES) {
         return 0;
     }
-    if (!SlotFits(ctl, ctl->d - 1, RwPctClean(ctl, 90, GDX_STEADY_RING), 80, 100)) {
+    if (!UpFits(ctl)) {
         return 0;
+    }
+    if (D1RetryApplies(ctl)) {
+        ctl->d1Retries++;
     }
     ChangeD(ctl, ctl->d - 1);
     return 1;
@@ -313,6 +425,7 @@ int gdx_steady_note_slot_ex(GdxSteadyCtl* ctl, uint64_t renderWork, int missed, 
     const int explained = missed && (spike || ctl->prevSlotSpike);
     PushRenderWork(ctl, renderWork, ctl->robust && rwSpike);
     ctl->missBits = (ctl->missBits << 1) | (missed ? 1u : 0u);
+    ctl->d1MissBits = (ctl->d1MissBits << 1) | (missed ? 1u : 0u);
     ctl->hardMissBits = (ctl->hardMissBits << 1) | (missed && !explained ? 1u : 0u);
     ctl->overBits = (ctl->overBits << 1) | (over ? 1u : 0u);
     ctl->prevSlotSpike = spike;
@@ -330,4 +443,29 @@ int gdx_steady_note_slot_ex(GdxSteadyCtl* ctl, uint64_t renderWork, int missed, 
 
 int gdx_steady_note_slot(GdxSteadyCtl* ctl, uint64_t renderWork, int missed) {
     return gdx_steady_note_slot_ex(ctl, renderWork, missed, 0);
+}
+
+int gdx_steady_late_by_net(uint64_t late, uint64_t netWait, uint64_t period) {
+    if (netWait == 0) {
+        return 0;
+    }
+    return late <= netWait || late - netWait <= period / 2u;
+}
+
+uint64_t gdx_steady_d1_display(uint64_t slotVblank, uint64_t now, uint64_t margin, uint64_t period) {
+    uint64_t display = slotVblank + period;
+    if (period == 0) {
+        return display;
+    }
+    if (now + margin > display) {
+        display += ((now + margin - display + period - 1u) / period) * period;
+    }
+    return display;
+}
+
+int gdx_steady_d1_repeats(uint64_t prevDisplay, uint64_t display, uint64_t period) {
+    if (prevDisplay == 0 || display <= prevDisplay) {
+        return 0;
+    }
+    return display - prevDisplay > period + period / 2u;
 }

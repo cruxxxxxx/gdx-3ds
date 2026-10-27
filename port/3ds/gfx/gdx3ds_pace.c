@@ -18,6 +18,10 @@ extern void C3Dgdx_SwapStampRead(unsigned out[2]) __attribute__((weak));
 extern unsigned long long C3Dgdx_SwapStampTick(void) __attribute__((weak));
 /* n60stereo: 1 while the 3D right-eye pass runs this frame (gdx3ds_stereo_frame.cpp). */
 extern int gdx3ds_stereo_active(void) __attribute__((weak));
+/* o3ds60 [debug] top_triple (port/3ds/gdx3ds_pipe.h; vendor/libctru_gfx/gfx_split.c, weak: the DL
+ * harness links neither): while the third top framebuffer rotates, the end guard has nothing to
+ * protect (the back buffer is never on screen nor pending) and does not wait. */
+extern bool gdx3ds_gfx_top_triple_active(void) __attribute__((weak));
 
 enum { kPaceReceiptBegins = 256 };
 
@@ -46,6 +50,7 @@ typedef struct PaceWindow {
     uint64_t tailTicks;
     uint64_t tailMax;
     uint32_t tailLate;      /* tails longer than 4 ms */
+    uint32_t tbSkips;       /* o3ds60: end guards that did not wait because the top triple buffer ran */
 } PaceWindow;
 
 static int sLatched = 0;
@@ -67,6 +72,7 @@ static uint32_t sPrevSwapCount = 0;
 static uint64_t sPrevBeginReturn = 0;
 static int sFramePhase = kPaceStock; /* the rule of the frame being built (its end guard follows it) */
 static int sWindowPhase = -1;
+static int sWindowTb = -1; /* o3ds60: the top triple buffer's state when the window opened */
 static PaceWindow sWin;
 static GdxPaceFrameInfo sInfo;          /* n60st3: the latest fresh begin, for [debug] spike_ms */
 static uint64_t sEndGuardWaitTicks = 0; /* the latest end guard's wait */
@@ -208,6 +214,10 @@ static void WaitVblank0After(uint32_t since) {
     }
 }
 
+static int TopTripleActive(void) {
+    return (&gdx3ds_gfx_top_triple_active != NULL && gdx3ds_gfx_top_triple_active()) ? 1 : 0;
+}
+
 static void OpenWindow(int phase) {
     unsigned stamp[2];
     ReadSwapStamp(stamp);
@@ -216,6 +226,7 @@ static void OpenWindow(int phase) {
     sWin.vblAtStart = C3D_FrameCounter(0);
     sWin.vbl1AtStart = C3D_FrameCounter(1);
     sWindowPhase = phase;
+    sWindowTb = TopTripleActive();
 }
 
 static void EmitWindow(void) {
@@ -228,7 +239,7 @@ static void EmitWindow(void) {
     const float tinv = sWin.tails != 0 ? 1.0f / (float)sWin.tails : 0.0f;
     PaceLog("[pace] frame=%lu n=%lu phase=%d | swaps=%lu vbl=%lu rep=%ld vbl1=%lu | waits=%lu skips=%lu "
             "long=%lu trap=%lu nostamp=%lu eg=%lu | wait_ms=%.2f eg_ms=%.2f work_ms=%.2f | hold=%lu/%lu/%lu/%lu "
-            "tail_ms=%.2f max=%.2f late=%lu",
+            "tail_ms=%.2f max=%.2f late=%lu tb=%d tbskip=%lu",
             (unsigned long)sFreshBegins, (unsigned long)sWin.begins, sWindowPhase, (unsigned long)swaps,
             (unsigned long)vbl, (long)vbl - (long)swaps, (unsigned long)vbl1, (unsigned long)sWin.waits,
             (unsigned long)sWin.skips, (unsigned long)sWin.longWaits, (unsigned long)sWin.traps,
@@ -236,7 +247,7 @@ static void EmitWindow(void) {
             (double)(TicksToMs(sWin.endWaitTicks) * inv), (double)(TicksToMs(sWin.workTicks) * inv),
             (unsigned long)sWin.hold[0], (unsigned long)sWin.hold[1], (unsigned long)sWin.hold[2],
             (unsigned long)sWin.hold[3], (double)(TicksToMs(sWin.tailTicks) * tinv), (double)TicksToMs(sWin.tailMax),
-            (unsigned long)sWin.tailLate);
+            (unsigned long)sWin.tailLate, sWindowTb, (unsigned long)sWin.tbSkips);
 }
 
 /* n60stereo: at a fresh begin (the previous frame's queue is done, its swap requested): how many
@@ -342,7 +353,10 @@ static void CountBegin(int waited, uint64_t vblankTicks) {
 void gdx3ds_pace_frame_begin(int (*stockSkip)(void), uint64_t* queueTicks, uint64_t* vblankTicks) {
     SpinSyntheticWork();
     const int phase = ActivePhase();
-    if (phase != sWindowPhase) {
+    if (phase != sWindowPhase || TopTripleActive() != sWindowTb) {
+        if (sReceipt && sWin.begins >= kPaceReceiptBegins / 4u) {
+            EmitWindow(); /* o3ds60: a window never straddles a triple-buffer edge */
+        }
         OpenWindow(phase);
     }
     const uint64_t tCall = svcGetSystemTick();
@@ -390,6 +404,10 @@ void gdx3ds_pace_frame_end_guard(void) {
     ReadSwapStamp(stamp);
     if (C3D_FrameCounter(0) != stamp[1]) {
         return; /* the previous frame's swap request has been latched (or there was none) */
+    }
+    if (TopTripleActive()) {
+        sWin.tbSkips++; /* o3ds60: this frame's transfer targets the free third buffer */
+        return;
     }
     const uint64_t t0 = svcGetSystemTick();
     WaitVblank0After(stamp[1]);

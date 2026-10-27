@@ -69,6 +69,32 @@ struct NcBucket {
     uint32_t timgFmt[32];   /* SETTIMG fmt*4 + siz */
     uint32_t f3dCmds;       /* commands from legacy-F3D lists (remapped) */
     uint32_t variant[8];    /* frames by the task's ucode variant at its end */
+    uint32_t wipeType[16];  /* menus-s4 nicensus_wipe: frames by the transition type drawn */
+};
+
+/* [debug] ni_strict: one (context, site, tag, opcode) cell of a bucket, with its persistence. */
+struct NsEntry {
+    uint32_t key;    /* ctx << 24 | site << 16 | tag << 8 | op */
+    uint32_t n;      /* commands */
+    uint32_t frames; /* frames it appeared in */
+    uint32_t visits; /* bucket visits (consecutive runs of frames) it appeared in */
+    uint32_t maxF;   /* most in one frame */
+    uint32_t curF;   /* this frame's count (folded into maxF when the next frame touches it) */
+    uint32_t seq;    /* the frame sequence number of curF */
+    uint32_t lastVisit;
+    uint32_t firstF, lastF; /* bucket-local frame index at the first / last appearance */
+    uint8_t used;
+};
+
+constexpr int kNsSlots = 1024;
+
+struct NsTable {
+    uint32_t frames, visits;
+    uint64_t strict, disp, direct;    /* per-class command totals */
+    uint32_t maxStrict, zeroStrict;  /* most strict commands in one frame; frames with none */
+    uint32_t hist[5];                /* frames by strict count: 0, 1-9, 10-99, 100-999, 1000+ */
+    uint32_t used, overflow;
+    NsEntry e[kNsSlots];
 };
 
 const char* const kModeName[Interp::kNcModes] = {
@@ -77,9 +103,12 @@ const char* const kModeName[Interp::kNcModes] = {
     "credits",    "course_edit", "time_attack", "gp_next_course", "create_machine", "gp_end_cs",
     "gp_next_mach", "records_course", "options", "death_race", "ead_demo",  "other"
 };
-const char* const kSubName[Interp::kNcSubs] = { "steady", "intro", "racing", "post", "change", "demo" };
+const char* const kSubName[Interp::kNcSubs] = { "steady", "intro", "racing", "post", "change", "demo", "wipe" };
 const char* const kSlotName[kNcSlots] = { "walkB", "walkW", "nrr", "nrrhud", "hud", "seam", "mesh", "frame" };
 const char* const kNrrCatName[kNcNrrCats] = { "hud", "trk", "mach", "sky", "dress", "shd", "fx", "self", "deco" };
+const char* const kNsSiteName[Interp::NCS_COUNT] = { "walk",   "nested", "niex",   "nistx",  "niseg", "nirecov",
+                                                     "hudrun", "hudirect", "hudplain", "hookcmd", "course" };
+const char* const kNsCtxName[Interp::NC_COUNT] = { "walk", "nrr", "nrrhud", "hud", "seam", "mesh", "frame" };
 
 /* One output line, flushed into continuation lines before gdxn_logf's 320-byte buffer. */
 class NcLine {
@@ -133,6 +162,7 @@ bool IsDrawOp(uint8_t op) {
 } // namespace
 
 struct Interp::NcState {
+    int traceLeft, traceMode, traceSkip; /* menus-s2 [debug] nicensus_trace (NcTraceSet) */
     NcBucket* buckets[kNcBuckets];
     NcBucket* cur;       /* the open frame's bucket (null between frames) */
     int curBucket;
@@ -146,6 +176,15 @@ struct Interp::NcState {
     uint32_t totalFrames;
     uint32_t sinceDump;
     uint32_t dumps;
+    bool ncDumps;     /* [nicensus] receipts (false: the engine runs for [debug] ni_strict only) */
+    int tag;          /* the current context's tag (NcTag) */
+    /* [debug] ni_strict */
+    int nsLevel;
+    uint32_t nsEvery, nsSinceDump, nsDumps;
+    int nsPrevBucket;
+    NsTable* ns[kNcBuckets];
+    NsTable* nsCur;
+    uint32_t fStrict, fDisp, fDirect;
 };
 
 void Interp::NcSet(int on) {
@@ -153,6 +192,7 @@ void Interp::NcSet(int on) {
         if (mNc != nullptr) {
             for (int b = 0; b < kNcBuckets; b++) {
                 delete mNc->buckets[b];
+                delete mNc->ns[b];
             }
             delete mNc;
             mNc = nullptr;
@@ -164,8 +204,85 @@ void Interp::NcSet(int on) {
         if (mNc != nullptr) {
             memset(static_cast<void*>(mNc), 0, sizeof(NcState));
             mNc->curBucket = -1;
+            mNc->nsPrevBucket = -1;
         }
     }
+    if (mNc != nullptr) {
+        mNc->ncDumps = on == 1;
+    }
+}
+
+void Interp::NsSet(int level, uint32_t every) {
+    if (mNc == nullptr) {
+        return;
+    }
+    mNc->nsLevel = level > 0 ? level : 0;
+    mNc->nsEvery = every;
+}
+
+int Interp::NcTag(int tag) {
+    NcState& s = *mNc;
+    const int prev = s.tag;
+    s.tag = tag & 0xFF;
+    return prev;
+}
+
+/* The bucket's cell for key, created on first sight (null: the table is full, counted). */
+static NsEntry* NsFind(NsTable& t, uint32_t key) {
+    uint32_t h = key * 2654435761u;
+    for (int probe = 0; probe < kNsSlots; probe++) {
+        NsEntry& e = t.e[(h + static_cast<uint32_t>(probe)) & (kNsSlots - 1)];
+        if (e.used == 0) {
+            e.used = 1;
+            e.key = key;
+            e.firstF = t.frames;
+            t.used++;
+            return &e;
+        }
+        if (e.key == key) {
+            return &e;
+        }
+    }
+    t.overflow++;
+    return nullptr;
+}
+
+/* One command into the open frame's strict table. Classes: disp = the walker's own dispatch words
+ * (G_NOOP markers, G_DL, G_ENDDL) -- what the S7 marker dispatcher keeps; direct = a capture run's
+ * rectangle / load the direct emitter drew; strict = everything else, a stock handler that ran. */
+static void NsNote(Interp::NcState& s, uint8_t op, int site) {
+    NsTable* t = s.nsCur;
+    if (t == nullptr) {
+        return;
+    }
+    if (site == Interp::NCS_HUDDIRECT) {
+        s.fDirect++;
+    } else if (s.ctx == Interp::NC_WALK && site == Interp::NCS_WALK && (op == OP_NOOP || op == OP_DL || op == OP_ENDDL)) {
+        s.fDisp++;
+    } else {
+        s.fStrict++;
+    }
+    const uint32_t key = (static_cast<uint32_t>(s.ctx & 7) << 24) | (static_cast<uint32_t>(site & 15) << 16) |
+                         (static_cast<uint32_t>(s.tag & 0xFF) << 8) | op;
+    NsEntry* e = NsFind(*t, key);
+    if (e == nullptr) {
+        return;
+    }
+    e->n++;
+    if (e->seq != s.totalFrames + 1u) {
+        if (e->curF > e->maxF) {
+            e->maxF = e->curF;
+        }
+        e->curF = 0;
+        e->seq = s.totalFrames + 1u; /* +1: 0 is a fresh cell's "never" */
+        e->frames++;
+        if (e->lastVisit != t->visits) {
+            e->lastVisit = t->visits;
+            e->visits++;
+        }
+    }
+    e->curF++;
+    e->lastF = t->frames;
 }
 
 static NcStatSnap NcTakeSnap(const Counters& s) {
@@ -232,12 +349,36 @@ void Interp::NcFrameBegin(int bucket) {
     s.cur = s.buckets[bucket];
     s.curBucket = bucket;
     s.ctx = NC_FRAME; /* RunFrame switches to NC_WALK around Walk() */
+    s.tag = 0;
+    if (s.nsLevel != 0) {
+        if (s.ns[bucket] == nullptr) {
+            s.ns[bucket] = new (std::nothrow) NsTable;
+            if (s.ns[bucket] != nullptr) {
+                memset(static_cast<void*>(s.ns[bucket]), 0, sizeof(NsTable));
+            }
+        }
+        s.nsCur = s.ns[bucket];
+        if (s.nsCur != nullptr && bucket != s.nsPrevBucket) {
+            s.nsCur->visits++;
+        }
+        s.nsPrevBucket = bucket;
+        s.fStrict = 0;
+        s.fDisp = 0;
+        s.fDirect = 0;
+    }
     memset(s.fAcc, 0, sizeof(s.fAcc));
     memset(s.fOps, 0, sizeof(s.fOps));
     s.fNrrEnters = 0;
     s.last = NcTakeSnap(mStats);
     s.lastTick = static_cast<uint64_t>(gdx_ninterp_now());
     s.frameT0 = s.lastTick;
+}
+
+void Interp::NcFrameWipe(int type) {
+    NcState& s = *mNc;
+    if (s.cur != nullptr && type > 0) {
+        s.cur->wipeType[type & 15]++;
+    }
 }
 
 static void NcAddAcc(NcAcc& d, const NcAcc& a) {
@@ -281,9 +422,30 @@ void Interp::NcFrameEnd(const uint32_t* nrrMarkers, const uint32_t* nrrDraws, co
         b.nrrVx[k] += nrrVerts[k];
     }
     b.variant[mVariant & 7]++;
+    if (s.nsCur != nullptr) {
+        NsTable& t = *s.nsCur;
+        t.frames++;
+        t.strict += s.fStrict;
+        t.disp += s.fDisp;
+        t.direct += s.fDirect;
+        if (s.fStrict > t.maxStrict) {
+            t.maxStrict = s.fStrict;
+        }
+        if (s.fStrict == 0) {
+            t.zeroStrict++;
+        }
+        t.hist[s.fStrict == 0 ? 0 : s.fStrict < 10 ? 1 : s.fStrict < 100 ? 2 : s.fStrict < 1000 ? 3 : 4]++;
+        s.nsCur = nullptr;
+    }
     s.cur = nullptr;
     s.totalFrames++;
     s.sinceDump++;
+    if (s.nsLevel != 0) {
+        s.nsSinceDump++;
+        if (s.nsEvery != 0 && s.nsSinceDump >= s.nsEvery) {
+            NsDump("sum", false);
+        }
+    }
 }
 
 void Interp::NcLusTask(int bucket) {
@@ -330,13 +492,40 @@ static void NcNoteCombine(NcBucket& b, uint64_t comb) {
     b.combOverflow++;
 }
 
-void Interp::NcNote(const Cmd& c, bool f3d) {
+void Interp::NcTraceSet(int lines, int mode, int skip) {
+    if (mNc != nullptr) {
+        mNc->traceLeft = lines > 0 ? lines : 0;
+        mNc->traceMode = mode;
+        mNc->traceSkip = skip > 0 ? skip : 0;
+    }
+}
+
+void Interp::NcNote(const Cmd& c, bool f3d, int site) {
     NcState& s = *mNc;
     if (s.cur == nullptr) {
         return; /* outside a task (cannot happen on the owned path; kept safe) */
     }
     NcBucket& b = *s.cur;
     const uint8_t op = Opcode(c.w0);
+    if (s.nsLevel != 0) {
+        NsNote(s, op, site); /* [debug] ni_strict: counted, never dropped (level 1 = count) */
+        if (op == OP_TEXRECT || op == OP_TEXRECTFLIP) {
+            NsNote(s, OP_RDPHALF_1, site); /* the halves Exec consumes inline, as nicensus counts them */
+            NsNote(s, OP_RDPHALF_2, site);
+        }
+    }
+    if (__builtin_expect(s.traceLeft > 0, 0) && s.ctx == NC_WALK &&
+        (s.traceMode < 0 || s.curBucket / kNcSubs == s.traceMode)) {
+        if (s.traceSkip > 0) {
+            s.traceSkip--;
+        } else {
+            s.traceLeft--;
+            const Frame& f = mStack[mSp > 0 ? mSp - 1 : 0];
+            GDXN_LOG("[nctrace] b=%02X.%d sp=%d list=%p idx=%u op=%02X %08X %08X", static_cast<unsigned>(s.curBucket / kNcSubs),
+                     s.curBucket % kNcSubs, mSp, static_cast<const void*>(f.list.base), static_cast<unsigned>(f.idx), op,
+                     c.w0, c.w1);
+        }
+    }
     s.fOps[s.ctx][op]++;
     s.fAcc[s.ctx].cmds++;
     if (op == OP_TEXRECT || op == OP_TEXRECTFLIP) {
@@ -469,6 +658,11 @@ static void NcDumpBucket(const NcBucket& b, int bucket, const char* why, double 
         }
         line.Add(" | words nrrhud=%.1f hudret=%.1f | f3d=%.1f", static_cast<double>(b.acc[3].words) * inv,
                  static_cast<double>(b.acc[4].wordsRetained) * inv, static_cast<double>(b.f3dCmds) * inv);
+        for (int t = 1; t < 16; t++) {
+            if (b.wipeType[t] != 0) {
+                line.Add(" wipe%d=%u", t, b.wipeType[t]); /* menus-s4: frames per transition type */
+            }
+        }
     }
     {
         /* nointerp N1 tripwire (docs/research/native/nointerp-plan.md §0, §2.5): walkB + walkW is
@@ -591,7 +785,7 @@ static void NcDumpBucket(const NcBucket& b, int bucket, const char* why, double 
 }
 
 void Interp::NcDump(const char* why, double msPerTick) {
-    if (mNc == nullptr) {
+    if (mNc == nullptr || !mNc->ncDumps) {
         return;
     }
     NcState& s = *mNc;
@@ -609,10 +803,83 @@ void Interp::NcDump(const char* why, double msPerTick) {
 }
 
 void Interp::NcDumpEvery(uint32_t every, double msPerTick) {
-    if (mNc == nullptr || every == 0 || mNc->sinceDump < every) {
+    if (mNc == nullptr || !mNc->ncDumps || every == 0 || mNc->sinceDump < every) {
         return;
     }
     NcDump("sum", msPerTick);
+}
+
+/* ------------------------------------------------------------------ [debug] ni_strict ---- */
+
+static void NsDumpBucket(const NsTable& t, int bucket, const char* why, bool full) {
+    const int mode = bucket / Interp::kNcSubs;
+    const int sub = bucket % Interp::kNcSubs;
+    const double inv = t.frames != 0 ? 1.0 / static_cast<double>(t.frames) : 0.0;
+    char head[64];
+    snprintf(head, sizeof(head), "[nistrict] %s b=%02X.%d", why, static_cast<unsigned>(mode), sub);
+    {
+        NcLine line(head);
+        line.Add(" %s/%s frames=%u visits=%u strict/f=%.2f disp/f=%.2f direct/f=%.2f maxf=%u zero=%u", kModeName[mode],
+                 kSubName[sub], t.frames, t.visits, static_cast<double>(t.strict) * inv,
+                 static_cast<double>(t.disp) * inv, static_cast<double>(t.direct) * inv, t.maxStrict, t.zeroStrict);
+        line.Add(" hist=%u/%u/%u/%u/%u cells=%u ovf=%u", t.hist[0], t.hist[1], t.hist[2], t.hist[3], t.hist[4], t.used,
+                 t.overflow);
+    }
+    /* The cells by command count, largest first (selection: tables are small and this is cold). */
+    static uint8_t taken[kNsSlots];
+    memset(taken, 0, sizeof(taken));
+    const int limit = full ? 160 : 6;
+    NcLine* compact = full ? nullptr : new (std::nothrow) NcLine(head);
+    if (compact != nullptr) {
+        compact->Add(" top");
+    }
+    for (int rank = 0; rank < limit; rank++) {
+        int best = -1;
+        uint32_t bestN = 0;
+        for (int i = 0; i < kNsSlots; i++) {
+            if (t.e[i].used != 0 && taken[i] == 0 && t.e[i].n > bestN) {
+                bestN = t.e[i].n;
+                best = i;
+            }
+        }
+        if (best < 0) {
+            break;
+        }
+        taken[best] = 1;
+        const NsEntry& e = t.e[best];
+        const int ctx = static_cast<int>((e.key >> 24) & 7u);
+        const int site = static_cast<int>((e.key >> 16) & 15u);
+        const unsigned tag = (e.key >> 8) & 0xFFu;
+        const unsigned op = e.key & 0xFFu;
+        const uint32_t maxF = e.curF > e.maxF ? e.curF : e.maxF;
+        if (compact != nullptr) {
+            compact->Add(" %s/%s/%02X/%02X=%.2f", ctx < Interp::NC_COUNT ? kNsCtxName[ctx] : "?",
+                         site < Interp::NCS_COUNT ? kNsSiteName[site] : "?", tag, op, static_cast<double>(e.n) * inv);
+            continue;
+        }
+        gdxn_logf("%s e c=%s t=%02X s=%s op=%02X n=%u fr=%u vis=%u max=%u first=%u last=%u", head,
+                  ctx < Interp::NC_COUNT ? kNsCtxName[ctx] : "?", tag, site < Interp::NCS_COUNT ? kNsSiteName[site] : "?",
+                  op, e.n, e.frames, e.visits, maxF, e.firstF, e.lastF);
+    }
+    delete compact;
+}
+
+void Interp::NsDump(const char* why, bool full) {
+    if (mNc == nullptr || mNc->nsLevel == 0) {
+        return;
+    }
+    NcState& s = *mNc;
+    s.nsDumps++;
+    gdxn_logf("[nistrict] %s begin dump=%u frames=%u level=%d", why, s.nsDumps, s.totalFrames, s.nsLevel);
+    for (int b = 0; b < kNcBuckets; b++) {
+        const NsTable* t = s.ns[b];
+        if (t == nullptr || t->frames == 0) {
+            continue;
+        }
+        NsDumpBucket(*t, b, why, full);
+    }
+    gdxn_logf("[nistrict] %s end dump=%u", why, s.nsDumps);
+    s.nsSinceDump = 0;
 }
 
 } // namespace gdxn

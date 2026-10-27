@@ -43,13 +43,18 @@ typedef struct {
  *   far too high a visual cost for the gain. Still settable by hand via [perf] draw_distance.
  * - lod6_skip 1: do not emit the texture-load list in front of a machine drawn at LOD 6 (the
  *   far speck; decomp-port-o3ds-scene-lod.patch). Pixel-identical on the canonical replay, and
- *   what makes MINIMAL/LOW pay: at those tiers most of the field is LOD 6. */
+ *   what makes MINIMAL/LOW pay: at those tiers most of the field is LOD 6.
+ * - mp_rival_floor 3 (o3dsperf): LOW for every CPU rival while a multiplayer session is live
+ *   (render-only there, see gdx_rival_detail_level). hw 158a13e: the MP race's rendered tick
+ *   cost 26-30 ms, so the console drew every 3rd tick; the per-tier authority (~3.5 ms) is what
+ *   brings it under the 2-tick slot. */
 static const PerfPresetEntry kO3dsPreset[] = {
     { "rival_detail", 1 },
     { "rival_tier_max", 3 },
     { "rival_auto_hi_x10", 450 },
     { "rival_auto_lo_x10", 300 },
     { "lod6_skip", 1 },
+    { "mp_rival_floor", 3 },
 };
 
 static int sInited = 0;
@@ -146,11 +151,11 @@ static void PresetReceipt(void) {
     char line[256];
     snprintf(line, sizeof(line),
              "[perf] preset=%s (%s: model=%s) rival_detail=%d rival_tier_max=%d hi_x10=%d lo_x10=%d draw_distance=%d "
-             "lod6_skip=%d (explicit [perf] keys win)",
+             "lod6_skip=%d mp_rival_floor=%d (explicit [perf] keys win)",
              PresetName(), sAuto ? "auto" : "ini", ModelName(),
              gdx3ds_perf_get_int("rival_detail", 0), gdx3ds_perf_get_int("rival_tier_max", 2),
              gdx3ds_perf_get_int("rival_auto_hi_x10", 150), gdx3ds_perf_get_int("rival_auto_lo_x10", 90),
-             sDrawDistancePct, sLod6Skip);
+             sDrawDistancePct, sLod6Skip, gdx3ds_perf_get_int("mp_rival_floor", 0));
     PresetLog(line);
 }
 
@@ -181,8 +186,46 @@ int gdx_track_draw_distance_pct(void) {
     return sDrawDistancePct;
 }
 
+/* o3ds-mp16 [perf] mp_speck_drop (default 0; 1 = on; 2 = a same-run A/B on the [cpucut] block clock,
+ * bit GDX3DS_CPUCUT_BIT_MPSPECK): while a multiplayer session is live, a machine drawn at LOD 6 (the
+ * far speck, a few pixels) is not drawn at all -- lod6_skip 2's rule, for the session only. hw card-3
+ * (Old 3DS, 2D VS 2P + 14 CPU): the NRR machine pass cost ~0.3 ms with only the player's machine in
+ * view and 1.0-1.3 ms with the pack in view (runs/f 17-37 at ~25 us a run); the far specks are the
+ * runs that buy the least picture. Render-only: in a session no simulation read sees the draw
+ * (mp-vis), and the decomp hook drops only display-list emission (the model matrix is still set). */
+#if defined(__3DS__)
+extern int gdx3ds_mp_active(void) __attribute__((weak));
+extern int gdx3ds_cpucut_clamp(int value, int fallback) __attribute__((weak));
+extern void gdx3ds_cpucut_lever(const char* name, const int* value, unsigned bit) __attribute__((weak));
+extern int gdx3ds_cpucut_on(int value, unsigned bit) __attribute__((weak));
+#define PERF_CPUCUT_BIT_MPSPECK 2u /* GDX3DS_CPUCUT_BIT_MPSPECK (include/gdx3ds_cpucut.h) */
+static int sMpSpeckDrop = -1;
+
+static int MpSpeckDropOn(void) {
+    if (sMpSpeckDrop < 0) {
+        const int v = gdx3ds_perf_get_int("mp_speck_drop", 0);
+        sMpSpeckDrop = (v == 1 || v == 2) ? v : 0;
+        if (sMpSpeckDrop != 0 && &gdx3ds_cpucut_lever != NULL) {
+            gdx3ds_cpucut_lever("mpspeck", &sMpSpeckDrop, PERF_CPUCUT_BIT_MPSPECK);
+        }
+    }
+    if (sMpSpeckDrop == 0 || &gdx3ds_mp_active == NULL || !gdx3ds_mp_active()) {
+        return 0;
+    }
+    if (sMpSpeckDrop == 1) {
+        return 1;
+    }
+    return &gdx3ds_cpucut_on != NULL && gdx3ds_cpucut_on(sMpSpeckDrop, PERF_CPUCUT_BIT_MPSPECK);
+}
+#endif
+
 int gdx_rival_lod6_skip(void) {
     gdx3ds_perf_preset_init();
+#if defined(__3DS__)
+    if (sLod6Skip < 2 && MpSpeckDropOn()) {
+        return 2;
+    }
+#endif
     return sLod6Skip;
 }
 

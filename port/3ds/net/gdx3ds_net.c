@@ -99,6 +99,10 @@ static volatile int sListenFd = -1;
 static volatile int sCtlFd = -1;
 static volatile int sRelaunchPending = 0;
 static unsigned long sRelinkAttempts = 0;
+static int sMpQuietLever = 1;              /* [net] mp_net_quiet */
+static volatile int sMpQuiet = 0;          /* main: a room / race is up */
+static volatile int sMpQuietAck = 0;       /* thread: quiet and holding no socket */
+#define NET_QUIET_DRAIN_MS 500
 static u64 sBootTick = 0;
 static unsigned long sFrameNum = 0;
 
@@ -273,13 +277,41 @@ static void netSetNonBlocking(int fd) {
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
 }
 
+/* MPFIX: every wait in this TU is a SLICED poll: poll(..., 0), then sleep a slice, until the
+ * budget runs out. NEVER poll() with a timeout. libctru's SOC layer talks to the soc:U service
+ * over ONE session for the whole process, and a request on a session is served one at a time:
+ * while this thread sat in poll(..., 50 ms) every socket call of every other thread waited
+ * behind it. With [net] mp_lan on, the main thread's two per-frame recvfrom()s (NEARBY + the
+ * room socket) each queued behind that poll: ~50-100 ms a frame, the New 3DS at ~11 ticks/s
+ * (hw 516011c, the hitch receipt's `tl` class). A zero-timeout poll is one short request.
+ * [net] poll_slice = 0 restores the blocking poll (A/B only). */
+static int sPollSliced = 1;
+
+static int netPollFor(struct pollfd* pf, nfds_t nf, int timeoutMs, int sliceMs) {
+    if (!sPollSliced) {
+        return poll(pf, nf, timeoutMs);
+    }
+    const u64 start = svcGetSystemTick();
+    const u64 budget = (u64)((double)timeoutMs * CPU_TICKS_PER_MSEC);
+    for (;;) {
+        const int rc = poll(pf, nf, 0);
+        if (rc != 0) {
+            return rc;
+        }
+        if (svcGetSystemTick() - start >= budget) {
+            return 0;
+        }
+        svcSleepThread((s64)sliceMs * 1000000LL);
+    }
+}
+
 /* Waits up to NET_IO_TIMEOUT_S for `events` on fd. 1 = ready, 0 = timeout/error. */
 static int netWaitFd(int fd, int events) {
     struct pollfd pf;
     pf.fd = fd;
     pf.events = events;
     pf.revents = 0;
-    if (poll(&pf, 1, NET_IO_TIMEOUT_S * 1000) <= 0) {
+    if (netPollFor(&pf, 1, NET_IO_TIMEOUT_S * 1000, 1) <= 0) {
         return 0;
     }
     if ((pf.revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
@@ -338,12 +370,33 @@ static void netEnsureListener(void) {
     netLog("[net] ctl listening 0.0.0.0:%d", sCtlPort);
 }
 
+/* mp-soc-thread: the wait before the next log-link attempt. Every attempt is a connect plus a
+ * 1.5 s poll(…, 0) every 10 ms on the process's one soc:U session (MPFIX): ~75 SOC requests a
+ * second while the log host is unreachable. Hardware online1 (an Old 3DS racing online with a
+ * stale [net] host): 210 failed attempts across the session, queued in front of the race
+ * socket's own sendto / recvfrom. After 3 failures the wait doubles up to NET_RECONNECT_MAX_MS;
+ * [net] relink_backoff = 0 keeps the fixed NET_RECONNECT_MS (A/B). */
+#define NET_RECONNECT_MAX_MS 30000
+static int sRelinkBackoff = 1;
+
+static u32 netRelinkWaitMs(void) {
+    u32 ms = NET_RECONNECT_MS;
+    unsigned long n;
+    if (!sRelinkBackoff) {
+        return ms;
+    }
+    for (n = 3; n < sRelinkAttempts && ms < NET_RECONNECT_MAX_MS; n++) {
+        ms *= 2;
+    }
+    return ms < NET_RECONNECT_MAX_MS ? ms : NET_RECONNECT_MAX_MS;
+}
+
 static void netEnsureLogLink(u64* lastAttemptTick) {
     if (sLogFd >= 0 || sHostAddr.s_addr == 0) {
         return;
     }
     const u64 now = svcGetSystemTick();
-    static const u64 budget = (u64)((double)NET_RECONNECT_MS * CPU_TICKS_PER_MSEC);
+    const u64 budget = (u64)((double)netRelinkWaitMs() * CPU_TICKS_PER_MSEC);
     if (*lastAttemptTick != 0 && (now - *lastAttemptTick) < budget) {
         return;
     }
@@ -373,7 +426,7 @@ static void netEnsureLogLink(u64* lastAttemptTick) {
         pf.fd = fd;
         pf.events = POLLOUT;
         pf.revents = 0;
-        if (poll(&pf, 1, 1500) <= 0 || (pf.revents & POLLOUT) == 0) {
+        if (netPollFor(&pf, 1, 1500, 10) <= 0 || (pf.revents & POLLOUT) == 0) {
             close(fd);
             sRelinkAttempts++;
             if (sRelinkAttempts <= 3 || (sRelinkAttempts % 30) == 0) {
@@ -546,7 +599,7 @@ void gdx3ds_net_tick(unsigned long frameNum) {
         case REQ_GET:
             /* Flush first: if the target is log.txt, a pending batch in the filelog's own
              * ring would otherwise make the pulled file look older than the live log. */
-            gdx3ds_filelog_flush();
+            gdx3ds_filelog_flush_sync();
             rc = netGetFileForHost(sReqC, &sGetLen, &sGetCrc);
             netLog("[net] cmd GET path=%s rc=%d len=%lu", sReqC, rc, (unsigned long)sGetLen);
             break;
@@ -995,6 +1048,32 @@ static void netAcceptCtl(void) {
 
 /* ---- net thread --------------------------------------------------------------------- */
 
+/* MP quiet: no relink, no listener; a live log link drains and a live control client is read,
+ * both at NET_QUIET_DRAIN_MS. With neither, the thread makes no SOC call (sMpQuietAck). */
+static void netQuietCtlPass(void) {
+    struct pollfd pf;
+    if (sCtlFd < 0) {
+        return;
+    }
+    pf.fd = sCtlFd;
+    pf.events = POLLIN;
+    pf.revents = 0;
+    if (poll(&pf, 1, 0) > 0 && (pf.revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
+        netReadCtl();
+    }
+}
+
+static void netQuietPass(void) {
+    if (sListenFd >= 0) {
+        close(sListenFd);
+        sListenFd = -1;
+    }
+    netQuietCtlPass();
+    netDrainRing();
+    sMpQuietAck = (sLogFd < 0 && sCtlFd < 0) ? 1 : 0;
+    svcSleepThread((s64)NET_QUIET_DRAIN_MS * 1000000LL);
+}
+
 static void netThreadMain(void* arg) {
     (void)arg;
     u64 lastConnect = 0;
@@ -1009,6 +1088,11 @@ static void netThreadMain(void* arg) {
             svcSleepThread(50000000LL); /* 50 ms */
             continue;
         }
+        if (sMpQuiet) {
+            netQuietPass();
+            continue;
+        }
+        sMpQuietAck = 0;
         netEnsureListener();
         netEnsureLogLink(&lastConnect);
 
@@ -1028,7 +1112,7 @@ static void netThreadMain(void* arg) {
         }
         if (nf == 0) {
             svcSleepThread((s64)NET_POLL_MS * 1000000LL);
-        } else if (poll(pf, nf, NET_POLL_MS) > 0) {
+        } else if (netPollFor(pf, nf, NET_POLL_MS, NET_POLL_MS) > 0) {
             for (nfds_t i = 0; i < nf; i++) {
                 if ((pf[i].revents & (POLLIN | POLLHUP | POLLERR)) == 0) {
                     continue;
@@ -1075,6 +1159,26 @@ void gdx3ds_net_resume(void) {
     }
     sNetSuspended = 0;
     netLog("[net] resume — relinking");
+}
+
+void gdx3ds_net_set_mp_quiet(int quiet) {
+    const int want = (quiet && sMpQuietLever) ? 1 : 0;
+    if (!sNetEnabled || want == sMpQuiet) {
+        return;
+    }
+    if (!want) {
+        sMpQuietAck = 0;
+    }
+    sMpQuiet = want;
+    netLog("[net] mp quiet=%d (net.mp_net_quiet): %s", want,
+           want ? "no relink / listener while the room is up" : "relink / listener back");
+}
+
+int gdx3ds_net_soc_idle(void) {
+    if (!sNetEnabled || sNetThread == NULL) {
+        return 1;
+    }
+    return sMpQuiet && sMpQuietAck;
 }
 
 int gdx3ds_net_state(void) {
@@ -1216,6 +1320,13 @@ void gdx3ds_net_init(int argc, char** argv) {
     sCtlPort = gdx3ds_config_get_int("net", "port", NET_DEFAULT_CTL_PORT);
     sLogPort = gdx3ds_config_get_int("net", "log_port", NET_DEFAULT_LOG_PORT);
     sWantStdio = gdx3ds_config_get_bool("net", "stdio", 0);
+    sPollSliced = gdx3ds_config_get_bool("net", "poll_slice", 1);
+    sRelinkBackoff = gdx3ds_config_get_bool("net", "relink_backoff", 1);
+    sMpQuietLever = gdx3ds_config_get_bool("net", "mp_net_quiet", 1);
+    if (!sPollSliced) {
+        netLog("[net] poll_slice=0: the net thread blocks in poll() (stalls every other thread's "
+               "socket calls; A/B only)");
+    }
     snprintf(sTargetPath, sizeof(sTargetPath), "%s",
              gdx3ds_config_get_string("net", "target", NET_DEFAULT_TARGET));
     snprintf(sTargetSdmc, sizeof(sTargetSdmc), "sdmc:%s", sTargetPath);
@@ -1283,6 +1394,11 @@ void gdx3ds_net_init(int argc, char** argv) {
         sRingArmed = 0;
         return;
     }
+}
+
+/* MP spike (gdx3ds_mp.c): share this TU's soc:U rather than socInit a second time. */
+int gdx3ds_net_soc_up(void) {
+    return sSocUp;
 }
 
 void gdx3ds_net_shutdown(void) {

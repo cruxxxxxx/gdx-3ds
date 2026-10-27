@@ -2,33 +2,42 @@
  * Contract, takeover model and the digit-overlay scope gap: gdx3ds_bottomhud.h.
  *
  * REPAINT-RATE DISCIPLINE (the brief's "dirty-rect repaint only"), per element:
- *   baked backdrop+chrome : once per race (sWasValid's 0->1 edge) — gdx3ds_bottomhud_assets.h.
+ *   baked backdrop+chrome : once per race (sWasValid's 0->1 edge) — gdx3ds_hudbake.h (baked at boot).
  *   map box               : throttled to [debug] bottom_race_hz (default 10), own timestamp,
  *                           independent of the MAP tab's always-60Hz box.
  *   top-5 colour tags      : only when top5Character[] differs from the last paint.
  *   energy bar fill + MODE dot : every tick — a few hundred pixels, cheaper to redraw than to
  *                           dirty-track.
+ *   spare machines        : only when the GP stock count changes (DashPaintLives).
+ *   FPS text              : sampled at 2 Hz, drawn as the map box's last layer (map's rate).
  *   live numeric overlay  : every tick while valid (this is the "timer digits per frame"
  *                           element; the others piggyback on the same console-text call for
  *                           simplicity since one extra PaintBegin/PaintRow pair per tick is
  *                           cheap and they must not drift out of sync with the pixel backdrop).
  */
 #include "gdx3ds_bottomhud.h"
-#include "gdx3ds_bottomhud_assets.h"
-#include "gdx3ds_bottomhud_glyphs.h"
+#include "gdx3ds_hudbake.h"         /* the DASH art: baked at boot from fzerox.o2r */
 #include "gdx3ds_bottomhud_idle_assets.h" /* tools/gen_nibottom_idle_assets.py -- the idle view's logo */
+#include "gdx3ds_bui_glyph_table.h"  /* bui_glyph_table(): the bottom-menus kit reads these atlases */
+#include "gdx3ds_bui_race.h"         /* the multiplayer race dash (bottom-menus M3) */
+#include "gdx3ds_bui_kit.h"          /* bui_kit_dirty: the columns the race column painted (o3dsperf) */
 
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <3ds.h>
 
 #include "gdx3ds_config.h"
+#include "gdx3ds_cpucut.h"     /* o3ds-cpucuts: dash_race0_d1 */
 #include "gdx3ds_filelog.h"
+#include "gdx3ds_fs.h"         /* gdx3ds_fs_base_path: the bake cache sits beside the archives */
+#include "gdx3ds_frameskip.h"   /* gdx3ds_frameskip_skipped_total: the FPS chip's drawn-frame count */
 #include "gdx_racemap.h"        /* GdxRaceHudSnapshot/gdx_racehud_snapshot + the MAP bitmap accessors */
 #include "gdx_hud_placement.h" /* GDX_HUD_PLACEMENT_*, GDX_HUD_ELEM_*, gdx_hud_placement_name,
                                 * gdx_hud_element_on_top, gdx_hud_set_custom_top_mask (native/
@@ -39,6 +48,7 @@
 
 /* port/input_bridge.c. Weak: see the matching comment on the KEY_SELECT mode-cycle logic. */
 extern int gdx_input_in_gameplay(void) __attribute__((weak));
+extern int gdx_input_game_mode(void) __attribute__((weak)); /* port/input_bridge.c: GET_MODE(gGameMode) */
 
 /* ---- geometry: one data table, not scattered #defines -------------------------------- */
 #define DASH_FB_W 320
@@ -119,15 +129,25 @@ static DashWidgetRect sDashWidgets[DASHW_COUNT] = {
     { "energy_bar",  0,   0,   320, 24,  1, DashPaintEnergyFooter },
     { "header",      0,   218, 320, 22,  1, DashPaintHeaderLive },
     { "mode_chip",   168, 221, 62,  16,  1, DashPaintModeLabel },
-    { "menu_button", 84,  221, 70,  16,  1, DashPaintBackButton },
+    { "menu_button", 82,  221, 78,  16,  1, DashPaintBackButton },
     { "portrait",    0,   26,  63,  42,  1, DashPaintOurPosition },
     { "standings",   0,   67,  64,  148, 1, DashPaintStandingsLive },
-    { "ko_stars",    258, 26,  62,  22,  1, DashPaintKOStars },
-    { "lap",         258, 52,  60,  28,  1, DashPaintRightColumnLap },
-    { "timer",       258, 85,  60,  69,  1, DashPaintRightColumnTimer },
-    { "gap",         258, 155, 62,  24,  1, DashPaintRightColumnGap },
-    { "speed",       258, 195, 62,  23,  1, DashPaintSpeed },
-    { "map_box",     77,  36,  168, 168, 1, DashPaintMapBoxLive },
+    /* card-4b (hw: "the km/h is so small at bottom... the KO stars should switch spot and make
+     * the km/h bigger"): the speedometer heads the right column in the top screen's own digits
+     * (DashPaintSpeed) and the KO stars take the bottom slot.
+     * uipolish (hw: "the speedometer numbers slightly clip under the map and the time/best/gap
+     * text overdraw on the KO stars"): one right column, x 241..316 (3 px from the screen edge,
+     * 3 px from the map's border), in three boxes with the same 3 px gaps: SPEED 26..69, the
+     * stats box 73..192 (LAP / TIME / BEST / GAP: the lap, timer and gap rows are its three
+     * sections, DashPaintStatsBox) and KO 196..215 (2 px above the header, as the column starts
+     * 2 px under the energy bar). The map shrinks 168 -> 160 px for a 76 px column: three 2x
+     * speed digits (70 px of ink) and an 8-character clock fit with room on both sides. */
+    { "ko_stars",    241, 196, 76,  20,  1, DashPaintKOStars },
+    { "lap",         241, 73,  76,  30,  1, DashPaintRightColumnLap },
+    { "timer",       241, 103, 76,  62,  1, DashPaintRightColumnTimer },
+    { "gap",         241, 165, 76,  28,  1, DashPaintRightColumnGap },
+    { "speed",       241, 26,  76,  44,  1, DashPaintSpeed },
+    { "map_box",     77,  41,  160, 160, 1, DashPaintMapBoxLive },
 };
 
 #define DASH_ENERGY_X0 (sDashWidgets[DASHW_ENERGY_BAR].x)
@@ -174,6 +194,12 @@ static DashWidgetRect sDashWidgets[DASHW_COUNT] = {
 
 #define DASH_GAP_X0 (sDashWidgets[DASHW_GAP].x)
 #define DASH_GAP_Y0 (sDashWidgets[DASHW_GAP].y)
+
+/* uipolish: the stats box spans the lap, timer and gap rows (one frame, three sections). */
+#define DASH_STATS_X0 DASH_LAP_X0
+#define DASH_STATS_Y0 DASH_LAP_Y0
+#define DASH_STATS_W (sDashWidgets[DASHW_LAP].w)
+#define DASH_STATS_H (DASH_GAP_Y0 + sDashWidgets[DASHW_GAP].h - DASH_LAP_Y0)
 
 /* The speedometer (hw bug n60-3d7, item 4): fills the gap below GAP now that BOOST is gone (item
  * 6, hardware feedback round removed the BOOST box outright -- see sDashWidgets' own "ko_stars"
@@ -348,6 +374,19 @@ static u64 sLastMapTick = 0;
  * widget-table paint fn instead of two separately-scheduled pieces). */
 static int sLastHeaderRacersRemaining = -1;
 static char sLastHeaderTrackName[24] = "";
+static uint16_t sDashHeaderFill = 0x2043u; /* header interior, sampled from the art at bake time */
+/* Spare machines under the ENERGY label (DashPaintLives): the count last painted, so it repaints
+ * only when the stock changes. DASH_LIVES_UNPAINTED forces the first paint after every backdrop
+ * bake (the bake paints the checkerboard over that strip). */
+#define DASH_LIVES_UNPAINTED (-2)
+static int sLastSpareMachines = DASH_LIVES_UNPAINTED;
+/* FPS text (DashPaintMapFpsText): [debug] bottom_fps, plus the sampling window and the latest
+ * sample. Same "drawn" definition as gdx3ds_fps_hud.c: host iterations minus frameskip skips. */
+static int sFpsEnabled = 1;
+static u64 sFpsWindowStartTick = 0;
+static unsigned long sFpsWindowTicks = 0;
+static unsigned long sFpsWindowStartSkipped = 0;
+static int sFpsShown = -1;        /* latest whole-fps sample; -1 = "--" (no sample yet) */
 static char sPendingShot[40];
 static int sShotArmed = 0;
 static int sPlacementSaveDirty = 0; /* [hud] placement changed mid-race; ini write deferred */
@@ -376,6 +415,19 @@ static int sIdleBaked = 0;       /* idle backdrop painted this "session" (reset 
 static int sIdlePrevBackTouch = 0;
 static int sIdleSelectHoldTicks = 0;
 
+/* Bottom-screen product menus ([ui] bottom_menus, gdx3ds_bui.c): while on, the developer console
+ * is reached with L+R+SELECT held (gdx3ds_menu.c runs that combo for every owner of the screen),
+ * so neither takeover runs its own SELECT long-press, and the DEBUG button is hidden unless
+ * [debug] dev_console=1. Set once at init by gdx3ds_bottomhud_set_bui. */
+static int sBuiOn = 0;
+static int sDebugHidden = 0;
+/* The multiplayer race dash (gdx3ds_bui_race.h): 1 on a DASH tick of a multiplayer race with the
+ * product menus on. Every hook below is behind it, so a single-player race runs exactly the code
+ * it ran before. sLiveFb: the last live buffer the DASH presented to (the stall banner paints
+ * there while the main loop is blocked). */
+static int sMpDash = 0;
+static uint16_t* sLiveFb = NULL;
+
 /* CUSTOM HUD mode state. sCustomBackdropPainted mirrors sWasValid's own "once per race" latch,
  * but separately: switching between a baked mode (1-3) and CUSTOM mid-race must repaint the
  * right kind of backdrop for whichever one is now active, not assume the other one already ran.
@@ -398,7 +450,7 @@ static int sEditDragOffX = 0;
 static int sEditDragOffY = 0;
 
 /* The CUSTOM-mode fixed chrome buttons: RESET and the EDIT<->DONE toggle, both in the header's
- * only remaining free gap (x0..83, left of the DEBUG button at DASH_BACK_X0=84 -- see that
+ * only remaining free gap (x0..81, left of the SETTINGS button at DASH_BACK_X0=82 -- see that
  * macro's own widget-table row). Not part of sDashWidgets/sCustomWidgets: these are meta-UI for
  * the custom-layout editor itself, not race-HUD widgets a layout could ever hide or move. */
 #define DASH_RESET_X0 2
@@ -427,8 +479,120 @@ static unsigned long sTicks = 0;
 static u64 sTickTicksTotal = 0;
 static u64 sTickTicksMax = 0;
 
+/* o3dsperf: the race DASH's cost levers (hardware 4bfb302: [dash] avg_us=3900-4000 on an Old 3DS
+ * and ~1800 on a New 3DS, on EVERY host iteration, rendered or skipped).
+ *   [ui] dash_every N (default 4 on an Old 3DS, 1 on a New 3DS): the widgets repaint (and the
+ *        live buffer is updated) at most every N host iterations; a due repaint waits up to N
+ *        more iterations for a frameskip skip iteration, so it lands where the frame has room.
+ *        Touch input and the fps sample still run every iteration. 1 = every iteration (as before).
+ *   [ui] dash_memo 1: a widget whose shown value is unchanged since its last paint is not
+ *        repainted (its pixels are already in the shadow). 0 = repaint every widget (as before).
+ *   [debug] dash_prof 1: [dashprof] per-widget cost every 256 DASH ticks. */
+static int sDashEvery = 1;
+/* o3ds60 [ui] dash_spread (default 1 on an Old 3DS, 0 on a New 3DS): while the race draws every
+ * tick (no frameskip skip iteration to land on), a due repaint no longer paints every widget on one
+ * iteration every dash_every: iteration i paints the widgets of phase i % dash_every
+ * (kDashPaintOrder's index modulo dash_every), so the cost is spread evenly instead of a spike every
+ * Nth frame (a 1-in-4 spike sits above the frameskip's p90 and blocks the step up to 60 fps). Each
+ * widget still repaints at 60 / dash_every Hz. 1 also spreads from the first tick steady
+ * frameskip runs at D = 1; 2 = only after 8 ticks without a skip (the 5c24be0 rule); 0 = the
+ * d9deb37 rule. */
+static int sDashSpread = 0;
+/* o3ds60 [ui] dash_budget (default 1 on an Old 3DS, 0 on a New 3DS). hw 52acd44 (Old 3DS, MP race
+ * at steady D = 1): [steadyd1] post-present 4.1 ms avg / 7.6 max, dash tick 1.1 ms avg / 4.5-5.6
+ * max: the dash alone overran the next slot. With the lever on:
+ *   - while steady frameskip runs at D = 1, a tick stops painting widgets once it has used
+ *     [ui] dash_budget_us (default 1000); the rest carry to the next tick, first in line;
+ *   - the map box's scaled bitmap (168 x 168 px, one palette lookup per pixel) is cached and
+ *     blitted a column at a time while the minimap bitmap and its palette are unchanged;
+ *   - the present copies each run of painted columns, not the whole span between the first and
+ *     the last painted column (the map and the timer on one tick copied ~180 columns);
+ *   - the self-heal full present (every 120 presents) becomes a 40-column slice every 15.
+ * Same pixels: every widget paints what it painted before, at most a few ticks later. 0 = the
+ * 52acd44 rules. */
+static int sDashBudget = 0;
+static int sDashBudgetUs = 1000;   /* [ui] dash_budget_us */
+/* o3ds60 [ui] dash_every_d1 (default 6 on an Old 3DS, 0 = dash_every): the spread's widget
+ * period while steady runs at D = 1 (6: every widget 10 times a second). */
+static int sDashEveryD1 = 0;
+/* o3ds-cpucuts [ui] dash_race0_d1 (0 off, 1 on, 2 A/B on [cpucut] bit 1; DEFAULT 0): a race whose
+ * frameskip is off (the 1P race0 rule: every tick renders) counts as steady D = 1 for the D = 1
+ * levers above -- dash_every_d1's period, dash_spread from the first tick, dash_budget's per-tick
+ * budget, dash_map_inc's D = 1 rule. hw 06c5264 (Old 3DS, 1P race0): those levers never engaged
+ * there, the dash painting at dash_every with no budget. Not default: the bottom screen's widgets
+ * repaint on other ticks (same pixels, other moments). */
+static int sDashRace0D1 = 0;
+static unsigned sDashPhaseN = 1;   /* the spread period this tick (dash_every or dash_every_d1) */
+static unsigned sDashCarry = 0;    /* dash_budget: paint-order bits (+ DASH_CARRY_BUI) left for the next tick */
+#define DASH_CARRY_BUI (1u << 30)
+static unsigned sHealSlice = 0;
+/* o3ds60 [ui] dash_map_inc (default 1 on an Old 3DS, 0 on a New 3DS; needs dash_budget). hw
+ * a3b4531 ([dashworst], Old 3DS guest, MP race): every map tick cost map_us 1.6-2.0 ms (the
+ * cached 168 x 168 box blit, 56 KB) plus pres_us 1.5-2.3 ms (106 KB: the box's 168 whole columns),
+ * and the D = 1 misses with dash_us 2.9-3.1 ms were map ticks (one widget: the budget cannot split
+ * it). With the lever, while the cached box is on screen unchanged a map tick only puts the cache
+ * back under the previous tick's dots / NET chip / FPS text and paints them anew, and the present
+ * copies only those pixels' rows of their columns. Any whole-frame present (a bake, an overlay, a
+ * new live buffer) without a whole map paint in the same tick paints the whole box again on the
+ * next map tick; so does a map tick off D = 1 after DASH_MAP_INC_HEAL map ticks. Same pixels. */
+static int sDashMapInc = 0;
+static int sMapIncValid = 0;       /* the shadow's box = the cache + the overlay recorded in sOvY0/1 */
+static int sMapFullThisTick = 0;   /* a whole map paint (cache + overlay) ran this tick */
+static unsigned sMapIncSince = 0;  /* incremental map ticks since the last whole one */
+#define DASH_MAP_INC_HEAL 50u
+static unsigned long sMapIncPaints = 0;  /* receipts, per 256 dash ticks */
+static unsigned long sMapFullPaints = 0;
+static unsigned long sMapCacheBuilds = 0;
+static int16_t sOvY0[DASH_FB_W];   /* per column: rows the box overlay covered at the last map paint */
+static int16_t sOvY1[DASH_FB_W];
+static int16_t sTrkY0[DASH_FB_W];  /* per column: rows the overlay paint wrote this map tick */
+static int16_t sTrkY1[DASH_FB_W];
+static int16_t sRowY0[DASH_FB_W];  /* per column: rows to present this tick (columns not presented whole) */
+static int16_t sRowY1[DASH_FB_W];
+static int sRowAny = 0;
+/* [dashworst]: the costliest tick of each 256 (what it painted, carried, presented). */
+typedef struct DashTickCost {
+    u64 total;
+    u64 map;
+    u64 bui;
+    u64 pres;
+    unsigned long kb;
+    unsigned widgets;
+    unsigned carried;
+    int full;
+    int d1;
+    int mapInc; /* o3ds60 dash_map_inc: 1 = the map tick restored and repainted only the overlay */
+} DashTickCost;
+static DashTickCost sTickCost;
+static DashTickCost sWorstTick;
+static unsigned sDashPhaseNext = 0;
+static u64 sDashLastTickTicks = 0; /* o3ds60: the latest race tick's self-timed cost ([steadyd1]) */
+static int sMpHudPlacement = 0; /* o3ds60 [ui] mp_hud_placement, latched at init */
+static int sDashMemo = 1;
+static int sDashProf = 0;
+static unsigned sDashSince = 0;          /* iterations since the last repaint */
+static unsigned sDashSinceSkip = 255;    /* iterations since the last frameskip skip iteration */
+static unsigned long sDashPrevSkipped = 0;
+static unsigned long sDashPaints = 0;    /* repaints in the receipt window */
+static unsigned long sDashPresentKb = 0; /* KiB copied to the live buffer in the window */
+static uint16_t* sDashLastLive = NULL;
+static u64 sProfWidget[DASHW_COUNT];
+static u64 sProfBui = 0;
+static u64 sProfPresent = 0;
+#define DASH_MEMO_KEY 28
+static char sMemoKey[DASHW_COUNT][DASH_MEMO_KEY];
+static unsigned char sMemoValid[DASHW_COUNT];
+static int sMemoMode = -1;
+#define DASH_FULL_PRESENT_EVERY 120u /* a whole-frame present this often, as a self-heal */
+static unsigned sSinceFullPresent = 0;
+/* The shadow's painted columns this tick (DashMarkCols, below). */
+static int sDirtyX0 = DASH_FB_W;
+static int sDirtyX1 = -1;
+static int sDirtyFull = 1;
+static uint32_t sDirtyColBits[(DASH_FB_W + 31) / 32]; /* o3ds60 dash_budget: the painted columns themselves */
+
 static void DashLog(const char* fmt, ...) {
-    char buf[160];
+    char buf[320];
     va_list ap;
     int n;
     va_start(ap, fmt);
@@ -441,6 +605,356 @@ static void DashLog(const char* fmt, ...) {
         svcOutputDebugString(buf, (size_t) n);
         gdx3ds_filelog_write(buf, (size_t) n);
     }
+}
+
+/* ---- boot bake: the DASH art from the user's own fzerox.o2r (gdx3ds_hudbake.h) ----------
+ *
+ * MEMORY (heapfix): every byte of it -- the 344 KB arena the painters read, the bake's transient
+ * images, the prefetched records, the cache file in and out -- comes from the LINEAR heap
+ * (gdx3ds_hudbake_set_allocator below). The Old 3DS's regular heap is the one the game runs out
+ * of (card-5: 4-6 KB allocation failures mid-race, then a 73 KB one in the exit chain); the
+ * linear heap is pinned at 16 MB and never drops below ~5 MB free. Moving the arena out of .bss
+ * hands its 344 KB back to the regular heap (libctru sizes it as what the image leaves), and
+ * nothing the bake does at boot touches, or fragments, the regular free list.
+ *
+ * SPEED (heapfix): card-5 measured 820 ms of archive time for 138 small records on an Old 3DS
+ * (~6 ms each: several SD requests per record at ~2 ms each) and 768 ms to write a 100 KB cache
+ * (newlib splits an unbuffered fwrite into 1 KB FS writes, each one extending the file). The
+ * records are now prefetched in ARCHIVE order (the zipshim's read-ahead window then serves runs
+ * of neighbours from one SD read) and the cache goes out in one write() call. */
+
+extern int GDiffuser_LoadArchiveFileBytes(const char* key, void* out, size_t outSize, size_t* copiedSize);
+extern int gdx3ds_zipshim_entry_fingerprint(const char* name, unsigned int* fingerprint);
+extern int gdx3ds_zipshim_entry_locate(const char* name, unsigned long long* offset, unsigned long long* size);
+extern void gdx3ds_zipshim_io_stats(unsigned long* reads, unsigned long long* bytes);
+
+static unsigned long TicksToMicros(u64 ticks) {
+    return (unsigned long) (ticks * 1000000ull / SYSCLOCK_ARM11);
+}
+
+static void* DashBakeAlloc(size_t bytes) {
+    return linearAlloc(bytes);
+}
+
+static void DashBakeFree(void* p) {
+    linearFree(p);
+}
+
+static void DashBakeLog(const char* line, void* user) {
+    (void) user;
+    DashLog("%s", line);
+}
+
+static int DashBakeFingerprint(const char* key, unsigned int* fingerprint, void* user) {
+    (void) user;
+    return gdx3ds_zipshim_entry_fingerprint(key, fingerprint);
+}
+
+/* The prefetch: every record the bake reads, loaded once in archive order into one linear block,
+ * then handed to the recipes from memory. A record it could not prefetch (no slot, a read miss)
+ * is read through the archive when the bake asks for it, exactly as before. */
+#define DASH_PREFETCH_MAX 160
+
+typedef struct DashPrefetchSlot {
+    char key[GDX3DS_HUDBAKE_KEY_LEN];
+    unsigned long long offset; /* in its archive: the sort key */
+    size_t cap;                /* bytes reserved (the entry's size) */
+    size_t got;                /* bytes loaded; 0 = not prefetched */
+    unsigned char* data;
+} DashPrefetchSlot;
+
+typedef struct DashPrefetch {
+    DashPrefetchSlot* slots;
+    int count;
+    int next; /* the bake reads in list order: where to look first */
+    unsigned char* store;
+    u64 readTicks;
+    unsigned long missesAfter; /* reads the prefetch did not cover */
+} DashPrefetch;
+
+static int DashPrefetchCompare(const void* a, const void* b) {
+    const DashPrefetchSlot* x = *(const DashPrefetchSlot* const*) a;
+    const DashPrefetchSlot* y = *(const DashPrefetchSlot* const*) b;
+    if (x->offset != y->offset) {
+        return x->offset < y->offset ? -1 : 1;
+    }
+    return 0;
+}
+
+static void DashPrefetchFree(DashPrefetch* pf) {
+    if (pf->store != NULL) {
+        linearFree(pf->store);
+    }
+    if (pf->slots != NULL) {
+        linearFree(pf->slots);
+    }
+    memset(pf, 0, sizeof(*pf));
+}
+
+/* Returns the bytes prefetched (0: nothing, the bake reads through the archive). */
+static size_t DashPrefetchLoad(DashPrefetch* pf) {
+    char (*keys)[GDX3DS_HUDBAKE_KEY_LEN] = NULL;
+    DashPrefetchSlot** order = NULL;
+    size_t total = 0;
+    size_t used = 0;
+    int n = gdx3ds_hudbake_list_keys(NULL, 0);
+    int i;
+    const u64 t0 = svcGetSystemTick();
+    memset(pf, 0, sizeof(*pf));
+    if (n <= 0 || n > DASH_PREFETCH_MAX) {
+        return 0;
+    }
+    pf->slots = (DashPrefetchSlot*) linearAlloc(sizeof(DashPrefetchSlot) * (size_t) n);
+    keys = (char (*)[GDX3DS_HUDBAKE_KEY_LEN]) linearAlloc(sizeof(*keys) * (size_t) n);
+    order = (DashPrefetchSlot**) linearAlloc(sizeof(*order) * (size_t) n);
+    if (pf->slots == NULL || keys == NULL || order == NULL) {
+        if (keys != NULL) {
+            linearFree(keys);
+        }
+        if (order != NULL) {
+            linearFree(order);
+        }
+        DashPrefetchFree(pf);
+        return 0;
+    }
+    gdx3ds_hudbake_list_keys(keys, n);
+    pf->count = n;
+    for (i = 0; i < n; i++) {
+        DashPrefetchSlot* s = &pf->slots[i];
+        unsigned long long size = 0;
+        memset(s, 0, sizeof(*s));
+        memcpy(s->key, keys[i], sizeof(s->key));
+        if (gdx3ds_zipshim_entry_locate(s->key, &s->offset, &size) > 0 && size > 0 && size < (1u << 20)) {
+            s->cap = (size_t) ((size + 3u) & ~3ull);
+            total += s->cap;
+        }
+        order[i] = s;
+    }
+    linearFree(keys);
+    pf->store = total != 0 ? (unsigned char*) linearAlloc(total) : NULL;
+    if (pf->store == NULL) {
+        linearFree(order);
+        DashPrefetchFree(pf);
+        return 0;
+    }
+    qsort(order, (size_t) n, sizeof(*order), DashPrefetchCompare);
+    for (i = 0; i < n; i++) {
+        DashPrefetchSlot* s = order[i];
+        size_t copied = 0;
+        if (s->cap == 0) {
+            continue;
+        }
+        s->data = pf->store + used;
+        used += s->cap;
+        if (GDiffuser_LoadArchiveFileBytes(s->key, s->data, s->cap, &copied) && copied > 0) {
+            s->got = copied;
+        }
+    }
+    linearFree(order);
+    pf->readTicks = svcGetSystemTick() - t0;
+    return used;
+}
+
+static DashPrefetchSlot* DashPrefetchFind(DashPrefetch* pf, const char* key) {
+    int k;
+    for (k = 0; k < pf->count; k++) {
+        DashPrefetchSlot* s = &pf->slots[(pf->next + k) % pf->count];
+        if (strcmp(s->key, key) == 0) {
+            pf->next = (int) (s - pf->slots + 1) % pf->count;
+            return s;
+        }
+    }
+    return NULL;
+}
+
+static size_t DashBakeRead(const char* key, void* buf, size_t cap, void* user) {
+    DashPrefetch* pf = (DashPrefetch*) user;
+    DashPrefetchSlot* s = (pf != NULL && pf->count > 0) ? DashPrefetchFind(pf, key) : NULL;
+    size_t copied = 0;
+    u64 t0;
+    if (s != NULL && s->got > 0) {
+        copied = s->got < cap ? s->got : cap;
+        memcpy(buf, s->data, copied);
+        return copied;
+    }
+    t0 = svcGetSystemTick();
+    if (pf != NULL) {
+        pf->missesAfter++;
+    }
+    if (!GDiffuser_LoadArchiveFileBytes(key, buf, cap, &copied)) {
+        copied = 0;
+    }
+    if (pf != NULL) {
+        pf->readTicks += svcGetSystemTick() - t0;
+    }
+    return copied;
+}
+
+/* The bake's SD cache (gdx3ds_hudbake.h): beside the archives, rewritten whenever it misses.
+ * tools/prebake (tools/hudpack) writes the same file on the PC from the user's own ROM, so a
+ * first boot with it on the card reads it like any cache. */
+static void DashBakeCachePath(char* out, size_t cap, const char* suffix) {
+    snprintf(out, cap, "%shudbake.cache%s", gdx3ds_fs_base_path(), suffix);
+}
+
+/* The whole file into one linear buffer, one read() call. NULL: none / unreadable (*why says). */
+static unsigned char* DashBakeReadFile(const char* path, size_t* size, const char** why) {
+    struct stat st;
+    unsigned char* data;
+    ssize_t got;
+    const int fd = open(path, O_RDONLY);
+    *why = "none";
+    if (fd < 0) {
+        return NULL;
+    }
+    if (fstat(fd, &st) != 0 || st.st_size <= 0 || st.st_size > (8 << 20)) {
+        close(fd);
+        *why = "unreadable";
+        return NULL;
+    }
+    data = (unsigned char*) linearAlloc((size_t) st.st_size);
+    if (data == NULL) {
+        close(fd);
+        *why = "out of memory";
+        return NULL;
+    }
+    got = read(fd, data, (size_t) st.st_size);
+    close(fd);
+    if (got != (ssize_t) st.st_size) {
+        linearFree(data);
+        *why = "short read";
+        return NULL;
+    }
+    *size = (size_t) st.st_size;
+    return data;
+}
+
+static int DashBakeFromCache(void) {
+    char path[192];
+    const char* why = NULL;
+    size_t size = 0;
+    unsigned char* data;
+    int ok;
+    const u64 t0 = svcGetSystemTick();
+    u64 c0;
+    DashBakeCachePath(path, sizeof(path), "");
+    data = DashBakeReadFile(path, &size, &why);
+    if (data == NULL) {
+        DashLog("[hudbake] cache not used: %s%s%s", why, strcmp(why, "none") == 0 ? " at " : "",
+                strcmp(why, "none") == 0 ? path : "");
+        return 0;
+    }
+    c0 = svcGetSystemTick();
+    ok = gdx3ds_hudbake_cache_read(data, size, DashBakeFingerprint, NULL, DashBakeLog, NULL);
+    DashLog("[hudbake] cache: %u bytes read in %lu us, checked + unpacked in %lu us (recipe id 0x%08X)",
+            (unsigned) size, TicksToMicros(c0 - t0), TicksToMicros(svcGetSystemTick() - c0),
+            gdx3ds_hudbake_recipe_id());
+    linearFree(data);
+    return ok;
+}
+
+/* One write() of the whole file to .tmp, then the .tmp replaces the cache (never a torn cache:
+ * a reader rejects a short or damaged one anyway, and a missing one is just a miss). */
+static int DashBakeWriteFile(const char* tmp, const char* path, const void* data, size_t len, const char** why) {
+    ssize_t wrote;
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        *why = "cannot create it";
+        return 0;
+    }
+    wrote = write(fd, data, len);
+    if (close(fd) != 0 || wrote != (ssize_t) len) {
+        remove(tmp);
+        *why = "short write";
+        return 0;
+    }
+    remove(path);
+    if (rename(tmp, path) != 0) {
+        remove(tmp);
+        *why = "rename failed";
+        return 0;
+    }
+    return 1;
+}
+
+static void DashBakeWriteCache(void) {
+    char path[192];
+    char tmp[200];
+    const char* why = NULL;
+    const size_t need = gdx3ds_hudbake_cache_write(NULL, 0, DashBakeFingerprint, NULL);
+    void* data;
+    size_t len;
+    if (need == 0) {
+        DashLog("[hudbake] cache not written: the bake was incomplete");
+        return;
+    }
+    data = linearAlloc(need);
+    if (data == NULL) {
+        DashLog("[hudbake] cache not written: out of memory");
+        return;
+    }
+    len = gdx3ds_hudbake_cache_write(data, need, DashBakeFingerprint, NULL);
+    DashBakeCachePath(path, sizeof(path), "");
+    DashBakeCachePath(tmp, sizeof(tmp), ".tmp");
+    if (len == 0) {
+        DashLog("[hudbake] cache not written: a record has no fingerprint");
+    } else if (!DashBakeWriteFile(tmp, path, data, len, &why)) {
+        DashLog("[hudbake] cache not written: %s", why);
+    } else {
+        DashLog("[hudbake] cache written: %s (%u bytes)", path, (unsigned) len);
+    }
+    linearFree(data);
+}
+
+static void DashBakeDigestReceipt(void) {
+    if (gdx3ds_config_get_bool("debug", "hudbake_digest", 0)) {
+        const unsigned digest = gdx3ds_hudbake_digest();
+        DashLog("[hudbake] digest 0x%08X (%s)", digest,
+                digest == GDX3DS_HUDBAKE_DIGEST_RETAIL ? "matches the retail archive's" : "NOT the retail archive's");
+    }
+}
+
+static void DashBakeFromArchive(int useCache) {
+    GdxHudBakeStats st;
+    DashPrefetch pf;
+    unsigned long reads0 = 0;
+    unsigned long reads1 = 0;
+    unsigned long long bytes0 = 0;
+    unsigned long long bytes1 = 0;
+    size_t prefetched;
+    const u64 t0 = svcGetSystemTick();
+    u64 dt;
+    gdx3ds_zipshim_io_stats(&reads0, &bytes0);
+    prefetched = DashPrefetchLoad(&pf);
+    gdx3ds_hudbake_run(DashBakeRead, &pf, DashBakeLog, NULL, &st);
+    dt = svcGetSystemTick() - t0;
+    gdx3ds_zipshim_io_stats(&reads1, &bytes1);
+    DashLog("[hudbake] baked from fzerox.o2r: textures=%d missing=%d bytes=%lu in %lu us (archive %lu us, "
+            "recipes %lu us) | prefetch %u bytes, %lu late reads | sd reads=%lu bytes=%llu | arena %u bytes linear",
+            st.textures, st.missing, st.bytesRead, TicksToMicros(dt), TicksToMicros(pf.readTicks),
+            TicksToMicros(dt - pf.readTicks), (unsigned) prefetched, pf.missesAfter, reads1 - reads0,
+            bytes1 - bytes0, (unsigned) gdx3ds_hudbake_arena_bytes());
+    DashPrefetchFree(&pf);
+    DashBakeDigestReceipt();
+    if (useCache) {
+        const u64 w0 = svcGetSystemTick();
+        DashBakeWriteCache();
+        DashLog("[hudbake] cache write took %lu us", TicksToMicros(svcGetSystemTick() - w0));
+    }
+}
+
+/* [debug] hudbake_cache (default 1): 0 bakes from the archive every boot and leaves the SD alone. */
+void gdx3ds_bottomhud_bake_assets(void) {
+    const int useCache = gdx3ds_config_get_bool("debug", "hudbake_cache", 1);
+    const u64 t0 = svcGetSystemTick();
+    sDirtyFull = 1;
+    gdx3ds_hudbake_set_allocator(DashBakeAlloc, DashBakeFree);
+    if (useCache && DashBakeFromCache()) {
+        DashLog("[hudbake] loaded from the SD cache in %lu us", TicksToMicros(svcGetSystemTick() - t0));
+        DashBakeDigestReceipt();
+        return;
+    }
+    DashBakeFromArchive(useCache);
 }
 
 /* DEBUG LEVER (coordinator hw bug n60-3d7, item 2: "boost-ready did NOT turn green on hardware,
@@ -456,10 +970,15 @@ static void DashLog(const char* fmt, ...) {
  * in the read/paint logic. Kept as a permanent lever (default off) so the real-hardware boost
  * state can be reached and re-verified in seconds without driving a full GP lap by hand; see
  * docs/research/native/nibottom-progress.md for the full writeup. */
+extern int gdx3ds_mp_session_levers_forced(void) __attribute__((weak)); /* gdx3ds_autodrive.c (MP30) */
+
 int gdx_debug_force_lap2_enabled(void) {
     static int cached = -1;
     if (cached < 0) {
         cached = gdx3ds_config_get_bool("debug", "force_lap2", 0) ? 1 : 0;
+    }
+    if (cached && (&gdx3ds_mp_session_levers_forced != 0) && gdx3ds_mp_session_levers_forced()) {
+        return 0; /* a lockstep session: never fast-forward one console's race */
     }
     return cached;
 }
@@ -697,6 +1216,47 @@ void gdx3ds_bottomhud_init(void) {
     } else if (sHz > 60) {
         sHz = 60;
     }
+    {
+        bool isNew = true;
+        if (R_FAILED(APT_CheckNew3DS(&isNew))) {
+            isNew = true;
+        }
+        sDashEvery = gdx3ds_config_get_int("ui", "dash_every", isNew ? 1 : 4);
+        /* o3ds60 [ui] mp_hud_placement (default ON on both models; mp-polish: the user saw the
+         * top HUD in a placement=3 MP race on a New 3DS too): an MP
+         * fullview race's one full-screen view follows [hud] placement like the 1P race does
+         * (gdx3ds_bottomhud_fullview_placement below). Off = the 2-4P force-ALL_TOP rule as
+         * shipped. Render-only: menus.c still runs Hud_DrawHud's logic and rewinds the picture
+         * (decomp-3ds-o3ds60-mp-hud.patch), so no game state depends on it. */
+        sMpHudPlacement = gdx3ds_config_get_bool("ui", "mp_hud_placement", 1) ? 1 : 0;
+        sDashSpread = gdx3ds_config_get_int("ui", "dash_spread", isNew ? 0 : 1);
+        if (sDashSpread < 0 || sDashSpread > 2) {
+            sDashSpread = 1;
+        }
+        sDashBudget = gdx3ds_config_get_bool("ui", "dash_budget", isNew ? 0 : 1) ? 1 : 0;
+        sDashBudgetUs = gdx3ds_config_get_int("ui", "dash_budget_us", 1000);
+        if (sDashBudgetUs < 100) {
+            sDashBudgetUs = 100;
+        } else if (sDashBudgetUs > 16000) {
+            sDashBudgetUs = 16000;
+        }
+        sDashMapInc = (sDashBudget && gdx3ds_config_get_bool("ui", "dash_map_inc", isNew ? 0 : 1)) ? 1 : 0;
+        sMapIncValid = 0;
+        sDashRace0D1 = gdx3ds_cpucut_clamp(gdx3ds_config_get_int("ui", "dash_race0_d1", 0), 0);
+        gdx3ds_cpucut_lever("dashr0", &sDashRace0D1, GDX3DS_CPUCUT_BIT_DASH);
+        sDashEveryD1 = gdx3ds_config_get_int("ui", "dash_every_d1", isNew ? 0 : 6);
+        if (sDashEveryD1 < 0 || sDashEveryD1 > 30) {
+            sDashEveryD1 = 0;
+        }
+        if (sDashEvery < 1) {
+            sDashEvery = 1;
+        } else if (sDashEvery > 30) {
+            sDashEvery = 30;
+        }
+    }
+    sDashMemo = gdx3ds_config_get_bool("ui", "dash_memo", 1) ? 1 : 0;
+    sDashProf = gdx3ds_config_get_bool("debug", "dash_prof", 0) ? 1 : 0;
+    sDirtyFull = 1;
     sWasValid = 0;
     sCustomBackdropPainted = 0;
     sEditMode = 0;
@@ -704,6 +1264,10 @@ void gdx3ds_bottomhud_init(void) {
     sLastTop5Count = -1;
     sLastHeaderRacersRemaining = -1;
     sLastHeaderTrackName[0] = '\0';
+    sLastSpareMachines = DASH_LIVES_UNPAINTED;
+    /* [debug] bottom_fps (default ON -- user ask): the DASH's own drawn-fps text, top-right inside
+     * the map box. Independent of [debug] fps (the debug console's top-row counter). */
+    sFpsEnabled = gdx3ds_config_get_bool("debug", "bottom_fps", 1) ? 1 : 0;
     /* VERIFICATION AID, not a user-facing feature: [debug] hud_edit_start=1 forces CUSTOM mode
      * with edit mode already active from the very first tick, so an emulator/hardware capture
      * can show the edit overlay (selection, close/resize handles, the hidden-widget tray)
@@ -735,10 +1299,14 @@ void gdx3ds_bottomhud_init(void) {
     /* hud_custom/modes is a direct, greppable receipt for the SHELF gate (nibottom-progress.md
      * §12): modes=3 with no "CUSTOM" in the cycle whenever hud_custom=0 (the default), modes=4
      * when someone has explicitly opted back in. */
-    DashLog("[dash] init enabled=%d idle=%d placement=%s hz=%d hud_custom=%d modes=%d", sEnabled, sIdleEnabled,
+    DashLog("[dash] init enabled=%d idle=%d placement=%s hz=%d hud_custom=%d modes=%d fps=%d every=%d memo=%d prof=%d mp_hud=%d spread=%d "
+            "budget=%d budget_us=%d every_d1=%d map_inc=%d race0_d1=%d",
+            sEnabled, sIdleEnabled,
             sPlacementMode == GDX_HUD_PLACEMENT_CUSTOM ? "CUSTOM" : gdx_hud_placement_name(sPlacementMode), sHz,
             HudCustomLeverEnabled(),
-            HudCustomLeverEnabled() ? (GDX_HUD_PLACEMENT_CUSTOM + 1) : GDX_HUD_PLACEMENT_MODE_COUNT);
+            HudCustomLeverEnabled() ? (GDX_HUD_PLACEMENT_CUSTOM + 1) : GDX_HUD_PLACEMENT_MODE_COUNT, sFpsEnabled,
+            sDashEvery, sDashMemo, sDashProf, sMpHudPlacement, sDashSpread, sDashBudget, sDashBudgetUs,
+            sDashEveryD1, sDashMapInc, sDashRace0D1);
 }
 
 int gdx3ds_bottomhud_enabled(void) {
@@ -771,6 +1339,20 @@ int gdx3ds_bottomhud_race_live(void) {
  * gdx3ds_bottomhud_tick/_cycle_mode/_placement_mode's own internal logic (the MODE chip's label,
  * CUSTOM's own paint/edit path) all read sPlacementMode directly instead, so they still see the
  * real value. */
+/* port/gdx_hud_placement.c asks this before applying the 2-4P force-ALL_TOP rule: nonzero
+ * means "this frame draws one MP fullview view, answer as the 1P race". Only inside Race_Draw's
+ * fullview latch (gdx_fv_k), never during a demo, never when the DASH itself is off. */
+int gdx3ds_bottomhud_fullview_placement(void) {
+    extern int gdx_fv_k(void) __attribute__((weak)); /* game/gdx3ds_fullview_game.c */
+    if (!sMpHudPlacement || !sEnabled || gdx_fv_k == NULL || gdx_fv_k() < 0) {
+        return 0;
+    }
+    if (gdx_title_demo_active()) {
+        return 0;
+    }
+    return 1;
+}
+
 int gdx3ds_bottomhud_placement_mode(void) {
     if (gdx_title_demo_active()) {
         return GDX_HUD_PLACEMENT_ALL_TOP; /* no DASH during a demo, so nothing may leave the top screen */
@@ -873,15 +1455,140 @@ static inline void DashPixel(uint16_t* fb, int x, int y, uint16_t colour) {
     if (x < 0 || x >= DASH_FB_W || y < 0 || y >= DASH_FB_H) {
         return;
     }
+    if (x < sDirtyX0) {
+        sDirtyX0 = x; /* o3dsperf: the partial present copies the columns written this tick */
+    }
+    if (x > sDirtyX1) {
+        sDirtyX1 = x;
+    }
+    sDirtyColBits[x >> 5] |= 1u << (x & 31);
     fb[(size_t) x * DASH_FB_H + (DASH_FB_H - 1 - y)] = colour;
 }
 
-static void DashFillRect(uint16_t* fb, int x0, int y0, int w, int h, uint16_t colour) {
+/* o3dsperf: the columns of the shadow this tick painted (the fb is column-major, so a run of
+ * columns is one contiguous block). The present copies only that block; every paint primitive
+ * below marks the columns it can touch. sDirtyFull = the whole screen (a bake, an overlay, a
+ * new live buffer). Inclusive bounds, clamped to the screen. */
+
+static void DashMarkCols(int x0, int w) {
+    int x1 = x0 + w - 1;
+    if (w <= 0) {
+        return;
+    }
+    if (x0 < 0) {
+        x0 = 0;
+    }
+    if (x1 >= DASH_FB_W) {
+        x1 = DASH_FB_W - 1;
+    }
+    if (x1 < x0) {
+        return;
+    }
+    if (x0 < sDirtyX0) {
+        sDirtyX0 = x0;
+    }
+    if (x1 > sDirtyX1) {
+        sDirtyX1 = x1;
+    }
+    {
+        int x;
+        for (x = x0; x <= x1; x++) {
+            sDirtyColBits[x >> 5] |= 1u << (x & 31);
+        }
+    }
+}
+
+/* o3ds60 dash_map_inc: row ranges per column (screen y, inclusive). */
+static void DashRowsReset(int16_t* y0, int16_t* y1) {
     int x;
-    for (x = x0; x < x0 + w; x++) {
-        int y;
-        for (y = y0; y < y0 + h; y++) {
-            DashPixel(fb, x, y, colour);
+    for (x = 0; x < DASH_FB_W; x++) {
+        y0[x] = INT16_MAX;
+        y1[x] = -1;
+    }
+}
+
+static void DashRowsWiden(int16_t* y0, int16_t* y1, int x, int ya, int yb) {
+    if (x < 0 || x >= DASH_FB_W) {
+        return;
+    }
+    if (ya < 0) {
+        ya = 0;
+    }
+    if (yb >= DASH_FB_H) {
+        yb = DASH_FB_H - 1;
+    }
+    if (yb < ya) {
+        return;
+    }
+    if (ya < y0[x]) {
+        y0[x] = (int16_t) ya;
+    }
+    if (yb > y1[x]) {
+        y1[x] = (int16_t) yb;
+    }
+}
+
+/* These rows of column x go to the live buffer at this tick's present. */
+static void DashMarkRows(int x, int ya, int yb) {
+    if (!sRowAny) {
+        DashRowsReset(sRowY0, sRowY1);
+        sRowAny = 1;
+    }
+    DashRowsWiden(sRowY0, sRowY1, x, ya, yb);
+}
+
+/* o3dsperf [ui] dash_memo: 1 when widget `id` already shows `key` (the text / value it would
+ * paint) since its last paint, so the paint can be skipped; otherwise records `key` and returns 0.
+ * Never in CUSTOM / edit mode (the generic widgets move); reset by every backdrop bake. */
+static void DashMemoReset(void) {
+    memset(sMemoValid, 0, sizeof(sMemoValid));
+}
+
+static int DashMemoSame(int id, const char* key) {
+    if (!sDashMemo || sPlacementMode == GDX_HUD_PLACEMENT_CUSTOM || sEditMode) {
+        sMemoValid[id] = 0;
+        return 0;
+    }
+    if (sMemoMode != sPlacementMode) {
+        DashMemoReset();
+        sMemoMode = sPlacementMode;
+    }
+    if (sMemoValid[id] && strncmp(sMemoKey[id], key, DASH_MEMO_KEY) == 0) {
+        return 1;
+    }
+    strncpy(sMemoKey[id], key, DASH_MEMO_KEY - 1);
+    sMemoKey[id][DASH_MEMO_KEY - 1] = '\0';
+    sMemoValid[id] = 1;
+    return 0;
+}
+
+/* Same pixels as a DashPixel per texel, one clipped column run at a time (no per-pixel bounds
+ * test, no per-pixel index math). */
+static void DashFillRect(uint16_t* fb, int x0, int y0, int w, int h, uint16_t colour) {
+    int x1 = x0 + w;
+    int y1 = y0 + h;
+    int x;
+    if (x0 < 0) {
+        x0 = 0;
+    }
+    if (y0 < 0) {
+        y0 = 0;
+    }
+    if (x1 > DASH_FB_W) {
+        x1 = DASH_FB_W;
+    }
+    if (y1 > DASH_FB_H) {
+        y1 = DASH_FB_H;
+    }
+    if (x1 <= x0 || y1 <= y0) {
+        return;
+    }
+    DashMarkCols(x0, x1 - x0);
+    for (x = x0; x < x1; x++) {
+        uint16_t* p = fb + (size_t) x * DASH_FB_H + (DASH_FB_H - y1);
+        int n;
+        for (n = y1 - y0; n > 0; n--) {
+            *p++ = colour;
         }
     }
 }
@@ -889,6 +1596,7 @@ static void DashFillRect(uint16_t* fb, int x0, int y0, int w, int h, uint16_t co
 static void DashStrokeRect(uint16_t* fb, int x0, int y0, int w, int h, uint16_t colour) {
     int x;
     int y;
+    DashMarkCols(x0, w);
     for (x = x0; x < x0 + w; x++) {
         DashPixel(fb, x, y0, colour);
         DashPixel(fb, x, y0 + h - 1, colour);
@@ -929,16 +1637,33 @@ static inline uint16_t DashDimBackground(uint16_t c) {
 
 /* COORDINATOR FIX (third visual-feedback round, item 1): "the hand-drawn 3x5 font breaks an
  * explicit user requirement... Replace it with the real glyph atlases, baked into the C headers
- * from the o2r... Scale them to size with integer nearest-neighbour." gdx3ds_bottomhud_glyphs.h
- * (tools/gen_nibottom_bottomhud_glyphs.py) is that bake: real RGBA5551 pixels sliced straight
- * from fzerox.o2r's own aTimerSymbolsTex/aLapCounterSymbolsTex/aPosition<N>Tex/
+ * from the o2r... Scale them to size with integer nearest-neighbour." gdx3ds_hudbake.c is that
+ * bake (run once at boot, nothing compiled in): real RGBA5551 pixels sliced straight from the
+ * user's fzerox.o2r's own aTimerSymbolsTex/aLapCounterSymbolsTex/aPosition<N>Tex/
  * aPositionOrdinalSuffix<X>Tex/aFont1<X>Tex/aFont2<X>Tex. This file's own hand font is gone --
  * every blit below goes through DashBlitGlyphRatio (a single nearest-neighbour scaler, num/den
  * both >= 1, so it covers upscaling a tiny icon-sized texture AND downscaling a big one, e.g.
  * the 28x32 position digits at num=1,den=2 to fit two of them in the 64px-wide OUR-position box)
  * or the DashBlitGlyphTable* helpers that walk a whole string against one of the tables above. */
 
-static void DashBlitGlyphRatio(uint16_t* fb, int x, int y, const DashGlyph* g, int num, int den) {
+/* o3dsperf: floor(i * den / num) for i in [0, n), by accumulation (the ARM11 has no divide
+ * instruction; the old per-texel `/` was a library call per pixel). Exact, same values. */
+#define DASH_SCALE_TAB_MAX 256
+static void DashScaleTable(int16_t* out, int n, int num, int den) {
+    int q = 0;
+    int r = 0;
+    int i;
+    for (i = 0; i < n; i++) {
+        out[i] = (int16_t) q;
+        r += den;
+        while (r >= num) {
+            r -= num;
+            q++;
+        }
+    }
+}
+
+static void DashBlitGlyphRatioSlow(uint16_t* fb, int x, int y, const DashGlyph* g, int num, int den) {
     int dy;
     const int dw = (g->w * num) / den;
     const int dh = (g->h * num) / den;
@@ -952,6 +1677,46 @@ static void DashBlitGlyphRatio(uint16_t* fb, int x, int y, const DashGlyph* g, i
                 continue; /* alpha=0 */
             }
             DashPixel(fb, x + dx, y + dy, Rgba5551To565(p));
+        }
+    }
+}
+
+/* Nearest-neighbour glyph blit: the same texel -> pixel mapping (and so the same pixels) as the
+ * plain per-texel loop above, with the scale steps tabulated once per blit and each destination
+ * column written as one run. */
+static void DashBlitGlyphRatio(uint16_t* fb, int x, int y, const DashGlyph* g, int num, int den) {
+    int16_t sxTab[DASH_SCALE_TAB_MAX];
+    int16_t syTab[DASH_SCALE_TAB_MAX];
+    const int dw = (g->w * num) / den;
+    const int dh = (g->h * num) / den;
+    int dx;
+    if (dw <= 0 || dh <= 0) {
+        return;
+    }
+    if (dw > DASH_SCALE_TAB_MAX || dh > DASH_SCALE_TAB_MAX) {
+        DashMarkCols(x, dw);
+        DashBlitGlyphRatioSlow(fb, x, y, g, num, den);
+        return;
+    }
+    DashMarkCols(x, dw);
+    DashScaleTable(sxTab, dw, num, den);
+    DashScaleTable(syTab, dh, num, den);
+    for (dx = 0; dx < dw; dx++) {
+        const int px = x + dx;
+        const unsigned short* src = g->pixels + sxTab[dx];
+        uint16_t* col;
+        int dy;
+        if (px < 0 || px >= DASH_FB_W) {
+            continue;
+        }
+        col = fb + (size_t) px * DASH_FB_H + (DASH_FB_H - 1);
+        for (dy = 0; dy < dh; dy++) {
+            const int py = y + dy;
+            const unsigned short p = src[syTab[dy] * g->w];
+            if ((p & 1u) == 0u || py < 0 || py >= DASH_FB_H) {
+                continue; /* alpha=0, or off screen */
+            }
+            col[-py] = Rgba5551To565(p);
         }
     }
 }
@@ -1034,14 +1799,13 @@ static int DashFitFont2Num(const char* s, int maxW, int gap) {
     return 1;
 }
 
-/* The baked backdrop+chrome composite (gdx3ds_bottomhud_assets.h): the opaque background
- * first, then every other widget alpha-composited over it, in the generator's (== manifest's
- * own) order. Drawn ONCE PER RACE — see sWasValid's 0->1 edge in gdx3ds_bottomhud_tick.
+/* The baked backdrop+chrome composite (gdx3ds_hudbake.h): the opaque background first, then
+ * every other widget alpha-composited over it, in the template manifest's own order. Drawn ONCE PER RACE — see sWasValid's 0->1 edge in gdx3ds_bottomhud_tick.
  *
  * COORDINATOR FIX (nibottom Phase 2, post-mockup-shot review): "portrait" and "mode_button"
- * are baked FLATTENED PNGs of the template's own frozen example content -- "4TH"/"04th" baked
- * into the portrait ribbon, "MODE 1" baked across the whole mode_button box (see
- * tools/gen_nibottom_bottomhud_assets.py's own doc comment: a flattened export, not layered).
+ * were baked FLATTENED PNGs of the template's own frozen example content -- "4TH"/"04th" baked
+ * into the portrait ribbon, "MODE 1" baked across the whole mode_button box (a flattened export,
+ * not layered). They are no longer baked at all (gdx3ds_hudbake.c has no recipe for them).
  * Both are also fields this file draws LIVE every tick (the player's real position, the real
  * placement mode name) immediately on top, so baking them too meant drawing the live value
  * literally on top of a different, frozen value in the same cells -- the "stray '04'/garbled
@@ -1057,7 +1821,7 @@ static int DashFitFont2Num(const char* s, int maxW, int gap) {
 /* Per-cell skip test for the widgets that carry a LIVE field in among otherwise-static baked
  * content, so DashPaintBaked leaves those cells alone (checker shows through) and a live paint
  * draws the real value there every tick / once per race. Row ranges for lap/timer/gap found by
- * scanning kDashAsset_lap/timer/gap directly for their actual label-vs-value content bands
+ * scanning the baked lap/timer/gap widgets directly for their actual label-vs-value content bands
  * (label always starts at row 0).
  *
  * COORDINATOR FIX (third visual-feedback round, item 2): "the header says 'MUTE CITY !' on the
@@ -1068,13 +1832,13 @@ static int DashFitFont2Num(const char* s, int maxW, int gap) {
  * (168+). DashPaintHeaderLive (below) draws the real name there with real Font1 glyphs.
  *
  * COORDINATOR FIX (hardware feedback round, item 5): "'30 RACERS' [is] currently baked/frozen
- * text; make it live." Direct decode of kDashAsset_header found its "<N> RACERS" glyph pixels at
+ * text; make it live." Direct decode of the baked header widget found its "<N> RACERS" glyph pixels at
  * cols 255-313 on a flat cols-230-319 panel (nothing else lives right of the MODE chip's own 230
  * right edge) -- col >= 230 skips that whole panel, DashPaintHeaderLive's racer-count half draws
  * the live "<N> RACERS" there.
  *
  * COORDINATOR FIX (hardware feedback round, item 1): "the energy bar... has 'overflow' cut off
- * on top." Root cause: kDashAsset_energy_bar is a FLATTENED EXAMPLE export (same "frozen PNG of
+ * on top." Root cause: the baked energy_bar widget is a FLATTENED EXAMPLE export (same "frozen PNG of
  * whatever was on screen" issue "portrait"/"mode_button" already had) -- its baked pixels past
  * the "ENERGY" label (cols 7-53) are a frozen fill-bar screenshot, not a reusable empty frame, and
  * DashPaintEnergyFooter's own live fill only ever repaints rows 4..19 of the 24-tall box, leaving
@@ -1099,7 +1863,11 @@ static int DashBakeSkipCell(const char* id, int row, int col) {
         return row >= 12;
     }
     if (strcmp(id, "header") == 0) {
-        return col < 150 || col >= 230;
+        /* uipolish: the frozen text only -- the panel's top and left edge lines stay, and the
+         * skipped interior is painted in the panel's own colour (DashCompositeAssetWidget), so the
+         * bar runs the whole width under the course name and the SETTINGS button (hw: "the mode
+         * button has a background bar that doesn't stretch all the way across the screen") */
+        return row >= 1 && col >= 1 && (col < 150 || col >= 230);
     }
     if (strcmp(id, "energy_bar") == 0) {
         return col >= 54;
@@ -1152,15 +1920,19 @@ static void DashPaintStandingsRanks(uint16_t* fb) {
  * that opens the text-console DEBUG UI, not a game menu. Shared, unchanged, by the race DASH
  * (gdx3ds_bottomhud_tick's own dismiss handling), CUSTOM mode (gdx3ds_bottomhud_tick's
  * once-per-entry CUSTOM backdrop), and the new idle view (DashPaintIdleBaked) -- the label change
- * and every behaviour below apply identically to all three; only the one literal changed. */
+ * and every behaviour below apply identically to all three; only the one literal changed.
+ *
+ * uipolish: "SETTINGS" now (Home's DEBUG button is gone; the console it opens is the SETTINGS
+ * pages plus the developer tabs, left with the yellow EXIT tab), 8 px wider so the label clears
+ * the border. */
 static void DashPaintBackButton(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
-    static const char kLabel[] = "DEBUG";
+    static const char kLabel[] = "SETTINGS";
     const int num = 1;
     int tw;
     int x;
     int y;
     (void) snap;
-    if (!sDashWidgets[DASHW_MENU_BUTTON].enabled) {
+    if (!sDashWidgets[DASHW_MENU_BUTTON].enabled || sDebugHidden) {
         return;
     }
     tw = DashFontTextWidthRatio(kDashGlyphFont2, KDASHGLYPHFONT2_COUNT, kLabel, num, 1, DASH_FONT2_SPACE, 1);
@@ -1192,21 +1964,50 @@ static void DashPaintEnergyFrame(uint16_t* fb) {
  * that changes nothing: two cache compares, no drawing. num=1,den=2 for the course name (Font1 is
  * a 16x16 native cell; the original baked art's own text sat at roughly this scale); Font2 at the
  * best-fit num (2 or 1) for the racer count, right-aligned in the now-unbaked cols 230+. */
+/* uipolish: the header's live track name must stay left of whatever sits next in the bar (the
+ * SETTINGS button, MP's STANDINGS button, or the MODE chip when neither is shown). Font1 at half
+ * scale first; a long name ("DEVIL'S FOREST") drops to Font2, and anything still too wide is cut
+ * at the last whole character that fits rather than running under the button. */
+static int DashHeaderNameRight(void) {
+    const int buttonShown = sDashWidgets[DASHW_MENU_BUTTON].enabled && (!sDebugHidden || sMpDash);
+    return (buttonShown ? DASH_BACK_X0 : DASH_MODE_X0) - 4;
+}
+
+static void DashPaintHeaderName(uint16_t* fb, const char* name) {
+    const int x0 = 6;
+    const int maxW = DashHeaderNameRight() - x0;
+    char fit[sizeof(sLastHeaderTrackName)];
+    size_t len;
+    DashFillRect(fb, 1, DASH_HEADER_Y0 + 1, DashHeaderNameRight() + 2, DASH_HEADER_H - 2, sDashHeaderFill);
+    if (name[0] == '\0') {
+        return;
+    }
+    if (DashFontTextWidthRatio(kDashGlyphFont1, KDASHGLYPHFONT1_COUNT, name, 1, 2, DASH_FONT1_SPACE, 1) <= maxW) {
+        DashBlitFontText(fb, x0, DASH_HEADER_Y0 + (DASH_HEADER_H - 8) / 2, kDashGlyphFont1, KDASHGLYPHFONT1_COUNT,
+                         name, 1, 2, DASH_FONT1_SPACE, 1);
+        return;
+    }
+    snprintf(fit, sizeof(fit), "%s", name);
+    len = strlen(fit);
+    while (len > 1 && DashFontTextWidthRatio(kDashGlyphFont2, KDASHGLYPHFONT2_COUNT, fit, 1, 1, DASH_FONT2_SPACE, 1) > maxW) {
+        fit[--len] = '\0';
+    }
+    if (len < strlen(name) && strchr(fit, ' ') != NULL) {
+        *strrchr(fit, ' ') = '\0'; /* cut at a word boundary: "DEVIL'S", never "DEVIL'S FO" */
+    }
+    DashBlitFontText(fb, x0, DASH_HEADER_Y0 + (DASH_HEADER_H - 8) / 2, kDashGlyphFont2, KDASHGLYPHFONT2_COUNT, fit,
+                     1, 1, DASH_FONT2_SPACE, 1);
+}
+
 static void DashPaintHeaderLive(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
     if (!sDashWidgets[DASHW_HEADER].enabled) {
         return;
     }
     if (strcmp(sLastHeaderTrackName, snap->trackName) != 0) {
-        const int num = 1;
-        const int den = 2;
-        const int y = DASH_HEADER_Y0 + (DASH_HEADER_H - (16 * num) / den) / 2;
         snprintf(sLastHeaderTrackName, sizeof(sLastHeaderTrackName), "%s", snap->trackName);
-        if (snap->trackName[0] != '\0') {
-            DashBlitFontText(fb, 6, y, kDashGlyphFont1, KDASHGLYPHFONT1_COUNT, snap->trackName, num, den,
-                              DASH_FONT1_SPACE, 1);
-        }
+        DashPaintHeaderName(fb, sLastHeaderTrackName);
     }
-    if (snap->racersRemaining != sLastHeaderRacersRemaining) {
+    if (snap->racersRemaining != sLastHeaderRacersRemaining && !sMpDash) {
         char buf[16];
         const int maxW = DASH_HEADER_X0 + DASH_HEADER_W - 234; /* cols 230..316: DashBakeSkipCell's skip zone */
         int num;
@@ -1214,12 +2015,12 @@ static void DashPaintHeaderLive(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
         int x;
         int y;
         sLastHeaderRacersRemaining = snap->racersRemaining;
-        snprintf(buf, sizeof(buf), "%d RACERS", snap->racersRemaining);
+        snprintf(buf, sizeof(buf), snap->racersRemaining == 1 ? "%d RACER" : "%d RACERS", snap->racersRemaining);
         num = DashFitFont2Num(buf, maxW, 1);
         tw = DashFontTextWidthRatio(kDashGlyphFont2, KDASHGLYPHFONT2_COUNT, buf, num, 1, DASH_FONT2_SPACE, 1);
         x = DASH_HEADER_X0 + DASH_HEADER_W - 4 - tw;
         y = DASH_HEADER_Y0 + (DASH_HEADER_H - (8 * num)) / 2;
-        DashFillRect(fb, 230, DASH_HEADER_Y0 + 1, DASH_HEADER_W - 230 - 1, DASH_HEADER_H - 2, 0x2043u);
+        DashFillRect(fb, 230, DASH_HEADER_Y0 + 1, DASH_HEADER_W - 230 - 1, DASH_HEADER_H - 2, sDashHeaderFill);
         DashBlitFontText(fb, x, y, kDashGlyphFont2, KDASHGLYPHFONT2_COUNT, buf, num, 1, DASH_FONT2_SPACE, 1);
     }
 }
@@ -1232,10 +2033,11 @@ static void DashPaintHeaderLive(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
  * its pre-refactor body. */
 static void DashPaintBackdropBackground(uint16_t* fb) {
     int i;
+    DashMarkCols(0, DASH_FB_W);
     for (i = 0; i < 76800; i++) {
         const int x = i % DASH_FB_W;
         const int y = i / DASH_FB_W;
-        DashPixel(fb, x, y, DashDimBackground(kDashAsset_background[i]));
+        DashPixel(fb, x, y, DashDimBackground(gDashAssetBackground != NULL ? gDashAssetBackground[i] : 0u));
     }
 }
 
@@ -1244,21 +2046,129 @@ static void DashPaintBackdropBackground(uint16_t* fb) {
  * factored out of DashPaintBaked's own per-widget loop so DashPaintIdleHeaderChrome (below) can
  * composite just the "header" widget alone for the idle view, with the exact same skip-cell and
  * alpha rules the race DASH's full bake already uses. */
+/* Where a baked chrome piece goes: its sDashWidgets row's origin when it has one (card-4b moved
+ * LAP/TIME/GAP down; the others sit exactly where the asset table says), else the asset's own. */
+static void DashAssetOrigin(const DashAssetWidget* w, int* x, int* y) {
+    int i;
+    *x = w->x;
+    *y = w->y;
+    for (i = 0; i < DASHW_COUNT; i++) {
+        if (strcmp(sDashWidgets[i].id, w->id) == 0) {
+            *x = sDashWidgets[i].x;
+            *y = sDashWidgets[i].y;
+            return;
+        }
+    }
+}
+
+/* The header panel's own interior colour (its art is a flat panel with a top and left edge line),
+ * for the frozen-text cells DashBakeSkipCell leaves to the live paint. */
+#define DASH_HEADER_FILL 0x2043u
+
+static uint16_t DashHeaderFill(const DashAssetWidget* w) {
+    const unsigned short p = (w->w > 160 && w->h > 1) ? w->pixels[w->w + 160] : 0u;
+    return (p & 1u) ? Rgba5551To565(p) : DASH_HEADER_FILL;
+}
+
 static void DashCompositeAssetWidget(uint16_t* fb, const DashAssetWidget* w) {
+    const int isHeader = strcmp(w->id, "header") == 0;
+    uint16_t headerFill;
     int row;
+    int ox;
+    int oy;
+    if (w->pixels == NULL) {
+        return; /* not baked (no memory for the arena): nothing to composite */
+    }
+    headerFill = isHeader ? DashHeaderFill(w) : 0u;
+    if (isHeader) {
+        sDashHeaderFill = headerFill;
+    }
+    DashAssetOrigin(w, &ox, &oy);
+    DashMarkCols(ox, w->w);
     for (row = 0; row < w->h; row++) {
         int col;
         for (col = 0; col < w->w; col++) {
             const unsigned short p = w->pixels[row * w->w + col];
             if (DashBakeSkipCell(w->id, row, col)) {
+                if (isHeader) {
+                    DashPixel(fb, ox + col, oy + row, headerFill); /* the bar, without its frozen text */
+                }
                 continue; /* live-text-only cell within an otherwise-baked widget */
             }
             if ((p & 1u) == 0u) {
                 continue; /* alpha=0: transparent, leave the layer below as-is */
             }
-            DashPixel(fb, w->x + col, w->y + row, Rgba5551To565(p));
+            DashPixel(fb, ox + col, oy + row, Rgba5551To565(p));
         }
     }
+}
+
+/* ---- uipolish: the stats box (LAP / TIME / BEST / GAP) --------------------------------------
+ *
+ * One framed box over the lap, timer and gap rows. Its labels are the baked LAP/TIME/GAP art's
+ * label bands alone (the frozen example values under them are never drawn); each live value goes
+ * in its own row under its label. Rows, from the box's top (frame at 0): 3 px pad, label, 2 px,
+ * value, 5 px between sections, 2 px pad at the bottom. Values start 4 px in from the frame. */
+#define DASH_STATS_FILL 0x1041u
+#define DASH_STATS_BORDER 0xFB76u
+#define DASH_STATS_TEXT_X (DASH_STATS_X0 + 4)
+#define DASH_STATS_LAP_LABEL_Y (DASH_STATS_Y0 + 4)    /* art rows 2..11 -> ink 77..86 */
+#define DASH_STATS_LAP_VALUE_Y (DASH_STATS_Y0 + 16)   /* lap glyphs, ink rows 0..10 */
+#define DASH_STATS_TIME_LABEL_Y (DASH_STATS_Y0 + 32)  /* art rows 4..14 */
+#define DASH_STATS_TIME_VALUE_Y (DASH_STATS_Y0 + 44)  /* timer glyphs, ink rows 1..14 */
+#define DASH_STATS_BEST_LABEL_Y (DASH_STATS_Y0 + 64)  /* art rows 40..49 */
+#define DASH_STATS_BEST_VALUE_Y (DASH_STATS_Y0 + 75)
+#define DASH_STATS_GAP_LABEL_Y (DASH_STATS_Y0 + 95)   /* Font2, ink rows -1..5 */
+#define DASH_STATS_GAP_VALUE_Y (DASH_STATS_Y0 + 102)
+
+static const DashAssetWidget* DashAssetFind(const char* id) {
+    int i;
+    for (i = 0; i < DASH_ASSET_WIDGET_COUNT; i++) {
+        if (strcmp(kDashAssetWidgets[i].id, id) == 0) {
+            return &kDashAssetWidgets[i];
+        }
+    }
+    return NULL;
+}
+
+/* Art rows [r0, r1) of a baked widget, opaque texels only, with art row r0 / col 0 at (x, y). */
+static void DashCompositeAssetRows(uint16_t* fb, const char* id, int r0, int r1, int x, int y) {
+    const DashAssetWidget* w = DashAssetFind(id);
+    int row;
+    if (w == NULL || w->pixels == NULL) {
+        return;
+    }
+    DashMarkCols(x, w->w);
+    for (row = r0; row < r1 && row < w->h; row++) {
+        int col;
+        for (col = 0; col < w->w; col++) {
+            const unsigned short p = w->pixels[row * w->w + col];
+            if (p & 1u) {
+                DashPixel(fb, x + col, y + row - r0, Rgba5551To565(p));
+            }
+        }
+    }
+}
+
+/* A value row of the stats box: cleared to the box's fill, frame untouched. */
+static void DashStatsClearRow(uint16_t* fb, int y, int h) {
+    DashFillRect(fb, DASH_STATS_X0 + 2, y, DASH_STATS_W - 4, h, DASH_STATS_FILL);
+}
+
+static void DashPaintStatsBox(uint16_t* fb) {
+    const int artX = DASH_STATS_TEXT_X - 2; /* every label's ink starts at art col 2 */
+    if (!sDashWidgets[DASHW_LAP].enabled || !sDashWidgets[DASHW_TIMER].enabled || !sDashWidgets[DASHW_GAP].enabled) {
+        return;
+    }
+    DashFillRect(fb, DASH_STATS_X0 + 1, DASH_STATS_Y0 + 1, DASH_STATS_W - 2, DASH_STATS_H - 2, DASH_STATS_FILL);
+    DashStrokeRect(fb, DASH_STATS_X0, DASH_STATS_Y0, DASH_STATS_W, DASH_STATS_H, DASH_STATS_BORDER);
+    DashCompositeAssetRows(fb, "lap", 2, 12, artX, DASH_STATS_LAP_LABEL_Y);
+    DashCompositeAssetRows(fb, "timer", 4, 15, artX, DASH_STATS_TIME_LABEL_Y);
+    DashCompositeAssetRows(fb, "timer", 40, 50, artX, DASH_STATS_BEST_LABEL_Y);
+    /* GAP: the baked label's tiny font reads as "CAP" (hw: "time/best/cap"), so Font2 spells it,
+     * its 7 ink rows ending on the art label's last row */
+    DashBlitFontText(fb, DASH_STATS_TEXT_X - 1, DASH_STATS_GAP_LABEL_Y - 1, kDashGlyphFont2, KDASHGLYPHFONT2_COUNT,
+                      "GAP", 1, 1, DASH_FONT2_SPACE, 1);
 }
 
 /* The once-per-race backdrop+chrome composite -- full rationale in the big comment block above
@@ -1266,14 +2176,20 @@ static void DashCompositeAssetWidget(uint16_t* fb, const DashAssetWidget* w) {
  * DashCompositeAssetWidget, extracted just above for the idle view to share, now sit between). */
 static void DashPaintBaked(uint16_t* fb) {
     int i;
+    DashMemoReset();
+    sDirtyFull = 1;
     DashPaintBackdropBackground(fb);
     for (i = 0; i < DASH_ASSET_WIDGET_COUNT; i++) {
         const DashAssetWidget* w = &kDashAssetWidgets[i];
         if (strcmp(w->id, "portrait") == 0 || strcmp(w->id, "mode_button") == 0) {
             continue; /* live-text-only boxes -- see the comment above */
         }
+        if (strcmp(w->id, "lap") == 0 || strcmp(w->id, "timer") == 0 || strcmp(w->id, "gap") == 0) {
+            continue; /* their labels go in the stats box (DashPaintStatsBox) */
+        }
         DashCompositeAssetWidget(fb, w);
     }
+    DashPaintStatsBox(fb);
     DashPaintStandingsRanks(fb);
     DashPaintBackButton(fb, NULL);
     DashPaintEnergyFrame(fb);
@@ -1378,8 +2294,8 @@ static int Top5Changed(const GdxRaceHudSnapshot* snap) {
  * sizing of the original HUD, where the top 2 racers have bigger portraits." Source of the
  * ORIGINAL per-racer portrait and its sizing rule: decomp/src/overlays/ovl_i3/hud.c's
  * gCharacterPortraitTextures[] (one real 32x32 texture per character) and Hud_DrawRacePortraits
- * (i<3 draws at scale 1.0/32x32, i>=3 at 0.75/24x24 on the source's own 6-row readout). Baked here
- * via tools/gen_nibottom_bottomhud_glyphs.py's kDashGlyphPortrait table (same real archive
+ * (i<3 draws at scale 1.0/32x32, i>=3 at 0.75/24x24 on the source's own 6-row readout). Baked at boot
+ * into gdx3ds_hudbake.h's kDashGlyphPortrait table (same real archive
  * textures, keyed by the Racer::character index as a decimal string, looked up with the same
  * DashFindGlyph every other glyph table here already uses) -- not a swatch, not frozen art, the
  * REAL portrait for whichever racer actually holds that position this tick. This box has 5 rows,
@@ -1425,6 +2341,9 @@ static void DashPaintStandingsLive(uint16_t* fb, const GdxRaceHudSnapshot* snap)
     }
     DashPaintStandingsPortraits(fb, snap);
     DashPaintTop5Tags(fb, snap); /* also refreshes sLastTop5/sLastTop5Count */
+    /* [ui] dash_memo: the standings' top row (y 67) is the OUR-position box's bottom row, which
+     * the position numeral (painted next) owns; it must repaint after this one. */
+    sMemoValid[DASHW_PORTRAIT] = 0;
 }
 
 /* COORDINATOR FIX (hw bug n60-3d7, item 6): "the player and rival markers are missing, or show
@@ -1486,43 +2405,331 @@ static void DashPaintMapMarker(uint16_t* fb, int srcCol, int srcRow, uint16_t co
  * the box is no longer an exact integer multiple of 64. Racer markers (hw bug n60-3d7 item 6) are
  * drawn on top of it, reusing the same snapshot this function already fetched for its `.valid`
  * gate. */
-static void DashPaintMapBox(uint16_t* fb) {
-    GdxRaceMapSnapshot mapSnap;
-    const unsigned char* tex = NULL;
-    unsigned short pal5551[4];
-    uint16_t pal565[4];
-    int dx;
-    int i;
+static void DashPaintMapFpsText(uint16_t* fb);
 
-    gdx_racemap_snapshot(&mapSnap);
-    if (!mapSnap.valid || !gdx_racemap_bitmap(&tex, pal5551)) {
-        DashFillRect(fb, DASH_MAP_X0, DASH_MAP_Y0, DASH_MAP_PX, DASH_MAP_PX, 0x0841u);
-        DashStrokeRect(fb, DASH_MAP_X0 - 1, DASH_MAP_Y0 - 1, DASH_MAP_PX + 2, DASH_MAP_PX + 2, 0xFFFFu);
-        return;
-    }
-    pal565[0] = 0x0841u;
-    for (i = 1; i < 4; i++) {
-        pal565[i] = Rgba5551To565(pal5551[i]);
-    }
-    for (dx = 0; dx < DASH_MAP_PX; dx++) {
-        const int srcCol = (dx * DASH_MAP_SRC_DIM) / DASH_MAP_PX;
-        int dy;
-        for (dy = 0; dy < DASH_MAP_PX; dy++) {
-            const int srcRow = (dy * DASH_MAP_SRC_DIM) / DASH_MAP_PX;
-            const uint16_t colour = pal565[tex[(size_t) srcRow * DASH_MAP_SRC_DIM + srcCol] & 3u];
-            DashPixel(fb, DASH_MAP_X0 + dx, DASH_MAP_Y0 + dy, colour);
-        }
-    }
-    for (i = 0; i < mapSnap.markerCount; i++) {
-        const GdxRaceMapMarker* m = &mapSnap.markers[i];
-        if (m->blink && !mapSnap.blinkOn) {
+static void DashPaintMapMarkers(uint16_t* fb, const GdxRaceMapSnapshot* mapSnap) {
+    int i;
+    for (i = 0; i < mapSnap->markerCount; i++) {
+        const GdxRaceMapMarker* m = &mapSnap->markers[i];
+        if (m->blink && !mapSnap->blinkOn) {
             continue; /* the game's own (gGameFrameCount % 16) < 8 blink */
         }
         if ((unsigned) m->kind < 6u) {
             DashPaintMapMarker(fb, m->col, m->row, Rgba5551To565(kDashMarkerRgba5551[m->kind]));
         }
     }
+}
+
+/* The map bitmap scaled into the box: the same nearest-neighbour texel per pixel as a
+ * `(d * DASH_MAP_SRC_DIM) / DASH_MAP_PX` per pixel, with the steps tabulated once (o3dsperf: that
+ * divide ran ~20000 times per repaint on a CPU without a divide instruction). */
+/* o3ds60 dash_budget: the map box's scaled bitmap, column-major exactly as DashPaintMapBitmap
+ * writes it (each cached column top to bottom in fb order), keyed on the minimap bitmap's bytes,
+ * the palette and the box size. Only for a box fully on screen. */
+#define DASH_MAP_CACHE_MAX 176
+static uint16_t sMapCache[DASH_MAP_CACHE_MAX * DASH_MAP_CACHE_MAX];
+static uint32_t sMapCacheKey = 0;
+static int sMapCachePx = 0;
+
+static uint32_t DashMapKey(const unsigned char* tex, const uint16_t* pal565, int px) {
+    uint32_t h = 2166136261u;
+    int i;
+    for (i = 0; i < DASH_MAP_SRC_DIM * DASH_MAP_SRC_DIM; i++) {
+        h = (h ^ (uint32_t) (tex[i] & 3u)) * 16777619u;
+    }
+    for (i = 0; i < 4; i++) {
+        h = (h ^ pal565[i]) * 16777619u;
+    }
+    return (h ^ (uint32_t) px) * 16777619u;
+}
+
+static void DashMapCacheBuild(const unsigned char* tex, const uint16_t* pal565, int px) {
+    int16_t srcTab[DASH_SCALE_TAB_MAX];
+    int dx;
+    DashScaleTable(srcTab, px, px, DASH_MAP_SRC_DIM);
+    for (dx = 0; dx < px; dx++) {
+        const unsigned char* src = tex + srcTab[dx];
+        uint16_t* col = sMapCache + (size_t) dx * px;
+        int dy;
+        for (dy = 0; dy < px; dy++) {
+            /* fb order: row DASH_MAP_Y0 + dy sits at col[-(y)], so the cache runs bottom-up */
+            col[px - 1 - dy] = pal565[src[(size_t) srcTab[dy] * DASH_MAP_SRC_DIM] & 3u];
+        }
+    }
+}
+
+static int DashMapCacheBlit(uint16_t* fb, const unsigned char* tex, const uint16_t* pal565, int px) {
+    uint32_t key;
+    int dx;
+    if (!sDashBudget || px > DASH_MAP_CACHE_MAX || px > DASH_SCALE_TAB_MAX) {
+        return 0;
+    }
+    if (DASH_MAP_X0 < 0 || DASH_MAP_X0 + px > DASH_FB_W || DASH_MAP_Y0 < 0 || DASH_MAP_Y0 + px > DASH_FB_H) {
+        return 0;
+    }
+    key = DashMapKey(tex, pal565, px);
+    if (key != sMapCacheKey || px != sMapCachePx) {
+        sMapCacheBuilds++;
+        DashMapCacheBuild(tex, pal565, px);
+        sMapCacheKey = key;
+        sMapCachePx = px;
+    }
+    DashMarkCols(DASH_MAP_X0, px);
+    for (dx = 0; dx < px; dx++) {
+        const int x = DASH_MAP_X0 + dx;
+        /* rows DASH_MAP_Y0 .. +px-1 land at fb indices (H-1-y): lowest index is y = Y0+px-1 */
+        uint16_t* dst = fb + (size_t) x * DASH_FB_H + (DASH_FB_H - DASH_MAP_Y0 - px);
+        memcpy(dst, sMapCache + (size_t) dx * px, (size_t) px * sizeof(uint16_t));
+    }
+    return 1;
+}
+
+static int DashPaintMapBitmap(uint16_t* fb, const unsigned char* tex, const uint16_t* pal565) {
+    int16_t srcTab[DASH_SCALE_TAB_MAX];
+    const int px = DASH_MAP_PX;
+    int dx;
+    if (px <= 0) {
+        return 0;
+    }
+    if (px > DASH_SCALE_TAB_MAX) {
+        DashMarkCols(DASH_MAP_X0, px);
+        for (dx = 0; dx < px; dx++) {
+            const int srcCol = (dx * DASH_MAP_SRC_DIM) / px;
+            int dy;
+            for (dy = 0; dy < px; dy++) {
+                const int srcRow = (dy * DASH_MAP_SRC_DIM) / px;
+                const uint16_t colour = pal565[tex[(size_t) srcRow * DASH_MAP_SRC_DIM + srcCol] & 3u];
+                DashPixel(fb, DASH_MAP_X0 + dx, DASH_MAP_Y0 + dy, colour);
+            }
+        }
+        return 0;
+    }
+    if (DashMapCacheBlit(fb, tex, pal565, px)) {
+        return 1; /* o3ds60 dash_budget: the same pixels, from the cache */
+    }
+    DashMarkCols(DASH_MAP_X0, px);
+    DashScaleTable(srcTab, px, px, DASH_MAP_SRC_DIM);
+    for (dx = 0; dx < px; dx++) {
+        const int x = DASH_MAP_X0 + dx;
+        const unsigned char* src = tex + srcTab[dx];
+        uint16_t* col;
+        int dy;
+        if (x < 0 || x >= DASH_FB_W) {
+            continue;
+        }
+        col = fb + (size_t) x * DASH_FB_H + (DASH_FB_H - 1);
+        for (dy = 0; dy < px; dy++) {
+            const int y = DASH_MAP_Y0 + dy;
+            if (y < 0 || y >= DASH_FB_H) {
+                continue;
+            }
+            col[-y] = pal565[src[(size_t) srcTab[dy] * DASH_MAP_SRC_DIM] & 3u];
+        }
+    }
+    return 0;
+}
+
+/* ---- o3ds60 dash_map_inc: the box overlay over the cached bitmap ---- */
+static int DashFrameskipAtD1(void);
+static int DashRace0EveryTick(void) {
+    if (!gdx3ds_cpucut_on(sDashRace0D1, GDX3DS_CPUCUT_BIT_DASH)) {
+        return 0;
+    }
+    return gdx3ds_frameskip_enabled() && gdx3ds_frameskip_mode() == GDX_FRAMESKIP_OFF;
+}
+
+/* The cache's rows of the box's column dx back into the shadow, over the rows the overlay had. */
+static void DashMapOverlayRestore(uint16_t* fb, int px) {
+    int dx;
+    for (dx = 0; dx < px; dx++) {
+        const int x = DASH_MAP_X0 + dx;
+        int y0 = sOvY0[x];
+        int y1 = sOvY1[x];
+        if (y1 < y0) {
+            continue;
+        }
+        if (y0 < DASH_MAP_Y0) {
+            y0 = DASH_MAP_Y0;
+        }
+        if (y1 > DASH_MAP_Y0 + px - 1) {
+            y1 = DASH_MAP_Y0 + px - 1;
+        }
+        if (y1 >= y0) {
+            /* fb index H-1-y <-> cache index px-1-(y-Y0): one ascending run in both */
+            memcpy(fb + (size_t) x * DASH_FB_H + (DASH_FB_H - 1 - y1),
+                   sMapCache + (size_t) dx * px + (px - 1 - (y1 - DASH_MAP_Y0)), (size_t) (y1 - y0 + 1) * sizeof(uint16_t));
+            DashMarkRows(x, y0, y1);
+        }
+    }
+    DashRowsReset(sOvY0, sOvY1);
+}
+
+/* Runs a DashPixel / DashMarkCols painter whose rows are known (y0..y1) without its whole-column
+ * marks: the painted columns go to sTrk instead. */
+typedef struct DashColMarks {
+    uint32_t bits[(DASH_FB_W + 31) / 32];
+    int x0;
+    int x1;
+} DashColMarks;
+
+static void DashColMarksSave(DashColMarks* m) {
+    memcpy(m->bits, sDirtyColBits, sizeof(m->bits));
+    m->x0 = sDirtyX0;
+    m->x1 = sDirtyX1;
+}
+
+/* The painter's whole-column marks undone; its rect [xa, xb] x [ya, yb] tracked instead. */
+static void DashColMarksToTrack(const DashColMarks* m, int xa, int xb, int ya, int yb) {
+    int x;
+    for (x = xa; x <= xb; x++) {
+        DashRowsWiden(sTrkY0, sTrkY1, x, ya, yb);
+    }
+    memcpy(sDirtyColBits, m->bits, sizeof(m->bits));
+    sDirtyX0 = m->x0;
+    sDirtyX1 = m->x1;
+}
+
+static int DashFont2Height(void) {
+    static int sH = -1;
+    if (sH < 0) {
+        int i;
+        sH = 0;
+        for (i = 0; i < KDASHGLYPHFONT2_COUNT; i++) {
+            if (kDashGlyphFont2[i].h > sH) {
+                sH = kDashGlyphFont2[i].h;
+            }
+        }
+    }
+    return sH;
+}
+
+static void DashPaintMapMarker(uint16_t* fb, int srcCol, int srcRow, uint16_t colour565);
+static void DashPaintMapFpsTextTracked(uint16_t* fb);
+
+/* The dots (or the 1P markers), the NET chip and the FPS text over the box, their rows tracked:
+ * recorded as the overlay (the next restore) and marked for a rows-only present. */
+static void DashMapOverlayPaint(uint16_t* fb, const GdxRaceMapSnapshot* mapSnap, int px) {
+    DashColMarks marks;
+    int x;
+    DashRowsReset(sTrkY0, sTrkY1);
+    if (sMpDash) {
+        bui_kit_dirty_clear();
+        bui_kit_row_track(sTrkY0, sTrkY1);
+        gdx3ds_buirace_paint_map(fb, DASH_MAP_X0, DASH_MAP_Y0, px); /* every machine + NET */
+        bui_kit_row_track(NULL, NULL);
+    } else {
+        int i;
+        for (i = 0; i < mapSnap->markerCount; i++) {
+            const GdxRaceMapMarker* m = &mapSnap->markers[i];
+            if (m->blink && !mapSnap->blinkOn) {
+                continue;
+            }
+            if ((unsigned) m->kind < 6u) {
+                /* DashPaintMapMarker's own rect */
+                const int c0 = DashClampInt(m->col - 1, 0, DASH_MAP_SRC_DIM);
+                const int c1 = DashClampInt(m->col + 2, 0, DASH_MAP_SRC_DIM);
+                const int r0 = DashClampInt(m->row - 1, 0, DASH_MAP_SRC_DIM);
+                const int r1 = DashClampInt(m->row + 2, 0, DASH_MAP_SRC_DIM);
+                DashColMarksSave(&marks);
+                DashPaintMapMarker(fb, m->col, m->row, Rgba5551To565(kDashMarkerRgba5551[m->kind]));
+                DashColMarksToTrack(&marks, DASH_MAP_X0 + (c0 * DASH_MAP_PX) / DASH_MAP_SRC_DIM,
+                                    DASH_MAP_X0 + (c1 * DASH_MAP_PX) / DASH_MAP_SRC_DIM - 1,
+                                    DASH_MAP_Y0 + (r0 * DASH_MAP_PX) / DASH_MAP_SRC_DIM,
+                                    DASH_MAP_Y0 + (r1 * DASH_MAP_PX) / DASH_MAP_SRC_DIM - 1);
+            }
+        }
+    }
+    DashPaintMapFpsTextTracked(fb);
+    for (x = 0; x < DASH_FB_W; x++) {
+        int y0 = sTrkY0[x];
+        int y1 = sTrkY1[x];
+        if (y1 < y0) {
+            continue;
+        }
+        if (x < DASH_MAP_X0 || x >= DASH_MAP_X0 + px || y0 < DASH_MAP_Y0 || y1 > DASH_MAP_Y0 + px - 1) {
+            DashMarkCols(x, 1); /* outside the cached box: not restorable, present it whole */
+        }
+        if (y0 < DASH_MAP_Y0) {
+            y0 = DASH_MAP_Y0;
+        }
+        if (y1 > DASH_MAP_Y0 + px - 1) {
+            y1 = DASH_MAP_Y0 + px - 1;
+        }
+        if (x >= DASH_MAP_X0 && x < DASH_MAP_X0 + px && y1 >= y0) {
+            DashRowsWiden(sOvY0, sOvY1, x, y0, y1);
+            DashMarkRows(x, y0, y1);
+        }
+    }
+}
+
+/* The incremental map tick: 1 = done (the shadow's box is the cache plus this tick's overlay). */
+static int DashPaintMapBoxInc(uint16_t* fb, const unsigned char* tex, const uint16_t* pal565,
+                              const GdxRaceMapSnapshot* mapSnap) {
+    const int px = DASH_MAP_PX;
+    if (!sDashMapInc || !sMapIncValid || sDirtyFull || px != sMapCachePx) {
+        return 0;
+    }
+    if (sMapIncSince >= DASH_MAP_INC_HEAL && !DashFrameskipAtD1()) {
+        return 0; /* the self-heal: a whole box off D = 1 now and then */
+    }
+    if (DashMapKey(tex, pal565, px) != sMapCacheKey) {
+        return 0;
+    }
+    DashMapOverlayRestore(fb, px);
+    DashMapOverlayPaint(fb, mapSnap, px);
+    sMapIncSince++;
+    sMapIncPaints++;
+    sTickCost.mapInc = 1;
+    return 1;
+}
+
+static void DashPaintMapBox(uint16_t* fb) {
+    GdxRaceMapSnapshot mapSnap;
+    const unsigned char* tex = NULL;
+    unsigned short pal5551[4];
+    uint16_t pal565[4];
+    int i;
+
+    gdx_racemap_snapshot(&mapSnap);
+    if (!mapSnap.valid || !gdx_racemap_bitmap(&tex, pal5551)) {
+        sMapIncValid = 0;
+        DashFillRect(fb, DASH_MAP_X0, DASH_MAP_Y0, DASH_MAP_PX, DASH_MAP_PX, 0x0841u);
+        DashStrokeRect(fb, DASH_MAP_X0 - 1, DASH_MAP_Y0 - 1, DASH_MAP_PX + 2, DASH_MAP_PX + 2, 0xFFFFu);
+        DashPaintMapFpsText(fb);
+        return;
+    }
+    pal565[0] = 0x0841u;
+    for (i = 1; i < 4; i++) {
+        pal565[i] = Rgba5551To565(pal5551[i]);
+    }
+    if (DashPaintMapBoxInc(fb, tex, pal565, &mapSnap)) {
+        return; /* o3ds60 dash_map_inc */
+    }
+    if (DashPaintMapBitmap(fb, tex, pal565) && sDashMapInc) {
+        /* o3ds60 dash_map_inc: the whole box from the cache, the overlay recorded for next time */
+        DashRowsReset(sOvY0, sOvY1);
+        DashMapOverlayPaint(fb, &mapSnap, DASH_MAP_PX);
+        DashStrokeRect(fb, DASH_MAP_X0 - 1, DASH_MAP_Y0 - 1, DASH_MAP_PX + 2, DASH_MAP_PX + 2, 0xFFFFu);
+        sMapIncValid = 1;
+        sMapFullThisTick = 1;
+        sMapIncSince = 0;
+        sMapFullPaints++;
+        return;
+    }
+    sMapIncValid = 0;
+    if (sMpDash) {
+        int mx0;
+        int mx1;
+        bui_kit_dirty_clear();
+        gdx3ds_buirace_paint_map(fb, DASH_MAP_X0, DASH_MAP_Y0, DASH_MAP_PX); /* every machine + NET */
+        if (bui_kit_dirty(&mx0, &mx1)) {
+            DashMarkCols(mx0, mx1 - mx0 + 1);
+        }
+    } else {
+        DashPaintMapMarkers(fb, &mapSnap);
+    }
     DashStrokeRect(fb, DASH_MAP_X0 - 1, DASH_MAP_Y0 - 1, DASH_MAP_PX + 2, DASH_MAP_PX + 2, 0xFFFFu);
+    DashPaintMapFpsText(fb);
 }
 
 /* sDashWidgets' "map_box" per-tick paint fn: owns its own [debug] bottom_race_hz throttle
@@ -1545,7 +2752,7 @@ static void DashPaintMapBoxLive(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
     sLastMapTick = now;
 }
 
-/* COORDINATOR FIX (third round item 5): the baked kDashAsset_energy_bar (320x24) has its
+/* COORDINATOR FIX (third round item 5): the baked energy_bar widget (320x24) has its
  * "ENERGY" label at cols ~7-53 and the decorative frame at cols 54-314; filling from x=4 (the
  * old flat 4px bezel on both edges) painted straight over the label and made the frame's own
  * left cap look clipped. Start the fill inside the frame instead (x=57) and stop 4px short of
@@ -1578,10 +2785,16 @@ static void DashPaintEnergyFooter(uint16_t* fb, const GdxRaceHudSnapshot* snap) 
     const int top = DASH_ENERGY_Y0 + 4;
     const int fillH = DASH_ENERGY_H - 8;
     int dy;
+    char key[DASH_MEMO_KEY];
     if (!sDashWidgets[DASHW_ENERGY_BAR].enabled) {
         return;
     }
+    snprintf(key, sizeof(key), "%d|%d", fillW, snap->boostReady ? 1 : 0);
+    if (DashMemoSame(DASHW_ENERGY_BAR, key)) {
+        return;
+    }
     DashFillRect(fb, DASH_ENERGY_FILL_X0, top, DASH_ENERGY_FILL_W, fillH, 0x0000u);
+    DashMarkCols(DASH_ENERGY_FILL_X0, fillW);
     for (dy = 0; dy < fillH; dy++) {
         const int row = (dy * 5) / fillH;
         int dx;
@@ -1598,6 +2811,206 @@ static void DashPaintEnergyFooter(uint16_t* fb, const GdxRaceHudSnapshot* snap) 
             DashPixel(fb, x, top + dy, colour);
         }
     }
+}
+
+/* Repaints a rect of the dimmed checkerboard (DashPaintBackdropBackground's own texels) -- for
+ * live widgets with no panel of their own that sit straight on the backdrop and must erase what
+ * they drew last time. Only valid where no baked widget art overlaps the rect. */
+static void DashRestoreBackground(uint16_t* fb, int x0, int y0, int w, int h) {
+    int x;
+    DashMarkCols(x0, w);
+    for (x = x0; x < x0 + w; x++) {
+        int y;
+        for (y = y0; y < y0 + h; y++) {
+            DashPixel(fb, x, y,
+                      DashDimBackground(gDashAssetBackground != NULL ? gDashAssetBackground[y * DASH_FB_W + x] : 0u));
+        }
+    }
+}
+
+/* ---- spare machines (life stock), under the energy bar's baked "ENERGY" label -------------
+ *
+ * decomp/src/overlays/ovl_i3/hud.c's Hud_DrawPlayerLives: one 8x8 aHudLivesLeftIconTex per
+ * gPlayerLives[0], 10px pitch, wrapping every 5 onto a new row 9px down, GP races only
+ * (snapshot spareMachines == -1 everywhere else, so nothing is drawn). The baked label covers
+ * rows 2-7 of the 24-tall energy widget at cols 8-50; rows 8-23 of cols 0-53 are transparent in
+ * the baked energy_bar widget (plain checkerboard), and rows 24-25 are the gutter above the portrait
+ * widget (y=26). So the stock gets x 5..52 (5 icons = 48px, left of the frame at col 54):
+ *   1-5 spare  : one row at y 12..19, centred in the free band below the label;
+ *   6-10 spare : two rows, y 9..16 and 18..25 (the game's own 9px row pitch);
+ *   11+        : one icon + "X<n>" in Font2, which cannot outgrow the strip.
+ * The game's 90-frame flash of a just-gained/lost icon is not reproduced: it would need a
+ * per-tick repaint and its counter (gLivesChangeCounter) only advances while the top HUD draws. */
+#define DASH_LIVES_X0 (DASH_ENERGY_X0 + 5)
+#define DASH_LIVES_Y0 (DASH_ENERGY_Y0 + 9)
+#define DASH_LIVES_W 48
+#define DASH_LIVES_H 17
+#define DASH_LIVES_PITCH_X 10
+#define DASH_LIVES_PITCH_Y 9
+#define DASH_LIVES_PER_ROW 5
+#define DASH_LIVES_MAX_ICONS (2 * DASH_LIVES_PER_ROW)
+
+static void DashPaintLivesIcons(uint16_t* fb, const DashGlyph* icon, int count) {
+    const int y0 = (count <= DASH_LIVES_PER_ROW) ? (DASH_ENERGY_Y0 + 12) : DASH_LIVES_Y0;
+    int i;
+    for (i = 0; i < count; i++) {
+        const int x = DASH_LIVES_X0 + (i % DASH_LIVES_PER_ROW) * DASH_LIVES_PITCH_X;
+        const int y = y0 + (i / DASH_LIVES_PER_ROW) * DASH_LIVES_PITCH_Y;
+        DashBlitGlyphRatio(fb, x, y, icon, 1, 1);
+    }
+}
+
+static void DashPaintLivesCount(uint16_t* fb, const DashGlyph* icon, int count) {
+    char buf[8];
+    const int y = DASH_ENERGY_Y0 + 12;
+    snprintf(buf, sizeof(buf), "X%d", count); /* Font2 has no lowercase -- see DashPaintKOStars */
+    DashBlitGlyphRatio(fb, DASH_LIVES_X0, y, icon, 1, 1);
+    DashBlitFontText(fb, DASH_LIVES_X0 + icon->w + 3, y, kDashGlyphFont2, KDASHGLYPHFONT2_COUNT, buf, 1, 1,
+                      DASH_FONT2_SPACE, 1);
+}
+
+static void DashPaintLives(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
+    const DashGlyph* icon;
+    if (!sDashWidgets[DASHW_ENERGY_BAR].enabled || snap->spareMachines == sLastSpareMachines) {
+        return;
+    }
+    sLastSpareMachines = snap->spareMachines;
+    DashRestoreBackground(fb, DASH_LIVES_X0, DASH_LIVES_Y0, DASH_LIVES_W, DASH_LIVES_H);
+    icon = DashFindGlyph(kDashGlyphLives, KDASHGLYPHLIVES_COUNT, "machine");
+    if (icon == NULL || snap->spareMachines <= 0) {
+        return; /* hidden (not a GP race) or no machines left */
+    }
+    if (snap->spareMachines <= DASH_LIVES_MAX_ICONS) {
+        DashPaintLivesIcons(fb, icon, snap->spareMachines);
+    } else {
+        DashPaintLivesCount(fb, icon, snap->spareMachines);
+    }
+}
+
+/* ---- FPS text: inside the map box, top-right corner ----------------------------------------
+ *
+ * Plain Font2 text ("60 FPS"), right-aligned 3px inside the map's white border, with a 1px dark
+ * outline so it stays legible where the track line or a racer dot runs through that corner. It
+ * is drawn as the LAST layer of DashPaintMapBox, which repaints the whole map interior first, so
+ * it composites on top of every map repaint and a narrower value ("60" -> "9") leaves no residue;
+ * a new sample therefore shows on the next map repaint ([debug] bottom_race_hz). The rate is
+ * gdx3ds_fps_hud.c's "drawn" figure measured here directly (this tick runs once per host
+ * iteration while the DASH owns the screen, and a frameskip skip iteration presents nothing), so
+ * it works with [debug] fps=0 too. Sampled every DASH_FPS_WINDOW_MS (2 Hz). */
+#define DASH_FPS_INSET 3
+#define DASH_FPS_RIGHT (DASH_MAP_X0 + DASH_MAP_PX - DASH_FPS_INSET) /* one past the text's last column */
+#define DASH_FPS_TOP (DASH_MAP_Y0 + DASH_FPS_INSET)
+#define DASH_FPS_OUTLINE 0x0000u
+#define DASH_FPS_WINDOW_MS 500u
+
+static void DashFpsResetWindow(u64 now) {
+    sFpsWindowStartTick = now;
+    sFpsWindowTicks = 0;
+    sFpsWindowStartSkipped = gdx3ds_frameskip_skipped_total();
+}
+
+/* Advances the sampling window by one host iteration, updating sFpsShown once per window. */
+static void DashFpsSample(u64 now) {
+    unsigned long skipped;
+    unsigned long drawn;
+    u32 elapsedMs;
+    if (sFpsWindowStartTick == 0) {
+        DashFpsResetWindow(now); /* first DASH tick of a race: baseline only */
+        return;
+    }
+    sFpsWindowTicks++;
+    elapsedMs = (u32) ((now - sFpsWindowStartTick) / (u64) CPU_TICKS_PER_MSEC);
+    if (elapsedMs < DASH_FPS_WINDOW_MS) {
+        return;
+    }
+    if (elapsedMs > 4u * DASH_FPS_WINDOW_MS) {
+        DashFpsResetWindow(now); /* the DASH was off screen (dismissed / screen off): re-baseline */
+        return;
+    }
+    skipped = gdx3ds_frameskip_skipped_total() - sFpsWindowStartSkipped;
+    drawn = (skipped < sFpsWindowTicks) ? sFpsWindowTicks - skipped : 0;
+    sFpsShown = (int) ((drawn * 1000ul + elapsedMs / 2u) / elapsedMs);
+    if (sFpsShown > 60) {
+        sFpsShown = 60; /* presents are vsync-bound: 61 is only window-edge jitter (31 frames in 508ms) */
+    }
+    DashFpsResetWindow(now);
+}
+
+/* One glyph's opaque texels in a single flat colour, at native size: the outline pass below. */
+static void DashBlitGlyphSolid(uint16_t* fb, int x, int y, const DashGlyph* g, uint16_t colour) {
+    int gy;
+    DashMarkCols(x, g->w);
+    for (gy = 0; gy < g->h; gy++) {
+        int gx;
+        for (gx = 0; gx < g->w; gx++) {
+            if (g->pixels[gy * g->w + gx] & 1u) {
+                DashPixel(fb, x + gx, y + gy, colour);
+            }
+        }
+    }
+}
+
+/* Font2 text at native size with a 1px outline: every glyph stamped in `outline` at the 8
+ * neighbouring offsets, then the real glyph on top. Same advance/space/gap walk as
+ * DashBlitFontText (gap 1). */
+static void DashBlitFont2Outlined(uint16_t* fb, int x, int y, const char* s, uint16_t outline) {
+    int cx = x;
+    int n = 0;
+    for (; *s != '\0'; s++) {
+        if (n > 0) {
+            cx += 1;
+        }
+        if (*s == ' ') {
+            cx += DASH_FONT2_SPACE;
+        } else {
+            char key[2] = {*s, '\0'};
+            const DashGlyph* g = DashFindGlyph(kDashGlyphFont2, KDASHGLYPHFONT2_COUNT, key);
+            if (g != NULL) {
+                int oy;
+                for (oy = -1; oy <= 1; oy++) {
+                    int ox;
+                    for (ox = -1; ox <= 1; ox++) {
+                        if (ox != 0 || oy != 0) {
+                            DashBlitGlyphSolid(fb, cx + ox, y + oy, g, outline);
+                        }
+                    }
+                }
+                DashBlitGlyphRatio(fb, cx, y, g, 1, 1);
+                cx += g->adv;
+            }
+        }
+        n++;
+    }
+}
+
+static void DashPaintMapFpsText(uint16_t* fb) {
+    char buf[12];
+    int tw;
+    if (!sFpsEnabled) {
+        return;
+    }
+    if (sFpsShown < 0) {
+        snprintf(buf, sizeof(buf), "-- FPS");
+    } else {
+        snprintf(buf, sizeof(buf), "%d FPS", sFpsShown);
+    }
+    tw = DashFontTextWidthRatio(kDashGlyphFont2, KDASHGLYPHFONT2_COUNT, buf, 1, 1, DASH_FONT2_SPACE, 1);
+    DashBlitFont2Outlined(fb, DASH_FPS_RIGHT - tw, DASH_FPS_TOP, buf, DASH_FPS_OUTLINE);
+}
+
+/* o3ds60 dash_map_inc: the FPS text with its rect tracked (DashMapOverlayPaint). */
+static void DashPaintMapFpsTextTracked(uint16_t* fb) {
+    DashColMarks marks;
+    int tw;
+    if (!sFpsEnabled) {
+        return;
+    }
+    /* the widest text it paints ("999 FPS"), its 1 px outline included */
+    tw = DashFontTextWidthRatio(kDashGlyphFont2, KDASHGLYPHFONT2_COUNT, "999 FPS", 1, 1, DASH_FONT2_SPACE, 1);
+    DashColMarksSave(&marks);
+    DashPaintMapFpsText(fb);
+    DashColMarksToTrack(&marks, DASH_FPS_RIGHT - tw - 2, DASH_FPS_RIGHT + 1, DASH_FPS_TOP - 1,
+                        DASH_FPS_TOP + DashFont2Height());
 }
 
 static void DashPaintModeDot(uint16_t* fb) {
@@ -1632,14 +3045,6 @@ static void DashFormatInterval(char* out, size_t cap, int ms) {
     snprintf(out, cap, "%s%s", (ms < 0) ? "-" : "", body);
 }
 
-/* Clears a value row to the same dark panel fill the header/MODE-chip/MENU-button widgets use
- * (not an attempt to reproduce the dimmed checker pixel-for-pixel underneath -- a flat panel
- * read as "behind this text" every tick, cheap, and consistent with the rest of the box's
- * chrome) before redrawing this tick's digits over it. */
-static void DashClearValueRow(uint16_t* fb, int x0, int y0, int w, int h) {
-    DashFillRect(fb, x0, y0, w, h, 0x1041u);
-}
-
 /* COORDINATOR FIX (second round item 2 / third round item 1): "the right-column text... is too
  * small" -> "replace [the hand font]... aTimerSymbolsTex (8x16 digits plus ' " for times)."
  * Each field clears its own unbaked value row (DashBakeSkipCell) and redraws with the real
@@ -1653,6 +3058,54 @@ static void DashClearValueRow(uint16_t* fb, int x0, int y0, int w, int h) {
  * hardware feedback round: "basically useless... I'd put the [KO] stars at the top of this right
  * side column instead" -- see DashPaintKOStars, below, and sDashWidgets' own "ko_stars" row for
  * where that box now lives). */
+/* uipolish: the clocks are clamped to what the 76 px stats box shows in full (8 cells of 8 px):
+ * a lap or best time to 99'59"99, a gap to -9'59"99 .. 9'59"99. */
+#define DASH_CLOCK_MAX_MS 5999990
+#define DASH_GAP_MAX_MS 599990
+
+static int DashClampMs(int ms, int maxMs) {
+    if (ms > maxMs) {
+        return maxMs;
+    }
+    if (ms < -maxMs) {
+        return -maxMs;
+    }
+    return ms;
+}
+
+/* 1 when every character of s has a glyph in the lap set (it has '/' and 1..5 only). */
+static int DashLapGlyphsCover(const char* s) {
+    for (; *s != '\0'; s++) {
+        const char key[2] = {*s, '\0'};
+        if (DashFindGlyph(kDashGlyphLap, KDASHGLYPHLAP_COUNT, key) == NULL) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* "n/m" in the lap digits; with a lap past 5 (MP races run up to 9 laps) the lap set has no
+ * glyph for it, so every digit comes from the timer set (8x16, its ink 2 rows taller) and only
+ * the '/' from the lap set, centred on the same line. */
+static void DashPaintLapValue(uint16_t* fb, const char* s, int x, int y) {
+    if (DashLapGlyphsCover(s)) {
+        DashBlitFontText(fb, x, y, kDashGlyphLap, KDASHGLYPHLAP_COUNT, s, 1, 1, 0, 0);
+        return;
+    }
+    for (; *s != '\0'; s++, x += 8) {
+        const char key[2] = {*s, '\0'};
+        const DashGlyph* g = DashFindGlyph(kDashGlyphTimer, KDASHGLYPHTIMER_COUNT, key);
+        if (*s == '/' || g == NULL) {
+            g = DashFindGlyph(kDashGlyphLap, KDASHGLYPHLAP_COUNT, key);
+            if (g != NULL) {
+                DashBlitGlyphRatio(fb, x, y + 1, g, 1, 1);
+            }
+        } else {
+            DashBlitGlyphRatio(fb, x, y - 2, g, 1, 1);
+        }
+    }
+}
+
 static void DashPaintRightColumnLap(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
     char buf[16];
     int lapDisp;
@@ -1668,22 +3121,33 @@ static void DashPaintRightColumnLap(uint16_t* fb, const GdxRaceHudSnapshot* snap
         lapDisp = snap->totalLaps;
     }
     snprintf(buf, sizeof(buf), "%d/%d", lapDisp, snap->totalLaps);
-    DashClearValueRow(fb, DASH_LAP_X0 + 2, DASH_LAP_Y0 + 12, 56, 14);
-    DashBlitFontText(fb, DASH_LAP_X0 + 2, DASH_LAP_Y0 + 13, kDashGlyphLap, KDASHGLYPHLAP_COUNT, buf, 1, 1, 0, 0);
+    if (DashMemoSame(DASHW_LAP, buf)) {
+        return;
+    }
+    DashStatsClearRow(fb, DASH_STATS_LAP_VALUE_Y - 2, 15);
+    DashPaintLapValue(fb, buf, DASH_STATS_TEXT_X, DASH_STATS_LAP_VALUE_Y);
+}
+
+static void DashPaintStatsClock(uint16_t* fb, const char* s, int y) {
+    DashStatsClearRow(fb, y, 16);
+    DashBlitFontText(fb, DASH_STATS_TEXT_X, y, kDashGlyphTimer, KDASHGLYPHTIMER_COUNT, s, 1, 1, 0, 0);
 }
 
 static void DashPaintRightColumnTimer(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
     char buf[16];
+    char best[16];
+    char key[DASH_MEMO_KEY];
     if (!sDashWidgets[DASHW_TIMER].enabled) {
         return;
     }
-    DashFormatClock(buf, sizeof(buf), snap->lapTimeMs);
-    DashClearValueRow(fb, DASH_TIMER_X0 + 2, DASH_TIMER_Y0 + 18, 56, 20);
-    DashBlitFontText(fb, DASH_TIMER_X0 + 1, DASH_TIMER_Y0 + 19, kDashGlyphTimer, KDASHGLYPHTIMER_COUNT, buf, 1, 1, 0, 0);
-
-    DashFormatClock(buf, sizeof(buf), snap->bestTimeMs);
-    DashClearValueRow(fb, DASH_TIMER_X0 + 2, DASH_TIMER_Y0 + 52, 56, 17);
-    DashBlitFontText(fb, DASH_TIMER_X0 + 1, DASH_TIMER_Y0 + 53, kDashGlyphTimer, KDASHGLYPHTIMER_COUNT, buf, 1, 1, 0, 0);
+    DashFormatClock(buf, sizeof(buf), DashClampMs(snap->lapTimeMs, DASH_CLOCK_MAX_MS));
+    DashFormatClock(best, sizeof(best), DashClampMs(snap->bestTimeMs, DASH_CLOCK_MAX_MS));
+    snprintf(key, sizeof(key), "%s|%s", buf, best);
+    if (DashMemoSame(DASHW_TIMER, key)) {
+        return;
+    }
+    DashPaintStatsClock(fb, buf, DASH_STATS_TIME_VALUE_Y);
+    DashPaintStatsClock(fb, best, DASH_STATS_BEST_VALUE_Y);
 }
 
 static void DashPaintRightColumnGap(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
@@ -1691,9 +3155,11 @@ static void DashPaintRightColumnGap(uint16_t* fb, const GdxRaceHudSnapshot* snap
     if (!sDashWidgets[DASHW_GAP].enabled) {
         return;
     }
-    DashFormatInterval(buf, sizeof(buf), snap->gapMs);
-    DashClearValueRow(fb, DASH_GAP_X0 + 2, DASH_GAP_Y0 + 12, 58, 12);
-    DashBlitFontText(fb, DASH_GAP_X0 + 1, DASH_GAP_Y0 + 12, kDashGlyphTimer, KDASHGLYPHTIMER_COUNT, buf, 1, 1, 0, 0);
+    DashFormatInterval(buf, sizeof(buf), DashClampMs(snap->gapMs, DASH_GAP_MAX_MS));
+    if (DashMemoSame(DASHW_GAP, buf)) {
+        return;
+    }
+    DashPaintStatsClock(fb, buf, DASH_STATS_GAP_VALUE_Y);
 }
 
 /* COORDINATOR FIX (hardware feedback round, item 6): "[BOOST is] basically useless... more
@@ -1721,6 +3187,9 @@ static void DashPaintKOStars(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
      * DashBlitFontText skips it with zero advance), which first-pass testing against a live
      * emulator capture caught: the box rendered a bare "0", no "x". */
     snprintf(buf, sizeof(buf), "X%d", snap->koCount);
+    if (DashMemoSame(DASHW_KO_STARS, buf)) {
+        return;
+    }
     tw = DashFontTextWidthRatio(kDashGlyphFont2, KDASHGLYPHFONT2_COUNT, buf, 1, 1, DASH_FONT2_SPACE, 1);
     star = DashFindGlyph(kDashGlyphKoStar, KDASHGLYPHKOSTAR_COUNT, "star");
     iconW = (star != NULL) ? star->w * 2 : 0; /* num=2,den=1: the native 8x8 icon shown at 16x16 */
@@ -1736,6 +3205,93 @@ static void DashPaintKOStars(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
                       buf, 1, 1, DASH_FONT2_SPACE, 1);
 }
 
+/* card-4b (hw: "the km/h is so small at bottom. hard to see at a glance... make it look more like
+ * it does on the top screen"): the top screen's own speedometer textures (Hud_DrawPlayerSpeed's
+ * aSpeedDigitsTex 12x16 cells at a 12 px advance, then aKmhTex) on its black box, the km/h unit
+ * at 1x under the digits' right edge. Repaints only when the number changes (DashMemoSame), like
+ * every other right-column value.
+ * uipolish (hw: "the speedometer numbers slightly clip under the map"): the digits' ink, not
+ * their cells, is placed: up to 999 at 2x (three digits are 70 px of ink, 2 px inside the 76 px
+ * box on each side), 1000+ at 3/2 (four digits, the same 70 px) instead of the old 1x fallback,
+ * bottom-aligned with the 2x row; fewer digits keep the same right edge. */
+#define DASH_SPEED_DIGIT_ADV 12
+#define DASH_SPEED_DIGIT_INK_W 11 /* aSpeedDigitsTex's ink is cols 0..10 of each 12 px cell */
+#define DASH_SPEED_KMH_INK_X 1    /* aKmhTex's ink is cols 1..18 of its 20 */
+#define DASH_SPEED_KMH_INK_W 18
+#define DASH_SPEED_INK_RIGHT (DASH_SPEED_X0 + DASH_SPEED_W - 4) /* the digits' and unit's last ink column */
+
+typedef struct DashSpeedRow {
+    int num, den; /* glyph scale */
+    int adv;      /* cell advance at that scale */
+    int x;        /* the first cell's left edge */
+    int y;        /* the cells' top */
+    int h;        /* the cells' height */
+} DashSpeedRow;
+
+static DashSpeedRow DashSpeedLayout(int digits) {
+    DashSpeedRow r;
+    int inkW;
+    if (digits <= 3) {
+        r.num = 2;
+        r.den = 1;
+        r.y = DASH_SPEED_Y0 + 1; /* ink rows 2..29 of the 32 px cell: box rows 3..30 */
+    } else {
+        r.num = 3;
+        r.den = 2;
+        r.y = DASH_SPEED_Y0 + 8; /* ink rows 2..22 of the 24 px cell: bottom-aligned at row 30 */
+    }
+    r.adv = (DASH_SPEED_DIGIT_ADV * r.num) / r.den;
+    r.h = (16 * r.num) / r.den;
+    inkW = (DASH_SPEED_DIGIT_INK_W * r.num + r.den - 1) / r.den;
+    r.x = DASH_SPEED_INK_RIGHT + 1 - ((digits - 1) * r.adv + inkW);
+    return r;
+}
+
+static void DashPaintSpeedDigits(uint16_t* fb, const char* digits, const DashSpeedRow* r, int x) {
+    for (; *digits != '\0'; digits++) {
+        const char key[2] = {*digits, '\0'};
+        const DashGlyph* g = DashFindGlyph(kDashGlyphSpeedDigit, KDASHGLYPHSPEEDDIGIT_COUNT, key);
+        if (g != NULL) {
+            DashBlitGlyphRatio(fb, x, r->y, g, r->num, r->den);
+        }
+        x += r->adv;
+    }
+}
+
+static void DashPaintSpeedRow(uint16_t* fb, const char* digits) {
+    const DashGlyph* kmh = DashFindGlyph(kDashGlyphKmh, KDASHGLYPHKMH_COUNT, "kmh");
+    const DashSpeedRow r = DashSpeedLayout((int) strlen(digits));
+    DashPaintSpeedDigits(fb, digits, &r, r.x);
+    if (kmh != NULL) {
+        /* the unit's ink (cell rows 5..15) starts 1 px under the digits' ink (box rows 3..30) */
+        DashBlitGlyphRatio(fb, DASH_SPEED_INK_RIGHT + 1 - DASH_SPEED_KMH_INK_X - DASH_SPEED_KMH_INK_W,
+                           DASH_SPEED_Y0 + 27, kmh, 1, 1);
+    }
+}
+
+/* The common case, keeping the paint cost of the big digits low: the box is already painted with
+ * the same number of digits, so only the digit cells that changed are cleared and redrawn
+ * (usually the last one or two). A cell is cleared over its own rows only (box rows 1..31 at 2x):
+ * the digits' ink ends at row 30 and the km/h unit's starts at row 32, so the unit and the border
+ * stay. 0 = the caller paints the whole box. */
+static int DashPaintSpeedChangedDigits(uint16_t* fb, const char* prev, const char* digits) {
+    const int n = (int) strlen(digits);
+    const DashSpeedRow r = DashSpeedLayout(n);
+    int i;
+    if (n > 4 || (int) strlen(prev) != n) {
+        return 0;
+    }
+    for (i = 0; i < n; i++) {
+        if (prev[i] != digits[i]) {
+            const char one[2] = {digits[i], '\0'};
+            const int x = r.x + i * r.adv;
+            DashFillRect(fb, x, r.y, r.adv, r.h - 1, 0x0000u);
+            DashPaintSpeedDigits(fb, one, &r, x);
+        }
+    }
+    return 1;
+}
+
 /* COORDINATOR FIX (hw bug n60-3d7, item 4): the speed readout (see sDashWidgets' own "speed"
  * row). Unlike lap/timer/gap, this box has no baked archive texture to redraw a value row
  * into -- it didn't exist before the header/energy_bar swap opened this gap -- so chrome and
@@ -1747,26 +3303,30 @@ static void DashPaintKOStars(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
  *
  * COORDINATOR FIX (hardware feedback round, "also"): "dash-speed-box is x=260 w=62 -> 2px past
  * the right edge (322); fix." Table-driven now (DASH_SPEED_X0/W read sDashWidgets' "speed" row,
- * x=258 w=62 -> right edge 320, the screen's own width) instead of inheriting BOOST's old x0. */
+ * x=258 w=62 -> right edge 320, the screen's own width) instead of inheriting BOOST's old x0.
+ * card-4b: no Font2 "KPH" chip any more -- the top screen's digits and km/h on a black box at the
+ * head of the right column (DashPaintSpeedRow, above). */
 static void DashPaintSpeed(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
     char buf[16];
-    int num;
-    int tw;
-    int x;
-    int y;
+    char prev[8] = "";
     if (!sDashWidgets[DASHW_SPEED].enabled) {
         return;
     }
-
-    snprintf(buf, sizeof(buf), "%d KPH", snap->speedKph);
-    num = DashFitFont2Num(buf, DASH_SPEED_W - 6, 1);
-    tw = DashFontTextWidthRatio(kDashGlyphFont2, KDASHGLYPHFONT2_COUNT, buf, num, 1, DASH_FONT2_SPACE, 1);
-    x = DASH_SPEED_X0 + (DASH_SPEED_W - tw) / 2;
-    y = DASH_SPEED_Y0 + (DASH_SPEED_H - (8 * num)) / 2;
-
-    DashFillRect(fb, DASH_SPEED_X0 + 1, DASH_SPEED_Y0 + 1, DASH_SPEED_W - 2, DASH_SPEED_H - 2, 0x3885u);
+    snprintf(buf, sizeof(buf), "%d", snap->speedKph < 0 ? 0 : snap->speedKph > 9999 ? 9999 : snap->speedKph);
+    if (sMemoValid[DASHW_SPEED] && sMemoMode == sPlacementMode) {
+        memcpy(prev, sMemoKey[DASHW_SPEED], sizeof(prev) - 1);
+        prev[sizeof(prev) - 1] = '\0';
+    }
+    if (DashMemoSame(DASHW_SPEED, buf)) {
+        return;
+    }
+    if (DashPaintSpeedChangedDigits(fb, prev, buf)) {
+        return;
+    }
+    /* the top screen's black box; the chip border goes on last (the 2x row spans the box) */
+    DashFillRect(fb, DASH_SPEED_X0 + 1, DASH_SPEED_Y0 + 1, DASH_SPEED_W - 2, DASH_SPEED_H - 2, 0x0000u);
+    DashPaintSpeedRow(fb, buf);
     DashStrokeRect(fb, DASH_SPEED_X0, DASH_SPEED_Y0, DASH_SPEED_W, DASH_SPEED_H, 0xFB76u);
-    DashBlitFontText(fb, x, y, kDashGlyphFont2, KDASHGLYPHFONT2_COUNT, buf, num, 1, DASH_FONT2_SPACE, 1);
 }
 
 /* COORDINATOR FIX (third round item 3): "verify the player's position... If it's wrong, fix the
@@ -1799,6 +3359,9 @@ static void DashPaintOurPosition(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
         return;
     }
     n = snprintf(digits, sizeof(digits), "%d", snap->position);
+    if (DashMemoSame(DASHW_PORTRAIT, digits)) {
+        return;
+    }
     den = (n >= 2) ? 2 : 1;
     x = DASH_PORTRAIT_X0 + 2;
 
@@ -1858,6 +3421,9 @@ static void DashPaintModeLabel(uint16_t* fb, const GdxRaceHudSnapshot* snap) {
         return;
     }
     label = DashModeChipLabel(sPlacementMode);
+    if (DashMemoSame(DASHW_MODE_CHIP, label)) {
+        return;
+    }
     maxW = DASH_MODE_W - 12; /* leave room for the colour dot at the chip's right edge */
     num = DashFitFont2Num(label, maxW, 1);
     tw = DashFontTextWidthRatio(kDashGlyphFont2, KDASHGLYPHFONT2_COUNT, label, num, 1, DASH_FONT2_SPACE, 1);
@@ -2276,6 +3842,237 @@ static void DashServiceShot(const uint16_t* fb) {
 
 /* ---- the one call site: touch + paint, every tick the takeover is active -------------- */
 
+/* Repaint everything from the backdrop up on this tick (the multiplayer dash's overlay closed, or
+ * a stall banner / toast went away). */
+static void DashRebake(void) {
+    sWasValid = 0;
+    sLastHeaderRacersRemaining = -1;
+    sLastHeaderTrackName[0] = '\0';
+}
+
+/* The multiplayer standings overlay: 1 = it owned this tick (painted and presented itself). */
+/* o3dsperf [ui] dash_every: is this host iteration's repaint due? Always on the first tick after
+ * a bake / overlay (a whole-frame present is pending) and while the screen is touched. */
+/* o3ds60 dash_spread: steady frameskip runs a render on every tick (D = 1). hw 5c24be0: the
+ * "more than 8 ticks without a skip" test alone left the first 8 ticks of every D = 1 stint on
+ * the skip-waiting rule, which then paints every widget at once (dash max_us 7125) on a rendered
+ * tick -- right when the governor is judging whether D = 1 holds. */
+static int DashFrameskipAtD1(void) {
+    int d = 0;
+    int late = 0;
+    gdx3ds_frameskip_hitch_info(&d, &late);
+    if (d == 1) {
+        return 1;
+    }
+    return DashRace0EveryTick();
+}
+
+static int DashPaintDue(int touching, int* phase) {
+    const unsigned long skipped = gdx3ds_frameskip_skipped_total();
+    const int thisSkipped = skipped != sDashPrevSkipped;
+    sDashPrevSkipped = skipped;
+    if (thisSkipped) {
+        sDashSinceSkip = 0;
+    } else if (sDashSinceSkip < 255u) {
+        sDashSinceSkip++;
+    }
+    sDashSince++;
+    *phase = -1;
+    if (sDashEvery <= 1 || sDirtyFull || touching || sEditMode) {
+        sDashSince = 0;
+        return 1;
+    }
+    if (sDashSpread != 0 && (sDashSinceSkip > 8u || (sDashSpread == 1 && DashFrameskipAtD1()))) {
+        /* o3ds60 [ui] dash_spread: no skip iteration lately, or steady already runs at D = 1
+         * (the race draws every tick from now on: no full paint at the start of a D = 1 stint) */
+        sDashPhaseN = (sDashEveryD1 > 1 && DashFrameskipAtD1()) ? (unsigned) sDashEveryD1 : (unsigned) sDashEvery;
+        *phase = (int) (sDashPhaseNext % sDashPhaseN);
+        sDashPhaseNext++;
+        sDashSince = 0;
+        return 1;
+    }
+    if (sDashSince < (unsigned) sDashEvery) {
+        return 0;
+    }
+    /* Due. On a rendered iteration of a race that is skipping frames, wait (up to another N
+     * iterations) for the next skip iteration: its frame has the room. */
+    if (!thisSkipped && sDashSinceSkip <= 8u && sDashSince < 2u * (unsigned) sDashEvery) {
+        return 0;
+    }
+    sDashSince = 0;
+    return 1;
+}
+
+/* dash_spread: does this paint (phase -1 = every widget) include paint-order entry `oi`? */
+static int DashPhaseHas(int phase, unsigned oi) {
+    if (phase < 0 || sDashEvery <= 1) {
+        return 1;
+    }
+    return (int) (oi % (sDashPhaseN > 0 ? sDashPhaseN : 1u)) == phase;
+}
+
+static unsigned DashOrderIndex(DashWidgetId id) {
+    unsigned oi;
+    for (oi = 0; oi < (unsigned) DASH_PAINT_ORDER_COUNT; oi++) {
+        if (kDashPaintOrder[oi] == id) {
+            return oi;
+        }
+    }
+    return 0;
+}
+
+/* The shadow's painted columns -> the live buffer (one contiguous block: the buffer is
+ * column-major), or the whole frame after a bake, a new live buffer, or every
+ * DASH_FULL_PRESENT_EVERY presents. */
+/* o3ds60 dash_budget: copy each run of painted columns (the column-major buffer makes a run one
+ * contiguous block), plus this present's self-heal slice. */
+/* o3ds60 dash_map_inc: the marked rows of each column not presented whole. */
+static size_t DashPresentRows(uint16_t* realFb, const uint16_t* fb) {
+    size_t bytes = 0;
+    int x;
+    for (x = 0; x < DASH_FB_W; x++) {
+        const int y0 = sRowY0[x];
+        const int y1 = sRowY1[x];
+        size_t off;
+        size_t n;
+        if (y1 < y0 || (sDirtyColBits[x >> 5] & (1u << (x & 31))) != 0) {
+            continue;
+        }
+        off = (size_t) x * DASH_FB_H + (size_t) (DASH_FB_H - 1 - y1);
+        n = (size_t) (y1 - y0 + 1) * sizeof(uint16_t);
+        memcpy(realFb + off, fb + off, n);
+        bytes += n;
+    }
+    return bytes;
+}
+
+static size_t DashPresentRuns(uint16_t* realFb, const uint16_t* fb) {
+    const int sliceW = DASH_FB_W / 8;
+    int healX0 = -1;
+    size_t bytes = 0;
+    int x;
+    if (++sSinceFullPresent >= DASH_FULL_PRESENT_EVERY / 8u) {
+        healX0 = (int) (sHealSlice % 8u) * sliceW;
+        sHealSlice++;
+        sSinceFullPresent = 0;
+        DashMarkCols(healX0, sliceW);
+    }
+    if (sRowAny) {
+        bytes += DashPresentRows(realFb, fb);
+    }
+    if (sDirtyX1 < sDirtyX0) {
+        return bytes;
+    }
+    x = sDirtyX0;
+    while (x <= sDirtyX1) {
+        int run = x;
+        size_t off;
+        size_t n;
+        if ((sDirtyColBits[x >> 5] & (1u << (x & 31))) == 0) {
+            x++;
+            continue;
+        }
+        while (run + 1 <= sDirtyX1 && (sDirtyColBits[(run + 1) >> 5] & (1u << ((run + 1) & 31))) != 0) {
+            run++;
+        }
+        off = (size_t) x * DASH_FB_H;
+        n = (size_t) (run - x + 1) * DASH_FB_H * sizeof(uint16_t);
+        memcpy(realFb + off, fb + off, n);
+        bytes += n;
+        x = run + 1;
+    }
+    return bytes;
+}
+
+static void DashPresent(uint16_t* realFb, const uint16_t* fb) {
+    const u64 t0 = svcGetSystemTick();
+    size_t bytes = 0;
+    if (realFb != sDashLastLive) {
+        sDashLastLive = realFb;
+        sDirtyFull = 1;
+    }
+    if (!sDashMemo && sDashEvery <= 1) {
+        sDirtyFull = 1; /* both levers off: exactly the old whole-frame copy every tick */
+    }
+    if (!sDashBudget && sDirtyX1 >= sDirtyX0 && ++sSinceFullPresent >= DASH_FULL_PRESENT_EVERY) {
+        sDirtyFull = 1;
+    }
+    if (sDirtyFull && !sMapFullThisTick) {
+        sMapIncValid = 0; /* o3ds60 dash_map_inc: the shadow may have changed under the box */
+    }
+    sMapFullThisTick = 0;
+    if (sDirtyFull) {
+        bytes = sizeof(sShadowFb);
+        memcpy(realFb, fb, bytes);
+        sSinceFullPresent = 0;
+        sTickCost.full = 1;
+    } else if (sDashBudget) {
+        bytes = DashPresentRuns(realFb, fb);
+    } else if (sDirtyX1 >= sDirtyX0) {
+        const size_t off = (size_t) sDirtyX0 * DASH_FB_H;
+        bytes = (size_t) (sDirtyX1 - sDirtyX0 + 1) * DASH_FB_H * sizeof(uint16_t);
+        memcpy(realFb + off, fb + off, bytes);
+    }
+    if (bytes != 0) {
+        sDashPaints++;
+        sDashPresentKb += (unsigned long) (bytes / 1024u);
+    }
+    sDirtyFull = 0;
+    sDirtyX0 = DASH_FB_W;
+    sDirtyX1 = -1;
+    memset(sDirtyColBits, 0, sizeof(sDirtyColBits));
+    sRowAny = 0;
+    sTickCost.kb = (unsigned long) (bytes / 1024u);
+    sTickCost.pres = svcGetSystemTick() - t0;
+    if (sDashProf) {
+        sProfPresent += sTickCost.pres;
+    }
+}
+
+static unsigned long DashTicksToUs(u64 t, unsigned n) {
+    if (n == 0) {
+        return 0;
+    }
+    return (unsigned long) (((t / n) * 1000u) / (u64) CPU_TICKS_PER_MSEC);
+}
+
+/* [dashprof]: per-widget us per DASH tick over the last `n` ticks (0 = not painted / skipped). */
+static void DashProfEmit(unsigned n) {
+    if (sDashProf) {
+        DashLog("[dashprof] n=%u every=%d memo=%d paints=%lu kb=%lu | hdr=%lu std=%lu map=%lu nrg=%lu pos=%lu "
+                "mode=%lu ko=%lu lap=%lu tim=%lu gap=%lu spd=%lu bui=%lu pres=%lu",
+                n, sDashEvery, sDashMemo, sDashPaints, sDashPresentKb, DashTicksToUs(sProfWidget[DASHW_HEADER], n),
+                DashTicksToUs(sProfWidget[DASHW_STANDINGS], n), DashTicksToUs(sProfWidget[DASHW_MAP_BOX], n),
+                DashTicksToUs(sProfWidget[DASHW_ENERGY_BAR], n), DashTicksToUs(sProfWidget[DASHW_PORTRAIT], n),
+                DashTicksToUs(sProfWidget[DASHW_MODE_CHIP], n), DashTicksToUs(sProfWidget[DASHW_KO_STARS], n),
+                DashTicksToUs(sProfWidget[DASHW_LAP], n), DashTicksToUs(sProfWidget[DASHW_TIMER], n),
+                DashTicksToUs(sProfWidget[DASHW_GAP], n), DashTicksToUs(sProfWidget[DASHW_SPEED], n),
+                DashTicksToUs(sProfBui, n), DashTicksToUs(sProfPresent, n));
+    }
+    memset(sProfWidget, 0, sizeof(sProfWidget));
+    sProfBui = 0;
+    sProfPresent = 0;
+    sDashPaints = 0;
+    sDashPresentKb = 0;
+}
+
+static int DashMpOverlayTick(uint16_t* fb, uint16_t* realFb, int touching, int touchPx, int touchPy) {
+    if (gdx3ds_buirace_pause_tick(fb, realFb, touching, touchPx, touchPy)) {
+        DashServiceShot(fb);
+        sDirtyFull = 1; /* mp-menus #10: the pause card drew on the live buffer */
+        return 1;
+    }
+    if (gdx3ds_buirace_overlay_tick(fb, realFb, touching)) {
+        DashServiceShot(fb);
+        sDirtyFull = 1; /* the overlay drew on the live buffer: the next present is whole */
+        return 1;
+    }
+    if (gdx3ds_buirace_take_rebake()) {
+        DashRebake();
+    }
+    return 0;
+}
+
 void gdx3ds_bottomhud_tick(unsigned short* fbIn, unsigned int held, unsigned int prevHeld, int touching,
                             int prevTouching, int touchPx, int touchPy) {
     uint16_t* const realFb = (uint16_t*) fbIn; /* the live, on-screen, single-buffered console fb */
@@ -2287,6 +4084,8 @@ void gdx3ds_bottomhud_tick(unsigned short* fbIn, unsigned int held, unsigned int
     if (realFb == NULL) {
         return;
     }
+    sLiveFb = realFb;
+    sMpDash = sBuiOn && sPlacementMode != GDX_HUD_PLACEMENT_CUSTOM && gdx3ds_buirace_active();
     gdx_racehud_snapshot(&snap);
     if (!snap.valid) {
         if (!sEditMode) {
@@ -2298,12 +4097,21 @@ void gdx3ds_bottomhud_tick(unsigned short* fbIn, unsigned int held, unsigned int
         DashBuildSampleSnapshot(&snap);
     }
 
+    if (sMpDash && DashMpOverlayTick(fb, realFb, touching, touchPx, touchPy)) {
+        return;
+    }
     if (sPlacementMode != GDX_HUD_PLACEMENT_CUSTOM) {
         if (!sWasValid) {
             DashPaintBaked(fb);
+            if (sMpDash) {
+                gdx3ds_buirace_on_bake(fb);
+            }
             sWasValid = 1;
             sLastTop5Count = -1;
             sLastMapTick = 0;
+            sLastSpareMachines = DASH_LIVES_UNPAINTED;
+            sFpsShown = -1;
+            sFpsWindowStartTick = 0;
         }
     } else if (!sCustomBackdropPainted) {
         /* CUSTOM mode never reuses the baked pixel art (DashPaintBaked) -- widgets here can be
@@ -2326,7 +4134,10 @@ void gdx3ds_bottomhud_tick(unsigned short* fbIn, unsigned int held, unsigned int
         const int insideChip = touching && touchPx >= DASH_MODE_X0 && touchPx < DASH_MODE_X0 + DASH_MODE_W &&
                                 touchPy >= DASH_MODE_Y0 && touchPy < DASH_MODE_Y0 + DASH_MODE_H;
         const int chipDown = insideChip && !sPrevChipTouch;
-        const int selectDown = (held & KEY_SELECT) && !(prevHeld & KEY_SELECT);
+        /* bottom_menus: SELECT pressed with L or R held is the dev-console combo starting, not a
+         * mode cycle (the combo would otherwise move the top-screen HUD on its way in). */
+        const int comboKeys = sBuiOn && (held & (KEY_L | KEY_R)) != 0;
+        const int selectDown = (held & KEY_SELECT) && !(prevHeld & KEY_SELECT) && !comboKeys;
         if ((chipDown || selectDown) && !sEditMode) {
             gdx3ds_bottomhud_cycle_mode();
         }
@@ -2338,7 +4149,7 @@ void gdx3ds_bottomhud_tick(unsigned short* fbIn, unsigned int held, unsigned int
      * here (not inside the DEBUG-button block) so it still counts even while the finger is on the
      * chip/elsewhere; reset on release, and pushed past the threshold the instant it fires so
      * holding SELECT through the dismiss can't immediately re-fire. */
-    if (held & KEY_SELECT) {
+    if ((held & KEY_SELECT) && !sBuiOn) {
         if (sSelectHoldTicks <= DASH_SELECT_LONGPRESS_TICKS) {
             sSelectHoldTicks++;
         }
@@ -2355,8 +4166,9 @@ void gdx3ds_bottomhud_tick(unsigned short* fbIn, unsigned int held, unsigned int
      * COORDINATOR FIX (item 5): a SELECT long-press does the exact same thing -- see
      * sSelectHoldTicks above. */
     {
-        const int insideBack = touching && touchPx >= DASH_BACK_X0 && touchPx < DASH_BACK_X0 + DASH_BACK_W &&
-                                touchPy >= DASH_BACK_Y0 && touchPy < DASH_BACK_Y0 + DASH_BACK_H;
+        const int insideBack = touching && !sDebugHidden && !sMpDash && touchPx >= DASH_BACK_X0 &&
+                                touchPx < DASH_BACK_X0 + DASH_BACK_W && touchPy >= DASH_BACK_Y0 &&
+                                touchPy < DASH_BACK_Y0 + DASH_BACK_H;
         const int backDown = insideBack && !sPrevBackTouch;
         const int selectLongpress = sSelectHoldTicks == DASH_SELECT_LONGPRESS_TICKS;
         sPrevBackTouch = insideBack;
@@ -2380,6 +4192,7 @@ void gdx3ds_bottomhud_tick(unsigned short* fbIn, unsigned int held, unsigned int
          * resizable boxes instead). Touch is handled BEFORE painting so this same tick's paint
          * already reflects whatever a drag/resize/close/tray tap just changed. */
         int i;
+        sDirtyFull = 1; /* CUSTOM: the generic widgets move; present the whole frame */
         DashCustomHandleTouch(touching, prevTouching, touchPx, touchPy);
         DashPaintHeaderLive(fb, &snap);
         DashPaintModeLabel(fb, &snap); /* repaints the chip's interior -- the dot must follow it */
@@ -2412,11 +4225,72 @@ void gdx3ds_bottomhud_tick(unsigned short* fbIn, unsigned int held, unsigned int
          * in the table -- the MODE dot, which must follow DashPaintModeLabel's own repaint of the
          * chip's interior -- is re-encoded explicitly right here, not hidden inside the loop. */
         unsigned oi;
-        for (oi = 0; oi < (unsigned) DASH_PAINT_ORDER_COUNT; oi++) {
-            const DashWidgetId id = kDashPaintOrder[oi];
-            sDashWidgets[id].paint(fb, &snap);
-            if (id == DASHW_MODE_CHIP) {
-                DashPaintModeDot(fb);
+        int paintPhase = -1;
+        const int paintNow = DashPaintDue(touching, &paintPhase);
+        /* o3ds60 dash_budget: at steady D = 1 a tick paints until the budget is used; the
+         * widgets still due carry to the next tick (painted first, whatever its phase). */
+        const int budgetOn = sDashBudget && sDashEvery > 1 && !sDirtyFull && DashFrameskipAtD1();
+        const u64 budget = (u64) sDashBudgetUs * (u64) CPU_TICKS_PER_MSEC / 1000u;
+        const unsigned carry = budgetOn ? sDashCarry : 0u;
+        sDashCarry = 0;
+        sTickCost.d1 = budgetOn;
+        if (paintNow || carry != 0u) {
+            for (oi = 0; oi < (unsigned) DASH_PAINT_ORDER_COUNT; oi++) {
+                const DashWidgetId id = kDashPaintOrder[oi];
+                const unsigned bit = 1u << oi;
+                const u64 w0 = svcGetSystemTick();
+                if (!((paintNow && DashPhaseHas(paintPhase, oi)) || (carry & bit) != 0u)) {
+                    continue; /* o3ds60 [ui] dash_spread: another iteration's widget */
+                }
+                if (sMpDash && (id == DASHW_STANDINGS || id == DASHW_PORTRAIT)) {
+                    continue; /* the multiplayer column replaces both (gdx3ds_buirace_paint) */
+                }
+                if (budgetOn && w0 - now > budget) {
+                    sDashCarry |= bit;
+                    sTickCost.carried++;
+                    continue;
+                }
+                sDashWidgets[id].paint(fb, &snap);
+                if (id == DASHW_MODE_CHIP) {
+                    DashPaintModeDot(fb);
+                } else if (id == DASHW_ENERGY_BAR) {
+                    DashPaintLives(fb, &snap); /* lives in the energy widget's own label column */
+                }
+                sTickCost.widgets++;
+                if (id == DASHW_MAP_BOX) {
+                    sTickCost.map += svcGetSystemTick() - w0;
+                }
+                if (sDashProf) {
+                    sProfWidget[id] += svcGetSystemTick() - w0;
+                }
+            }
+        }
+        if (sFpsEnabled) {
+            DashFpsSample(now); /* drawn by the map box's own repaint: DashPaintMapFpsText */
+        }
+        if (sMpDash) {
+            gdx3ds_buirace_touch(touching, touchPx, touchPy);
+            /* dash_spread: the multiplayer column takes the standings' phase (the column replaces
+             * the standings widget, so that phase has the room) */
+            const int buiDue = (paintNow && DashPhaseHas(paintPhase, DashOrderIndex(DASHW_STANDINGS))) ||
+                               (carry & DASH_CARRY_BUI) != 0u;
+            if (buiDue && budgetOn && svcGetSystemTick() - now > budget) {
+                sDashCarry |= DASH_CARRY_BUI; /* o3ds60 dash_budget */
+                sTickCost.carried++;
+            } else if (buiDue) {
+                const u64 b0 = svcGetSystemTick();
+                int bx0;
+                int bx1;
+                bui_kit_dirty_clear();
+                gdx3ds_buirace_paint(fb);
+                if (bui_kit_dirty(&bx0, &bx1)) {
+                    DashMarkCols(bx0, bx1 - bx0 + 1);
+                }
+                sTickCost.bui = svcGetSystemTick() - b0;
+                sTickCost.widgets++;
+                if (sDashProf) {
+                    sProfBui += sTickCost.bui;
+                }
             }
         }
     }
@@ -2426,13 +4300,21 @@ void gdx3ds_bottomhud_tick(unsigned short* fbIn, unsigned int held, unsigned int
      * directly), so this single contiguous copy is the only moment the live buffer changes --
      * see sShadowFb's own comment (hw bug n60-3d7 #1) for why that's what kills the tearing.
      * Deliberately included inside the self-timing window below: it is real per-tick cost this
-     * fix adds and the avg/max_us receipt should say so honestly. */
-    memcpy(realFb, fb, sizeof(sShadowFb));
+     * fix adds and the avg/max_us receipt should say so honestly. o3dsperf: only the columns
+     * painted this tick (one contiguous block of the column-major buffer); the rest of the live
+     * buffer already holds the same pixels. */
+    DashPresent(realFb, fb);
 
     /* Self-timing window CLOSES HERE, before the SHOT write — see the sTicks/sTickTicksTotal
        comment above. */
     {
         const u64 dt = svcGetSystemTick() - now;
+        sDashLastTickTicks = dt;
+        sTickCost.total = dt;
+        if (dt > sWorstTick.total) {
+            sWorstTick = sTickCost;
+        }
+        memset(&sTickCost, 0, sizeof(sTickCost));
         sTicks++;
         sTickTicksTotal += dt;
         if (dt > sTickTicksMax) {
@@ -2443,6 +4325,20 @@ void gdx3ds_bottomhud_tick(unsigned short* fbIn, unsigned int held, unsigned int
             const unsigned long avgUs = (unsigned long) (((sTickTicksTotal / 256u) * 1000u) / ticksPerMs);
             const unsigned long maxUs = (unsigned long) ((sTickTicksMax * 1000u) / ticksPerMs);
             DashLog("[dash] ticks=%lu avg_us=%lu max_us=%lu", sTicks, avgUs, maxUs);
+            DashLog("[dashmap] inc=%lu whole=%lu cache_builds=%lu (map_inc=%d: map ticks of the 256)", sMapIncPaints,
+                    sMapFullPaints, sMapCacheBuilds, sDashMapInc);
+            sMapIncPaints = 0;
+            sMapFullPaints = 0;
+            sMapCacheBuilds = 0;
+            DashLog("[dashworst] us=%lu map_us=%lu bui_us=%lu pres_us=%lu kb=%lu full=%d widgets=%u carried=%u "
+                    "budget=%d map_inc=%d (the costliest tick of the 256)",
+                    (unsigned long) ((sWorstTick.total * 1000u) / ticksPerMs),
+                    (unsigned long) ((sWorstTick.map * 1000u) / ticksPerMs),
+                    (unsigned long) ((sWorstTick.bui * 1000u) / ticksPerMs),
+                    (unsigned long) ((sWorstTick.pres * 1000u) / ticksPerMs), sWorstTick.kb, sWorstTick.full,
+                    sWorstTick.widgets, sWorstTick.carried, sWorstTick.d1, sWorstTick.mapInc);
+            memset(&sWorstTick, 0, sizeof(sWorstTick));
+            DashProfEmit(256u);
             sTickTicksTotal = 0;
             sTickTicksMax = 0;
         }
@@ -2456,8 +4352,15 @@ void gdx3ds_bottomhud_tick(unsigned short* fbIn, unsigned int held, unsigned int
  * valid 1->0 transition is the safe point gdx3ds_bottomhud.h promises). gdx3ds_menu.c detects
  * the transition itself (gdx3ds_bottomhud_race_live going 0) and repaints its own UI from
  * scratch; this function only resets the DASH's latches so the NEXT race gets a fresh backdrop. */
+uint64_t gdx3ds_bottomhud_take_tick_ticks(void) {
+    const u64 t = sDashLastTickTicks;
+    sDashLastTickTicks = 0;
+    return t;
+}
+
 void gdx3ds_bottomhud_on_race_ended(void) {
     sWasValid = 0;
+    gdx3ds_buirace_reset();
     sCustomBackdropPainted = 0;
     sLastTop5Count = -1;
     sLastHeaderRacersRemaining = -1;
@@ -2495,8 +4398,40 @@ int gdx3ds_bottomhud_idle_enabled(void) {
  * race-live/edit-active takeover does not apply. bottom_race=0 (sEnabled) disables DASH-style
  * rendering everywhere, not just mid-race -- see gdx3ds_bottomhud.h's own note on why idle
  * requires BOTH levers, not bottom_idle alone. */
+/* hwfix-combined (hardware report "see the track editor input debug menu"): [debug] bottom_idle=0
+ * hands the bottom screen to the settings console only at the idle MENUS -- the screens a player
+ * sits on between races (title and its attract demos, main menu, machine select / settings, course
+ * select, the GP next-course / next-machine cards, records course select, options), which is where
+ * the EK CRS course-share tab is wanted. Everywhere else that is not a live race (the EK course
+ * editor and machine creator, credits, the records flyby, a race's intro before its DASH snapshot is
+ * valid) keeps the idle view exactly as bottom_idle=1 does. GET_MODE values: decomp/include/
+ * fzx_game.h. */
+static int IdleConsoleMode(void) {
+    if (gdx_title_demo_active()) {
+        return 1;
+    }
+    if (&gdx_input_game_mode == NULL) {
+        return 1;
+    }
+    switch (gdx_input_game_mode()) {
+        case 0x00: /* TITLE */
+        case 0x07: /* MAIN_MENU */
+        case 0x08: /* MACHINE_SELECT */
+        case 0x09: /* MACHINE_SETTINGS */
+        case 0x0A: /* COURSE_SELECT */
+        case 0x0F: /* GP_RACE_NEXT_COURSE */
+        case 0x12: /* GP_RACE_NEXT_MACHINE_SETTINGS */
+        case 0x13: /* RECORDS_COURSE_SELECT */
+        case 0x14: /* OPTIONS_MENU */
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 int gdx3ds_bottomhud_idle_active(void) {
-    return sEnabled && sIdleEnabled && !sEditMode && !sIdleDismissed && !gdx3ds_bottomhud_race_live();
+    const int idleWanted = sIdleEnabled || !IdleConsoleMode();
+    return sEnabled && idleWanted && !sEditMode && !sIdleDismissed && !gdx3ds_bottomhud_race_live();
 }
 
 int gdx3ds_bottomhud_idle_dismissed(void) {
@@ -2536,7 +4471,7 @@ void gdx3ds_bottomhud_idle_tick(unsigned short* fbIn, unsigned int held, unsigne
 
     /* SELECT long-press, the idle view's own twin of the race DASH's DEBUG-button dismiss
      * gesture -- same threshold constant, same feel. */
-    if (held & KEY_SELECT) {
+    if ((held & KEY_SELECT) && !sBuiOn) {
         if (sIdleSelectHoldTicks <= DASH_SELECT_LONGPRESS_TICKS) {
             sIdleSelectHoldTicks++;
         }
@@ -2544,7 +4479,7 @@ void gdx3ds_bottomhud_idle_tick(unsigned short* fbIn, unsigned int held, unsigne
         sIdleSelectHoldTicks = 0;
     }
 
-    insideBack = touching && touchPx >= DASH_BACK_X0 && touchPx < DASH_BACK_X0 + DASH_BACK_W &&
+    insideBack = touching && !sDebugHidden && touchPx >= DASH_BACK_X0 && touchPx < DASH_BACK_X0 + DASH_BACK_W &&
                  touchPy >= DASH_BACK_Y0 && touchPy < DASH_BACK_Y0 + DASH_BACK_H;
     backDown = insideBack && !sIdlePrevBackTouch;
     selectLongpress = sIdleSelectHoldTicks == DASH_SELECT_LONGPRESS_TICKS;
@@ -2584,4 +4519,49 @@ void gdx3ds_bottomhud_enter_custom_edit(void) {
     sEditSelected = -1;
     sEditMode = 1;
     DashLog("[dash] custom edit -> begin (via debug menu)");
+}
+
+/* ---- bottom-screen product menus (gdx3ds_bui.c) -- see gdx3ds_bottomhud.h ---------------- */
+
+void gdx3ds_bottomhud_set_bui(int on, int debugButton) {
+    sBuiOn = on ? 1 : 0;
+    sDebugHidden = (on && !debugButton) ? 1 : 0;
+    sIdleBaked = 0;
+}
+
+uint16_t* gdx3ds_bottomhud_shadow_fb(void) {
+    return sShadowFb;
+}
+
+uint16_t* gdx3ds_bottomhud_live_fb(void) {
+    return sLiveFb;
+}
+
+void gdx3ds_bottomhud_service_shot(const uint16_t* fb) {
+    DashServiceShot(fb);
+}
+
+void gdx3ds_bottomhud_idle_invalidate(void) {
+    sIdleBaked = 0;
+}
+
+void gdx3ds_bottomhud_idle_dismiss(void) {
+    sIdleDismissed = 1;
+    DashLog("[dash] idle dismissed -> debug tabs (L+R+SELECT)");
+}
+
+void gdx3ds_bottomhud_debug_button_unlock(void) {
+    if (!sDebugHidden) {
+        return;
+    }
+    sDebugHidden = 0;
+    sWasValid = 0;
+    sIdleBaked = 0;
+    DashLog("[dash] developer console opened: DEBUG button shown on the DASH from now on");
+}
+
+void gdx3ds_bottomhud_dismiss(void) {
+    sDismissed = 1;
+    sEditMode = 0;
+    DashLog("[dash] dismissed -> debug tabs (L+R+SELECT)");
 }

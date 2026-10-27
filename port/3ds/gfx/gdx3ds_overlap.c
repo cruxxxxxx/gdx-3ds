@@ -26,6 +26,7 @@
 #include "gdx3ds_overlap.h"
 #include "gdx3ds_gputl.h" /* n60gpu: [debug] gputl submit stamps */
 #include "gdx3ds_hwprof.h" /* hwprof [hwsite]: kick / heapflush ([debug] hwsite, default 0) */
+#include "gdx3ds_cpucut.h" /* o3ds-cpucuts: the kick diet levers' A/B blocks */
 #include "nrr/gdx3ds_nrr_crumb.h" /* n60hwdiag */
 #include "../vendor/citro3d/gdx/c3d_gdx.h" /* n60hwdiag: C3Dgdx_QueueWait ([debug] gxq_watch_ms) */
 
@@ -45,6 +46,14 @@ extern int gdx3ds_tickahead_mode(void) __attribute__((weak)); /* N60TICK4 */
 /* gdx3ds_frameskip.c: skip iterations right before the latest rendered one (0 = consecutive). */
 extern int gdx3ds_frameskip_render_gap(void) __attribute__((weak));
 extern int gdx3ds_prof_active; /* gdx3ds_gpu_prof.c: gputrace latched at the frame boundary */
+/* o3ds60: the right-eye pass latched at the latest StartFrame (gdx3ds_stereo_frame.cpp) and the
+ * pipe's 3D kick lever ([debug] kick_3d, gdx3ds_pipe.c). Weak: host / DL builds link neither. */
+extern int gdx3ds_stereo_active(void) __attribute__((weak));
+extern int gdx3ds_pipe_kick_3d(void) __attribute__((weak));
+/* onesubmit (gdx3ds_stereo_frame.cpp): a 3D frame's kick policy (0 as configured, 1 no mid-frame body
+ * kick, 2 no kick nor head run) and its narrow-flush arm. Weak: host / DL builds link neither. */
+extern int gdx3ds_stereo_onesub_kicks(void) __attribute__((weak));
+extern int gdx3ds_stereo_onesub_narrow(void) __attribute__((weak));
 
 /* gfx_citro3d.cpp: 1 if a C3D frame is open (the VBO tail was flushed), 0 otherwise. */
 extern int gdx3ds_c3d_overlap_prepare(void);
@@ -80,11 +89,42 @@ static int sKickMode = OVERLAP_KICK_OFF;
 static unsigned sMask = OVERLAP_DEFAULT_MASK;
 static int sHeapFlush = 1;
 static int sEndFlushCmdlist = 0;
+/* o3ds-cpucuts kick diet (agent-D-cpu-cuts.md §3.1), each 0 / 1 / 2 = A/B (gdx3ds_cpucut.h):
+ *   [debug] overlap_hud_kick (DEFAULT 1 = the shipped mask): 0 drops the HUD category from the kick
+ *     mask, so chunk c1 (mach..fx) joins the frame-end submission and that kick's split, queue run,
+ *     right-eye chunk replay and resume re-sync are not paid (~0.6-0.7 ms per D=1 3D frame est.).
+ *   [debug] overlap_flush_ranges (DEFAULT 0): a kick flushes only the linear ranges noted dirty since
+ *     the previous submission (gdx3ds_overlap_note_dirty) through svcFlushProcessDataCache, instead
+ *     of the whole 16 MiB heap through the GSP IPC (~110 us per kick on the Old 3DS, hwprof §10.4).
+ *     Rests on c5overlap's flush audit (every CPU writer of GPU-read linear memory flushes its own
+ *     range: the VBO pool by FlushPendingVbo right before the kick, texture uploads, HUD atlas rows,
+ *     retained meshes; LUTs and uniforms ride the command list); a writer that does not is noted
+ *     here. An overflowing note list falls back to the whole heap. HARDWARE-ONLY failure mode (the
+ *     emulator runs a kicked list at submit, with no cache): a missed writer shows as flicker. */
+static int sHudKick = 1;
+static int sFlushRanges = 0;
+#define OVERLAP_DIRTY_MAX 16
+static uint32_t sDirtyLo[OVERLAP_DIRTY_MAX];
+static uint32_t sDirtyHi[OVERLAP_DIRTY_MAX];
+static int sDirtyN = 0;
+static int sDirtyOverflow = 0;
+/* `[overlap] diet` per cadence window: kicks the HUD lever refused, range vs whole-heap flushes. */
+static unsigned sDietHudRefused = 0;
+static unsigned sDietRangeKicks = 0;
+static unsigned sDietHeapKicks = 0;
+static unsigned sDietRanges = 0;
+static uint32_t sDietRangeBytes = 0;
 
 static unsigned sFrameKickedCats = 0;
 static int sFrameKicks = 0;
+static int sFrameHeadRun = 0; /* stereo-race-fps: gdx3ds_overlap_head_run started this frame's queue */
 static int sFrameCadenceOk = 0; /* this frame may kick (mode ALWAYS, or it follows a rendered tick) */
 static int sFrameGap = 0;
+static int sFrameBodyKicksOff = 0; /* onesubmit_kicks = 1: this frame's markers kick no more (head run kept) */
+static int sFrameNarrow = 0;       /* onesubmit_narrow: kicks + frame end flush only the noted ranges */
+static unsigned sOsKicksRefused = 0;
+static unsigned sOsNarrowFrames = 0;
+static unsigned sOsNarrowEnds = 0;
 
 /* `[overlap] cadence` receipt, every OVERLAP_CADENCE_WINDOW armed frames, gputrace or not. */
 static unsigned sCadFrames = 0;
@@ -102,6 +142,8 @@ static u64 sWinKickTicks = 0;
 static u64 sWinDrainTicks = 0;
 static u64 sLastDrainTicks = 0; /* n60st3: the latest frame end's drain wait (0 = no kick) */
 static int sLastKicks = 0;      /* n60st3: ...and that frame's kicks */
+
+static void ResetDirty(void);
 
 static void OverlapLog(const char* fmt, ...) {
     char buf[224];
@@ -178,6 +220,10 @@ static void LatchConfig(void) {
     const int wantEndFlush = ConfigInt("endflush_cmdlist", 0) != 0;
     sMask = (unsigned)ConfigInt("overlap_kick_mask", (int)OVERLAP_DEFAULT_MASK);
     sHeapFlush = ConfigInt("overlap_heapflush", 1) != 0;
+    sHudKick = gdx3ds_cpucut_clamp(ConfigInt("overlap_hud_kick", 1), 1);
+    sFlushRanges = gdx3ds_cpucut_clamp(ConfigInt("overlap_flush_ranges", 0), 0);
+    gdx3ds_cpucut_lever("hudkick", &sHudKick, GDX3DS_CPUCUT_BIT_HUDKICK);
+    gdx3ds_cpucut_lever("flushr", &sFlushRanges, GDX3DS_CPUCUT_BIT_FLUSHRANGE);
     int rtMode = (&gdx3ds_rt_mode != NULL) ? gdx3ds_rt_mode() : 0;
     /* N60TICK4: under the Old 3DS tick-ahead pipe every citro3d call (FrameBegin, the kicks, the
      * drain, FrameEnd) runs on the one render thread, exactly as the sequential path runs them on
@@ -190,9 +236,10 @@ static void LatchConfig(void) {
     sArmed = want && rtMode == 0 && layoutOk;
     sKickMode = sArmed ? mode : OVERLAP_KICK_OFF;
     sEndFlushCmdlist = wantEndFlush && rtMode == 0;
-    OverlapLog("[overlap] init kick=%d mode=%s mask=0x%x heapflush=%d rt=%d (%s) endflush_cmdlist=%d (%s)", sArmed,
-               KickModeName(mode), sMask, sHeapFlush, rtMode, DisarmReason(want, rtMode, layoutOk), sEndFlushCmdlist,
-               DisarmReason(wantEndFlush, rtMode, 1));
+    OverlapLog("[overlap] init kick=%d mode=%s mask=0x%x heapflush=%d rt=%d (%s) endflush_cmdlist=%d (%s) "
+               "hud_kick=%d flush_ranges=%d", sArmed, KickModeName(mode), sMask, sHeapFlush, rtMode,
+               DisarmReason(want, rtMode, layoutOk), sEndFlushCmdlist, DisarmReason(wantEndFlush, rtMode, 1), sHudKick,
+               sFlushRanges);
 }
 
 const void* gdx3ds_overlap_frame_queue(void) {
@@ -204,7 +251,7 @@ int gdx3ds_overlap_markers_armed(void) {
 }
 
 int gdx3ds_overlap_frame_kicks(void) {
-    return sFrameKicks;
+    return sFrameKicks + sFrameHeadRun;
 }
 
 static void EmitWindow(void) {
@@ -225,6 +272,19 @@ static void EmitWindow(void) {
 static void DecideFrameCadence(void) {
     sFrameGap = (&gdx3ds_frameskip_render_gap != NULL) ? gdx3ds_frameskip_render_gap() : 0;
     sFrameCadenceOk = sKickMode == OVERLAP_KICK_ALWAYS || sFrameGap == 0;
+    /* o3ds60 [debug] kick_3d = 0: no mid-frame kick (and so no head run) while the right eye runs.
+     * The frame end then has no kicked queue to drain: the GPU starts at C3D_FrameEnd, as at D >= 2. */
+    if (sFrameCadenceOk && &gdx3ds_pipe_kick_3d != NULL && &gdx3ds_stereo_active != NULL &&
+        gdx3ds_stereo_active() && !gdx3ds_pipe_kick_3d()) {
+        sFrameCadenceOk = 0;
+    }
+    /* onesubmit_kicks: with both eyes in one entry per chunk, fewer (1) or no (2) GPU starts mid-frame */
+    const int policy = &gdx3ds_stereo_onesub_kicks != NULL ? gdx3ds_stereo_onesub_kicks() : 0;
+    if (policy == 2) {
+        sFrameCadenceOk = 0;
+    } else if (policy == 1) {
+        sFrameBodyKicksOff = 1;
+    }
 }
 
 void gdx3ds_overlap_frame_begin(void) {
@@ -233,20 +293,32 @@ void gdx3ds_overlap_frame_begin(void) {
     }
     sFrameKickedCats = 0;
     sFrameKicks = 0;
+    sFrameHeadRun = 0;
+    sFrameBodyKicksOff = 0;
+    ResetDirty(); /* the previous frame's C3D_FrameEnd flushed the whole heap (or its noted ranges) */
+    sFrameNarrow = sArmed && &gdx3ds_stereo_onesub_narrow != NULL && gdx3ds_stereo_onesub_narrow() != 0;
+    sOsNarrowFrames += (unsigned)sFrameNarrow;
     if (sArmed) {
         DecideFrameCadence();
     }
 }
 
 unsigned gdx3ds_overlap_split_flags(void) {
-    if (sFrameKicks > 0 || sEndFlushCmdlist) {
+    if (sFrameKicks > 0 || sFrameHeadRun || sEndFlushCmdlist || sFrameNarrow) {
         return GX_CMDLIST_FLUSH;
     }
     return 0;
 }
 
+/* onesubmit_narrow: the frame end flushes the noted ranges (gdx3ds_overlap_before_frame_end) and every
+ * list carries GSP's flush, as under [debug] endflush_cmdlist, instead of the whole-heap flush. */
 unsigned gdx3ds_overlap_frame_end_flags(void) {
-    return sEndFlushCmdlist ? GX_CMDLIST_FLUSH : 0;
+    return (sEndFlushCmdlist || sFrameNarrow) ? GX_CMDLIST_FLUSH : 0;
+}
+
+/* o3ds-cpucuts [debug] overlap_hud_kick = 0: the HUD category kicks no more (this block). */
+static int HudKickRefused(unsigned category) {
+    return category == OVERLAP_CAT_HUD && !gdx3ds_cpucut_on(sHudKick, GDX3DS_CPUCUT_BIT_HUDKICK);
 }
 
 static int KickWanted(unsigned category) {
@@ -259,15 +331,74 @@ static int KickWanted(unsigned category) {
     if (!sFrameCadenceOk) {
         return 0;
     }
+    if (sFrameBodyKicksOff) {
+        sFrameKickedCats |= 1u << category; /* counted once per frame */
+        sOsKicksRefused++;
+        return 0;
+    }
+    if (HudKickRefused(category)) {
+        sFrameKickedCats |= 1u << category; /* counted once per frame */
+        sDietHudRefused++;
+        return 0;
+    }
     return sFrameKicks < OVERLAP_MAX_KICKS;
 }
 
-static void FlushLinearHeap(void) {
+void gdx3ds_overlap_note_dirty(const void* addr, unsigned bytes) {
+    const uint32_t lo = (uint32_t)(uintptr_t)addr & ~31u;
+    const uint32_t hi = ((uint32_t)(uintptr_t)addr + bytes + 31u) & ~31u;
+    int i;
+    if (bytes == 0 || sDirtyOverflow) {
+        return;
+    }
+    for (i = 0; i < sDirtyN; i++) {
+        if (lo <= sDirtyHi[i] && hi >= sDirtyLo[i]) { /* overlapping or adjacent: merge */
+            sDirtyLo[i] = lo < sDirtyLo[i] ? lo : sDirtyLo[i];
+            sDirtyHi[i] = hi > sDirtyHi[i] ? hi : sDirtyHi[i];
+            return;
+        }
+    }
+    if (sDirtyN >= OVERLAP_DIRTY_MAX) {
+        sDirtyOverflow = 1;
+        return;
+    }
+    sDirtyLo[sDirtyN] = lo;
+    sDirtyHi[sDirtyN] = hi;
+    sDirtyN++;
+}
+
+static void ResetDirty(void) {
+    sDirtyN = 0;
+    sDirtyOverflow = 0;
+}
+
+static void FlushWholeHeap(void) {
     if (gdx3ds_hws_gsp_flush_kind != NULL) {
         gdx3ds_hws_gsp_flush_kind((const void*)__ctru_linear_heap, __ctru_linear_heap_size, GDX3DS_HWFL_HEAPKICK);
     } else {
         GSPGPU_FlushDataCache((const void*)__ctru_linear_heap, __ctru_linear_heap_size);
     }
+}
+
+static void FlushDirtyRanges(void) {
+    int i;
+    for (i = 0; i < sDirtyN; i++) {
+        const uint32_t bytes = sDirtyHi[i] - sDirtyLo[i];
+        svcFlushProcessDataCache(CUR_PROCESS_HANDLE, sDirtyLo[i], bytes);
+        sDietRangeBytes += bytes;
+    }
+    sDietRanges += (unsigned)sDirtyN;
+}
+
+static void FlushLinearHeap(void) {
+    if ((sFrameNarrow || gdx3ds_cpucut_on(sFlushRanges, GDX3DS_CPUCUT_BIT_FLUSHRANGE)) && !sDirtyOverflow) {
+        FlushDirtyRanges();
+        sDietRangeKicks++;
+    } else {
+        FlushWholeHeap();
+        sDietHeapKicks++;
+    }
+    ResetDirty();
 }
 
 void gdx3ds_overlap_scene_marker(unsigned category) {
@@ -299,6 +430,19 @@ void gdx3ds_overlap_scene_marker(unsigned category) {
     sWinKickTicks += svcGetSystemTick() - t0;
 }
 
+int gdx3ds_overlap_head_run(void) {
+    if (!sArmed || !sFrameCadenceOk || sFrameKicks != 0 || sFrameHeadRun) {
+        return 0;
+    }
+    if (!gdx3ds_c3d_overlap_prepare()) {
+        return 0; /* no C3D frame open */
+    }
+    gdx3ds_gputl_note_kick(0); /* n60gpu [debug] gputl: a submit point, not a new chunk */
+    gxCmdQueueRun(FrameQueue());
+    sFrameHeadRun = 1;
+    return 1;
+}
+
 static void DrainAndStopQueue(void) {
     const u64 t0 = svcGetSystemTick();
     gxCmdQueue_s* q = FrameQueue();
@@ -314,10 +458,32 @@ unsigned long long gdx3ds_overlap_last_drain_ticks(int* kicks) {
     return sLastDrainTicks;
 }
 
+static void EmitDietWindow(void) {
+    if (sOsKicksRefused + sOsNarrowFrames > 0u) {
+        OverlapLog("[overlap] onesub body_kicks_refused=%u narrow_frames=%u narrow_ends=%u", sOsKicksRefused,
+                   sOsNarrowFrames, sOsNarrowEnds);
+        sOsKicksRefused = 0;
+        sOsNarrowFrames = 0;
+        sOsNarrowEnds = 0;
+    }
+    if (sHudKick == 1 && sFlushRanges == 0) {
+        return;
+    }
+    OverlapLog("[overlap] diet hud_kick=%d flush_ranges=%d hud_refused=%u range_kicks=%u heap_kicks=%u ranges=%u "
+               "range_kb=%lu", sHudKick, sFlushRanges, sDietHudRefused, sDietRangeKicks, sDietHeapKicks, sDietRanges,
+               (unsigned long)(sDietRangeBytes / 1024u));
+    sDietHudRefused = 0;
+    sDietRangeKicks = 0;
+    sDietHeapKicks = 0;
+    sDietRanges = 0;
+    sDietRangeBytes = 0;
+}
+
 static void EmitCadenceWindow(void) {
     OverlapLog("[overlap] cadence mode=%s frames=%u consec=%u kickf=%u kicks=%u cad_skip=%u gapmax=%d",
                KickModeName(sKickMode), sCadFrames, sCadConsec, sCadKickFrames, sCadKicks, sCadSkipped,
                sCadGapMax);
+    EmitDietWindow();
     sCadFrames = 0;
     sCadConsec = 0;
     sCadSkipped = 0;
@@ -345,16 +511,33 @@ static void NoteCadence(int kicks) {
     }
 }
 
+/* onesubmit_narrow: what C3D_FrameEnd's whole-heap flush covered, now that it passes GX_CMDLIST_FLUSH:
+ * the ranges noted since the last kick (an overflowed note list: the whole heap). */
+static void NarrowFrameEndFlush(void) {
+    if (!sFrameNarrow) {
+        return;
+    }
+    if (sDirtyOverflow) {
+        FlushWholeHeap();
+    } else {
+        FlushDirtyRanges();
+    }
+    ResetDirty();
+    sOsNarrowEnds++;
+}
+
 void gdx3ds_overlap_before_frame_end(void) {
     const int kicks = sFrameKicks;
     sLastDrainTicks = 0;
     sLastKicks = kicks;
-    if (sFrameKicks > 0) {
+    if (sFrameKicks > 0 || sFrameHeadRun) {
         DrainAndStopQueue();
         sWinKicks += (unsigned)sFrameKicks;
         sWinKickFrames++;
         sFrameKicks = 0;
+        sFrameHeadRun = 0;
     }
+    NarrowFrameEndFlush();
     if (!sArmed) {
         return;
     }

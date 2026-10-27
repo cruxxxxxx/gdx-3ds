@@ -1,0 +1,38 @@
+diff --git a/src/game/racer.c b/src/game/racer.c
+--- a/src/game/racer.c
++++ b/src/game/racer.c
+@@ -694,6 +694,14 @@ void Racer_SetupStartPositions(void) {
+             100, 1.0f);
+         if (gNumPlayers == 1) {
+             var_fv0 = 100.0f;
++#ifdef PORT
++        } else if (gTotalRacers > 4) {
++            /* MP30: a VS COM field of 8..30 machines has more than one grid row. Stock VS only
++               ever has one row (4 lanes), so its 0.1 row step was never used between rows; with
++               more it stacks machine 5 on machine 1 (exactly coincident: NaN position, then NaN
++               energy through the collisions). The 1P / GP row step instead. */
++            var_fv0 = 100.0f;
++#endif
+ #ifdef EXPANSION_KIT
+         } else if (var_fs1 <= 23.0f) {
+             var_fv0 = 46.0f;
+diff --git a/src/overlays/ovl_i3/cpu.c b/src/overlays/ovl_i3/cpu.c
+--- a/src/overlays/ovl_i3/cpu.c
++++ b/src/overlays/ovl_i3/cpu.c
+@@ -645,7 +645,16 @@ void func_i3_80115E74(void) {
+         }
+     }
+     if (gNumPlayers != 1) {
++#ifdef PORT
++        /* MP30: with a VS COM field of more than 4 machines the loop above handed racers 1..N-1
++           positions 1..N-1 and racer 0 position N; renumbering only racers 0..3 left racer 4
++           sharing position 4 with racer 3 and position N unused, so Racer_SetupStartPositions
++           never placed racer 4 (NaN position from the first tick). Number them all. Stock (4 or
++           fewer racers): the same 4 assignments. */
++        for (i = 0; i < ((gTotalRacers > 4) ? gTotalRacers : 4); i++) {
++#else
+         for (i = 0; i < 4; i++) {
++#endif
+             gRacers[i].position = i + 1;
+         }
+     }

@@ -195,7 +195,7 @@ bool WaitDoneDeadline(uint32_t target, s64 deadlineNs, const char* who, uint64_t
                    who != nullptr ? who : "?",
                    (unsigned)sDone.load(std::memory_order_acquire), (unsigned)target,
                    (unsigned long)((svcGetSystemTick() - t0) / (uint64_t)CPU_TICKS_PER_MSEC));
-            gdx3ds_filelog_flush();
+            gdx3ds_filelog_flush_sync();
         }
     }
     const uint64_t dt = svcGetSystemTick() - t0;
@@ -685,7 +685,7 @@ extern "C" void gdx3ds_rt_shutdown(void) {
             RtLogf("[rt] shutdown drain TIMEOUT after %dms: the render thread has not signalled; "
                    "proceeding to QUIT without releasing the in-flight job",
                    joinMs);
-            gdx3ds_filelog_flush();
+            gdx3ds_filelog_flush_sync();
             /* sJob is still owned by a render that never completed: releasing it would hand
              * the recycler a buffer the render thread may still be reading. Leak it, as the
              * thread's stack is leaked below, and say so. */
@@ -708,7 +708,7 @@ extern "C" void gdx3ds_rt_shutdown(void) {
     if (!acked || R_FAILED(threadJoin(sThread, 3000000000LL))) {
         RtLogf("[rt] shutdown TIMEOUT (quitAcked=%d): leaving the render thread unjoined on "
                "purpose; its stack is leaked so teardown can finish", acked ? 1 : 0);
-        gdx3ds_filelog_flush();
+        gdx3ds_filelog_flush_sync();
         sThread = nullptr;
         sMode = kOff;
         return;

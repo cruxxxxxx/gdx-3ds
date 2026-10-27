@@ -1,0 +1,44 @@
+# Single-process Loki on the local filesystem; 14-day retention (the access log holds IP
+# addresses: keep it short). Run with -config.expand-env=true.
+auth_enabled: false
+server:
+  http_listen_address: ${LOKI_BIND:-127.0.0.1}
+  http_listen_port: 3100
+  grpc_listen_address: 127.0.0.1
+  grpc_listen_port: 9095
+  log_level: warn
+common:
+  path_prefix: ${LOKI_DATA:-/loki}
+  storage:
+    filesystem:
+      chunks_directory: ${LOKI_DATA:-/loki}/chunks
+      rules_directory: ${LOKI_DATA:-/loki}/rules
+  replication_factor: 1
+  instance_addr: 127.0.0.1
+  ring:
+    kvstore:
+      store: inmemory
+schema_config:
+  configs:
+    - from: "2024-01-01"
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+limits_config:
+  retention_period: ${LOKI_RETENTION:-336h}
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+  ingestion_rate_mb: 2
+  ingestion_burst_size_mb: 4
+  max_label_names_per_series: 8
+compactor:
+  working_directory: ${LOKI_DATA:-/loki}/compactor
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  delete_request_store: filesystem
+analytics:
+  reporting_enabled: false

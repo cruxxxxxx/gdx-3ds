@@ -1,0 +1,9 @@
+apiVersion: 1
+providers:
+  - name: gdx
+    folder: gdx
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: ${GDX_DASHBOARD_DIR}

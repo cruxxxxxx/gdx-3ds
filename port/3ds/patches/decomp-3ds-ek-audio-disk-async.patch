@@ -1,0 +1,63 @@
+diff --git a/src/audio/disk/lib/load.c b/src/audio/disk/lib/load.c
+index b2ea877..b9d9a55 100644
+--- a/src/audio/disk/lib/load.c
++++ b/src/audio/disk/lib/load.c
+@@ -1806,6 +1806,15 @@ void AudioLoad_ProcessLoads(s32 resetStatus) {
+ #endif
+ }
+ 
++#ifdef PORT
++/* o3dsekperf: port/n64_leo.c. The async loader's state (audio_context.c) is declared again
++   below, beside AudioLoad_InitAsyncLoads; ReadWriteDisk needs its queue's address first. */
++extern AudioDiskInfo D_806F2350;
++extern int gdx_leo_read_async(LEOCmd* cmdBlock, s32 direction, u32 lba, void* vAddr, u32 nLbas, OSMesgQueue* mq,
++                              s32 loadAhead);
++extern void gdx_leo_async_wait_idle(void);
++#endif
++
+ s32 AudioLoad_ReadWriteDisk(LEOCmd* cmdBlock, s32 direction, u32 lba, void* ptr, u32 nLbas, OSMesgQueue* mq,
+                             bool usingLbaVaddrPair) {
+ #ifdef PORT
+@@ -1831,7 +1840,24 @@ s32 AudioLoad_ReadWriteDisk(LEOCmd* cmdBlock, s32 direction, u32 lba, void* ptr,
+         vAddr = ptr;
+     }
+ 
++#ifdef PORT
++    /* o3dsekperf `[debug] audio_disk_async` (port/3ds/include/gdx3ds_disk_async.h): a request
++       from the ASYNC disk loader -- the one state machine whose queue is D_806F2350.mq, which
++       AudioLoad_DiskLoad polls with OS_MESG_NOBLOCK across ticks -- goes to the port's I/O
++       worker, which runs the same LeoReadWrite and posts that queue when the bytes land. This
++       is the 64DD's own contract (the drive DMAs while the machine polls); the inline handler
++       made the producer's tick wait out the SD read instead. Every other caller (the
++       synchronous AudioLoad_DiskDrive, D_806F2328) is untouched. gdx_leo_read_async returns 0
++       with the lever off, and the handler then runs inline exactly as before.
++       ekaudio2: the machine's bytesRemaining goes along as the read-ahead hint -- the bytes
++       this load still wants after the request (`[debug] audio_disk_readahead_kb`). */
++    if (mq != &D_806F2350.mq ||
++        !gdx_leo_read_async(cmdBlock, direction, lba, vAddr, nLbas, mq, D_806F2350.bytesRemaining)) {
++        sLeoHandler(cmdBlock, direction, lba, vAddr, nLbas, mq);
++    }
++#else
+     sLeoHandler(cmdBlock, direction, lba, vAddr, nLbas, mq);
++#endif
+     if ((nLbas == 1) && usingLbaVaddrPair) {
+         lbaVaddrPair->lba = lba;
+     }
+@@ -2364,9 +2390,16 @@ void AudioLoad_ProcessAsyncLoadDiskDrive(AudioAsyncLoad* asyncLoad, s32 resetSta
+            the whole in-flight disk load here, spinning on the state machine, on the producer
+            thread, under sAudioCtxMutex. */
+         unsigned int gdxALoadD = gdx_aload_begin();
+-#endif
++        /* o3dsekperf: with audio_disk_async a step's read may still be on the I/O worker. Wait
++           for it rather than spin on the queue -- the drain then costs what it always did,
++           the reads themselves, and no core-1 time polling. A no-op with the lever off. */
++        do {
++            gdx_leo_async_wait_idle();
++        } while (AudioLoad_DiskLoad(&D_806F2350) != 1);
++#else
+         do {
+         } while (AudioLoad_DiskLoad(&D_806F2350) != 1);
++#endif
+ #ifdef PORT
+         gdx_aload_end(GDX_ALOAD_DISKLD, gdxALoadD);
+ #endif

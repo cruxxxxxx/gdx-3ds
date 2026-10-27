@@ -1,0 +1,1641 @@
+{
+ "annotations": {
+  "list": []
+ },
+ "editable": true,
+ "panels": [
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 0
+   },
+   "id": 1,
+   "panels": [],
+   "title": "Overview",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "green",
+        "value": 1
+       }
+      ]
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 4,
+    "w": 3,
+    "x": 0,
+    "y": 1
+   },
+   "id": 2,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "textMode": "auto"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum(up{job=\"gdx-rendezvous\"}) or vector(0)",
+     "instant": true,
+     "legendFormat": "",
+     "range": false,
+     "refId": "A"
+    }
+   ],
+   "title": "Server up",
+   "type": "stat"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "green",
+        "value": 1
+       }
+      ]
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 4,
+    "w": 3,
+    "x": 3,
+    "y": 1
+   },
+   "id": 3,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "textMode": "auto"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "min(gdx_rv_probe_success) or vector(0)",
+     "instant": true,
+     "legendFormat": "",
+     "range": false,
+     "refId": "A"
+    }
+   ],
+   "title": "Probe OK",
+   "type": "stat"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "decimals": 3,
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 4,
+    "w": 3,
+    "x": 6,
+    "y": 1
+   },
+   "id": 4,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "textMode": "auto"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "max(gdx_rv_probe_rtt_seconds)",
+     "instant": true,
+     "legendFormat": "",
+     "range": false,
+     "refId": "A"
+    }
+   ],
+   "title": "Probe RTT",
+   "type": "stat"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 4,
+    "w": 3,
+    "x": 9,
+    "y": 1
+   },
+   "id": 5,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "textMode": "auto"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum(gdx_rv_rooms{state!=\"unconfirmed\"})",
+     "instant": true,
+     "legendFormat": "",
+     "range": false,
+     "refId": "A"
+    }
+   ],
+   "title": "Rooms",
+   "type": "stat"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 4,
+    "w": 3,
+    "x": 12,
+    "y": 1
+   },
+   "id": 6,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "textMode": "auto"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum(gdx_rv_members) - sum(gdx_rv_members_unconfirmed)",
+     "instant": true,
+     "legendFormat": "",
+     "range": false,
+     "refId": "A"
+    }
+   ],
+   "title": "Players",
+   "type": "stat"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 4,
+    "w": 3,
+    "x": 15,
+    "y": 1
+   },
+   "id": 7,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "textMode": "auto"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum(gdx_rv_members_relaying)",
+     "instant": true,
+     "legendFormat": "",
+     "range": false,
+     "refId": "A"
+    }
+   ],
+   "title": "Relaying",
+   "type": "stat"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 4,
+    "w": 3,
+    "x": 18,
+    "y": 1
+   },
+   "id": 8,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "textMode": "auto"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "time() - max(gdx_rv_start_time_seconds)",
+     "instant": true,
+     "legendFormat": "",
+     "range": false,
+     "refId": "A"
+    }
+   ],
+   "title": "Uptime",
+   "type": "stat"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 4,
+    "w": 3,
+    "x": 21,
+    "y": 1
+   },
+   "id": 9,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "textMode": "name"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "max by (version) (gdx_rv_build_info)",
+     "instant": true,
+     "legendFormat": "{{version}}",
+     "range": false,
+     "refId": "A"
+    }
+   ],
+   "title": "Version",
+   "type": "stat"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 5
+   },
+   "id": 10,
+   "panels": [],
+   "title": "Traffic",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "normal"
+      }
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 6
+   },
+   "id": 11,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum by (type, proto) (rate(gdx_rv_rx_packets_total[$__rate_interval]))",
+     "legendFormat": "{{type}} v{{proto}}",
+     "refId": "A"
+    }
+   ],
+   "title": "Datagrams in / s by type",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "normal"
+      }
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 6
+   },
+   "id": 12,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum by (type) (rate(gdx_rv_tx_packets_total[$__rate_interval]))",
+     "legendFormat": "{{type}}",
+     "refId": "A"
+    }
+   ],
+   "title": "Datagrams out / s by type",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 0,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      }
+     },
+     "unit": "Bps"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 14
+   },
+   "id": 13,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum(rate(gdx_rv_rx_bytes_total[$__rate_interval]))",
+     "legendFormat": "in",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum(rate(gdx_rv_tx_bytes_total[$__rate_interval]))",
+     "legendFormat": "out",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum(rate(gdx_rv_relay_bytes_total[$__rate_interval]))",
+     "legendFormat": "relayed",
+     "refId": "C"
+    }
+   ],
+   "title": "Bandwidth",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 0,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      }
+     },
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 14
+   },
+   "id": 14,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(gdx_rv_handle_seconds_bucket[$__rate_interval])))",
+     "legendFormat": "handle p50",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(gdx_rv_handle_seconds_bucket[$__rate_interval])))",
+     "legendFormat": "handle p99",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "max(gdx_rv_loop_lag_seconds)",
+     "legendFormat": "loop lag",
+     "refId": "C"
+    }
+   ],
+   "title": "Event loop",
+   "type": "timeseries"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 22
+   },
+   "id": 15,
+   "panels": [],
+   "title": "Rooms and players",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "normal"
+      }
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 23
+   },
+   "id": 16,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum by (state) (gdx_rv_rooms)",
+     "legendFormat": "{{state}}",
+     "refId": "A"
+    }
+   ],
+   "title": "Rooms by state",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 0,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      }
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 23
+   },
+   "id": 17,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum by (proto) (rate(gdx_rv_rooms_created_total[$__rate_interval])) * 60",
+     "legendFormat": "created v{{proto}}",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum by (proto) (rate(gdx_rv_joins_total[$__rate_interval])) * 60",
+     "legendFormat": "joined v{{proto}}",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum by (why) (rate(gdx_rv_rooms_closed_total[$__rate_interval])) * 60",
+     "legendFormat": "closed: {{why}}",
+     "refId": "C"
+    }
+   ],
+   "title": "Room activity / min",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "Of the players that stayed at least 20 s, the share whose datagrams never went through the relay.",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 0,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      }
+     },
+     "unit": "percentunit"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 31
+   },
+   "id": 18,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum(increase(gdx_rv_member_sessions_total{relay=\"no\"}[1h])) / sum(increase(gdx_rv_member_sessions_total[1h]))",
+     "legendFormat": "direct share",
+     "refId": "A"
+    }
+   ],
+   "title": "Players that never needed the relay (punch success, 1 h window)",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "normal"
+      }
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 31
+   },
+   "id": 19,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum by (why) (rate(gdx_rv_members_left_total[$__rate_interval])) * 60",
+     "legendFormat": "{{why}}",
+     "refId": "A"
+    }
+   ],
+   "title": "Members leaving / min by reason",
+   "type": "timeseries"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 39
+   },
+   "id": 20,
+   "panels": [],
+   "title": "Abuse and limits",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "reason=auth: keepalives with a wrong member key (expired members, junk)",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "normal"
+      }
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 40
+   },
+   "id": 21,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum by (reason) (rate(gdx_rv_drops_total[$__rate_interval]))",
+     "legendFormat": "{{reason}}",
+     "refId": "A"
+    }
+   ],
+   "title": "Drops / s by reason",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "normal"
+      }
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 40
+   },
+   "id": 22,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum by (limit) (rate(gdx_rv_ratelimit_total[$__rate_interval]))",
+     "legendFormat": "{{limit}}",
+     "refId": "A"
+    }
+   ],
+   "title": "Rate-limit hits / s",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 0,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      }
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 48
+   },
+   "id": 23,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum(gdx_rv_ips_blocked)",
+     "legendFormat": "blocked addresses",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum(gdx_rv_rooms{state=\"unconfirmed\"})",
+     "legendFormat": "unconfirmed rooms",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum(rate(gdx_rv_unconfirmed_evicted_total[$__rate_interval]))",
+     "legendFormat": "evicted / s",
+     "refId": "C"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum(rate(gdx_rv_cookies_issued_total[$__rate_interval]))",
+     "legendFormat": "cookies / s",
+     "refId": "D"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum(rate(gdx_rv_cookies_rejected_total[$__rate_interval]))",
+     "legendFormat": "bad cookies / s",
+     "refId": "E"
+    }
+   ],
+   "title": "Blocklist, unconfirmed rooms, cookies",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 10,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "normal"
+      }
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 48
+   },
+   "id": 24,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum by (code) (rate(gdx_rv_errors_sent_total[$__rate_interval])) * 60",
+     "legendFormat": "{{code}}",
+     "refId": "A"
+    }
+   ],
+   "title": "Errors sent / min by code",
+   "type": "timeseries"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 56
+   },
+   "id": 25,
+   "panels": [],
+   "title": "Host",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "t4g instances are burstable: sustained use above the baseline (5% for nano) spends CPU credits.",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 0,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      }
+     },
+     "unit": "percentunit"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 57
+   },
+   "id": 26,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum by (mode) (rate(gdx_rv_host_cpu_seconds{mode!=\"idle\"}[$__rate_interval])) / scalar(sum(rate(gdx_rv_host_cpu_seconds[$__rate_interval])))",
+     "legendFormat": "{{mode}}",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "rate(gdx_rv_process_cpu_seconds[$__rate_interval])",
+     "legendFormat": "server process (cores)",
+     "refId": "B"
+    }
+   ],
+   "title": "CPU",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 0,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      }
+     },
+     "unit": "bytes"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 57
+   },
+   "id": 27,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "max by (kind) (gdx_rv_host_memory_bytes)",
+     "legendFormat": "{{kind}}",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "max(gdx_rv_process_resident_bytes)",
+     "legendFormat": "server RSS",
+     "refId": "B"
+    }
+   ],
+   "title": "Memory",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 0,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      }
+     },
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 65
+   },
+   "id": 28,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "max(gdx_rv_probe_rtt_seconds)",
+     "legendFormat": "rtt",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "min(gdx_rv_probe_success)",
+     "legendFormat": "success",
+     "refId": "B"
+    }
+   ],
+   "title": "Probe",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "gdx-prom"
+   },
+   "description": "",
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "fillOpacity": 0,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      }
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 65
+   },
+   "id": 29,
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum by (outcome) (rate(gdx_rv_loki_lines_total[$__rate_interval]))",
+     "legendFormat": "{{outcome}}",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "gdx-prom"
+     },
+     "expr": "sum by (event) (rate(gdx_rv_log_suppressed_total[$__rate_interval]))",
+     "legendFormat": "suppressed {{event}}",
+     "refId": "B"
+    }
+   ],
+   "title": "Log shipping",
+   "type": "timeseries"
+  },
+  {
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 73
+   },
+   "id": 30,
+   "panels": [],
+   "title": "Access log (Loki)",
+   "type": "row"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "gdx-loki"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "bars",
+      "fillOpacity": 60,
+      "stacking": {
+       "mode": "normal"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "h": 7,
+    "w": 24,
+    "x": 0,
+    "y": 74
+   },
+   "id": 31,
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "gdx-loki"
+     },
+     "expr": "sum by (event) (count_over_time({job=\"gdx-rendezvous\", event!=\"stats\"}[5m]))",
+     "legendFormat": "{{event}}",
+     "refId": "A"
+    }
+   ],
+   "title": "Events / 5 min",
+   "type": "timeseries"
+  },
+  {
+   "datasource": {
+    "type": "loki",
+    "uid": "gdx-loki"
+   },
+   "gridPos": {
+    "h": 12,
+    "w": 24,
+    "x": 0,
+    "y": 81
+   },
+   "id": 32,
+   "options": {
+    "enableLogDetails": true,
+    "prettifyLogMessage": false,
+    "showTime": true,
+    "sortOrder": "Descending",
+    "wrapLogMessage": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "loki",
+      "uid": "gdx-loki"
+     },
+     "expr": "{job=\"gdx-rendezvous\", event=~\"$event\"}",
+     "legendFormat": "",
+     "refId": "A"
+    }
+   ],
+   "title": "Room events (create, join, leave, close, refuse, block)",
+   "type": "logs"
+  }
+ ],
+ "refresh": "30s",
+ "schemaVersion": 39,
+ "tags": [
+  "gdx"
+ ],
+ "templating": {
+  "list": [
+   {
+    "current": {
+     "selected": true,
+     "text": [
+      "create",
+      "join",
+      "leave",
+      "room-close",
+      "refuse",
+      "block"
+     ],
+     "value": [
+      "create",
+      "join",
+      "leave",
+      "room-close",
+      "refuse",
+      "block"
+     ]
+    },
+    "includeAll": false,
+    "label": "Log events",
+    "multi": true,
+    "name": "event",
+    "options": [],
+    "query": "create,join,rejoin,rehost,leave,orphan,room-close,refuse,block,abuse,drain,listen,stop,stats",
+    "type": "custom"
+   }
+  ]
+ },
+ "time": {
+  "from": "now-6h",
+  "to": "now"
+ },
+ "timezone": "browser",
+ "title": "G-Diffuser rendezvous",
+ "uid": "gdx-rendezvous",
+ "version": 1
+}

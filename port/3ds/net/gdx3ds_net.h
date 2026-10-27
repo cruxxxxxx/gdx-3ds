@@ -31,6 +31,11 @@
  *                                         ; that redirect makes any printf on the GAME
  *                                         ; thread block on a stalled socket. The ring
  *                                         ; below never can.
+ *   poll_slice = 1                        ; the net thread waits by poll(.., 0) + sleep, never
+ *                                         ; a blocking poll(): SOC is one session per process,
+ *                                         ; so a blocking poll here stalls every socket call
+ *                                         ; of the main thread (MP's recvfrom) behind it.
+ *                                         ; 0 = the old blocking poll (A/B only).
  *   target   = /3ds/G-Diffuser-3DS.3dsx   ; RELOAD write target, sdmc-relative. This is
  *                                         ; also the hb:ldr path (hb:ldr takes the path
  *                                         ; WITHOUT the "sdmc:" prefix). hbmenu's
@@ -92,6 +97,16 @@ void gdx3ds_net_log_write(const char* msg, size_t len);
 /* HOMEFIX2: 1 = the net thread parked inside the 240 ms window, 0 = it did not. */
 int gdx3ds_net_suspend(void);
 void gdx3ds_net_resume(void);
+
+/* MP quiet (main thread; [net] mp_net_quiet, default 1): while an online / LAN room or race is
+ * up the net thread stops relinking and stops polling for a control client: hardware online1's
+ * Old 3DS spent the whole race retrying a dead log host, ~95 SOC requests a second on the one
+ * soc:U session the race needs. A live log link keeps draining, every NET_QUIET_DRAIN_MS
+ * instead of every 50 ms; a connected control client is polled at that rate too. 0 = leave. */
+void gdx3ds_net_set_mp_quiet(int quiet);
+/* 1 = the net thread makes no socket call at all now (disabled, or quiet with no link and no
+ * client, acknowledged by the thread): the mp socket thread may block in poll(). */
+int gdx3ds_net_soc_idle(void);
 
 /* Exit chain, AFTER gdx3ds_fs_shutdown(): final ring drain + send, close both sockets,
  * join the net thread, socExit(). Idempotent. */

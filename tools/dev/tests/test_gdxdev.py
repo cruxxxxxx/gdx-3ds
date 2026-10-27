@@ -727,6 +727,22 @@ class TimeoutVerdictTest(unittest.TestCase):
         self.assertIn("NOT crashed", r["detail"])
         self.assertIn("6000", r["detail"])      # names the tick it was short of
 
+    def test_a_short_replay_that_completed_on_one_beat_passes(self):
+        """probeboot (420 ticks) quits via replay_quit before the second ~300-frame
+        watchdog beat; one beat is not a stalled heartbeat when the replay finished."""
+        from gdxdev import emu
+        log = ("[rec] replay armed\n[watchdog] beat=1 frame=247(+247)\n"
+               "[rec] end tick=420 lines=420\n"
+               "[oracle] quit requested: [rec] end with replay_quit=1\n")
+        block = {"kind": "gdxrec", "shots": [], "last_tick": 419, "schedule": []}
+        r = emu.judge("", log, util.Out(quiet=True), replay_kind="gdxrec",
+                      replay_block=block, emu_alive_at_end=False, deadline_hit=False)
+        self.assertEqual(r["verdict"], "PASS", r["detail"])
+        r = emu.judge("", "[rec] replay armed\n[watchdog] beat=1 frame=247(+247)\n",
+                      util.Out(quiet=True), replay_kind="gdxrec", replay_block=block,
+                      emu_alive_at_end=False, deadline_hit=False)
+        self.assertEqual(r["verdict"], "FAIL")
+
     def test_a_dead_core_is_still_a_failure(self):
         r = self._judge(emu_alive_at_end=False, deadline_hit=False)
         self.assertEqual(r["verdict"], "FAIL")
@@ -796,6 +812,32 @@ class ImpliedReplayQuitTest(unittest.TestCase):
             self._args("--ini", "debug.replay_quit=0"))
         replay.apply_implied(settings, explicit, kind="gdxrec")
         self.assertEqual(settings[self.KEY], "0")
+
+    QUIT_AT = ("debug", "quit_at_tick")
+
+    def test_autoinput_on_a_private_sd_implies_quit_at_tick(self):
+        """replay_quit only acts on a .gdxrec's [rec] end; a .txt script never logs one,
+        so without this storm2 & co. always ran to the --seconds kill."""
+        settings = {}
+        replay.apply_implied(settings, set(), kind="autoinput", last=21000, private_sd=True)
+        self.assertEqual(settings[self.QUIT_AT],
+                         str(21000 + replay.AUTOINPUT_QUIT_MARGIN))
+
+    def test_quit_at_tick_is_not_implied_for_gdxrec_or_the_shared_sd(self):
+        for kind, private in (("gdxrec", True), ("autoinput", False)):
+            settings = {}
+            replay.apply_implied(settings, set(), kind=kind, last=6000, private_sd=private)
+            self.assertNotIn(self.QUIT_AT, settings, (kind, private))
+
+    def test_quit_at_tick_respects_the_play_past_override_and_an_explicit_value(self):
+        settings = {self.KEY: "0"}
+        replay.apply_implied(settings, {self.KEY}, kind="autoinput", last=900,
+                             private_sd=True)
+        self.assertNotIn(self.QUIT_AT, settings)
+        settings = {self.QUIT_AT: "500"}
+        replay.apply_implied(settings, {self.QUIT_AT}, kind="autoinput", last=900,
+                             private_sd=True)
+        self.assertEqual(settings[self.QUIT_AT], "500")
 
     def test_both_lanes_imply_it(self):
         import inspect
@@ -1362,22 +1404,21 @@ class SeedIniHygieneTest(unittest.TestCase):
         for key in (("debug", "filelog"), ("debug", "verbose")):
             self.assertIn(key, emu.MEASUREMENT_INI)
 
-    def test_the_render_thread_is_on_by_default_on_both_lanes(self):
+    def test_the_render_thread_matches_the_shipped_preset_on_both_lanes(self):
         """rtparity: the gate measures the configuration that SHIPS.
 
-        The Qt lane merges into the shared virtual SD, which carried `renderthread = 0` for
-        six days and thereby defined the render-thread state of every Qt-lane parity run the
-        fork scored — silently, because `emu run` merged and never set the key. Pinning it in
-        MEASUREMENT_INI makes `renderthread=1` (kPipe + bridgemain=1, the guest default at
-        gdx3ds_renderthread.cpp:296) the default, and `--ini debug.renderthread=0` an explicit
-        bisect lever. An --ini flag must still win, or the lever would be unreachable.
+        The Qt lane merges into the shared virtual SD, so the key must be pinned or a stale
+        value defines every run. The shipped `auto` preset sets `renderthread = 0` (the NRR
+        refuses under the render thread), and a pinned "1" silently turned the NRR off on
+        every New 3DS lane run. `--ini debug.renderthread=1` stays an explicit bisect lever;
+        an --ini flag must still win, or the lever would be unreachable.
         """
         from gdxdev import emu, inifile
-        self.assertEqual(emu.MEASUREMENT_INI.get(("debug", "renderthread")), "1")
+        self.assertEqual(emu.MEASUREMENT_INI.get(("debug", "renderthread")), "0")
         settings = dict(emu.MEASUREMENT_INI)
-        section, key, value = inifile.parse_spec("debug.renderthread=0")
+        section, key, value = inifile.parse_spec("debug.renderthread=1")
         settings[(section, key)] = value
-        self.assertEqual(settings[("debug", "renderthread")], "0")
+        self.assertEqual(settings[("debug", "renderthread")], "1")
 
     def test_apt_signal_lines_are_not_crashes(self):
         """Azahar logs "with signal 00000001" on every healthy boot."""
@@ -3507,6 +3548,52 @@ class LaunchVariantGuestLogTest(unittest.TestCase):
             self.assertEqual(retro._guest_log_path(inst), os.path.join(d, "log-N.txt"))
             open(os.path.join(d, "log.txt"), "w").write("main")
             self.assertEqual(retro._guest_log_path(inst), os.path.join(d, "log.txt"))
+
+
+
+class RetroBareIniTest(unittest.TestCase):
+    """preset-fix `retro run --bare-ini`: the instance ini starts EMPTY (no seeded user
+    sections from the Qt SD), so an empty-ini parity leg sees only its own keys."""
+
+    def setUp(self):
+        from gdxdev import retro
+        self.retro = retro
+        self.tmp = tempfile.mkdtemp()
+        self.src = os.path.join(self.tmp, "qt")
+        os.makedirs(self.src)
+        for name in ("fzerox.o2r", "gdiffuser.o2r"):
+            open(os.path.join(self.src, name), "w").write("x")
+        open(os.path.join(self.src, "gdiffuser.ini"), "w").write(
+            "[stereo]\nenabled = 1\n[display]\nwidescreen = 1\n[debug]\nfh = 1\n")
+        self.saved = (util.GDX_SDMC_DIR, util.GDX_INI, util.AZAHAR_SDMC, retro.INSTANCE_ROOT, retro._BARE_INI)
+        util.GDX_SDMC_DIR = self.src
+        util.GDX_INI = os.path.join(self.src, "gdiffuser.ini")
+        util.AZAHAR_SDMC = os.path.join(self.tmp, "nosdmc")
+        retro.INSTANCE_ROOT = os.path.join(self.tmp, "inst")
+
+    def tearDown(self):
+        (util.GDX_SDMC_DIR, util.GDX_INI, util.AZAHAR_SDMC, self.retro.INSTANCE_ROOT,
+         self.retro._BARE_INI) = self.saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _seed(self, bare):
+        self.retro._BARE_INI = bare
+        inst = self.retro.Instance("b")
+        class Quiet(object):
+            def say(self, *a, **k):
+                pass
+        self.retro.seed_sd(inst, Quiet(), {("debug", "console"): "1"})
+        return inifile.read(os.path.join(inst.gdx_dir(), "gdiffuser.ini"))
+
+    def test_default_seeds_the_user_sections(self):
+        got = self._seed(False)
+        self.assertEqual(got["stereo"]["enabled"], "1")
+        self.assertEqual(got["display"]["widescreen"], "1")
+        self.assertNotIn("fh", got.get("debug", {}))
+
+    def test_bare_ini_seeds_nothing_but_the_run_keys(self):
+        got = self._seed(True)
+        self.assertEqual(got, {"debug": {"console": "1"}})
 
 
 if __name__ == "__main__":

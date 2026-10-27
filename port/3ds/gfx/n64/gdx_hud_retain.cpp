@@ -1179,6 +1179,9 @@ class Interp::HudRecBackend final : public Backend {
     const unsigned long* AtlasEpochPtr() override {
         return real->AtlasEpochPtr();
     }
+    void AtlasResetAll() override {
+        real->AtlasResetAll();
+    }
 
     /* The triangles [curStartTri, tris) of the batch being drawn (or left open at the run's
      * end) were written by this run: keep their floats, in pool order. */

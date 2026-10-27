@@ -5,8 +5,9 @@
  * cache (slots 0-20), some carrying a mid-list G_SETCOMBINE pair (tunnel interior/exterior
  * material split). The native path replays those lists itself, so it needs them decoded ONCE
  * into flat index arrays. The decoder is plain C with no dependencies so the same code runs
- * on the device over the asset-bound arrays (port/gen/AssetBindings.c) and on the host over
- * the committed raw blobs (port/tests/track_template_tests.c). */
+ * on the device over the segment-8 carve loaded from the user's fzerox.o2r and on the host over
+ * the same archive's records (port/tests/track_template_tests.c). No index list is compiled in:
+ * gGdxTrkTemplate is filled at runtime (gdxtrk_templates_install) and checked against a digest. */
 #ifndef GDX3DS_TRACK_TEMPLATES_H
 #define GDX3DS_TRACK_TEMPLATES_H
 
@@ -58,10 +59,24 @@ int gdxtrk_decode_template(const uint8_t* raw, size_t len, GdxTrkTemplate* out);
 /* Byte-wise equality of two decoded templates (only the populated fields). */
 int gdxtrk_template_equal(const GdxTrkTemplate* a, const GdxTrkTemplate* b);
 
-/* The committed golden table (tools/dev/dump_track_dls.py) and the symbol names, indexed
- * identically. */
-extern const GdxTrkTemplate kGdxTrkGolden[GDXTRK_TEMPLATE_COUNT];
+/* The decoded templates, all zero (ntris 0) until gdxtrk_templates_install succeeds; the
+ * symbol names and byte lengths, indexed identically. */
+extern GdxTrkTemplate gGdxTrkTemplate[GDXTRK_TEMPLATE_COUNT];
 extern const char* const kGdxTrkTemplateNames[GDXTRK_TEMPLATE_COUNT];
+extern const uint16_t kGdxTrkTemplateLen[GDXTRK_TEMPLATE_COUNT];
+
+/* FNV-1a over the 18 decoded templates (counts, indices, SETCOMBINE events) in index order: the
+ * value the retail archive's lists decode to. A different archive refuses to arm the native
+ * track path, exactly as a mismatch against a compiled-in table did before. */
+#define GDXTRK_TEMPLATES_DIGEST 0x3A6C7A31u
+uint32_t gdxtrk_templates_digest(const GdxTrkTemplate* t);
+
+/* Decodes src[i] (kGdxTrkTemplateLen[i] bytes each, either word order) for all 18 templates;
+ * when every one decodes and the set matches GDXTRK_TEMPLATES_DIGEST, copies them into
+ * gGdxTrkTemplate and returns 1. Otherwise returns 0 and leaves gGdxTrkTemplate untouched;
+ * failedIndex and failedRc (either may be NULL) name the first template that failed to decode
+ * (-1 when they all decoded and only the digest differed). */
+int gdxtrk_templates_install(const uint8_t* const src[GDXTRK_TEMPLATE_COUNT], int* failedIndex, int* failedRc);
 
 #ifdef __cplusplus
 }

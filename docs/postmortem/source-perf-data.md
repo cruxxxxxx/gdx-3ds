@@ -257,7 +257,7 @@ those figures support.
 | 10-07 | Stereo, second pass (Mute City) | — | 60 |
 | 10-08 | Card 4, `lcd_vram` fix | — | 59.5 |
 
-Method per `old-3ds.html`: 1000 / median frame time where a log gives one; the steady-mode rendered
+Method per `native.html` (Old 3DS part): 1000 / median frame time where a log gives one; the steady-mode rendered
 rate where the game runs an even frame-skip cadence; the hold-1 vblank share for the two 3D cards.
 09-03's/10-03's and 10-07's 3D values are documented-range estimates, flagged as such on the page.
 

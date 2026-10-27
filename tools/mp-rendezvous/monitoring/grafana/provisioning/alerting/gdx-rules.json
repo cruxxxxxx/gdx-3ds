@@ -1,0 +1,454 @@
+{
+ "apiVersion": 1,
+ "groups": [
+  {
+   "folder": "gdx",
+   "interval": "1m",
+   "name": "gdx-rendezvous",
+   "orgId": 1,
+   "rules": [
+    {
+     "annotations": {
+      "summary": "Prometheus cannot scrape the rendezvous server's /metrics."
+     },
+     "condition": "C",
+     "data": [
+      {
+       "datasourceUid": "gdx-prom",
+       "model": {
+        "expr": "sum(up{job=\"gdx-rendezvous\"}) or vector(0)",
+        "instant": true,
+        "range": false,
+        "refId": "A"
+       },
+       "refId": "A",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       }
+      },
+      {
+       "datasourceUid": "__expr__",
+       "model": {
+        "expression": "A",
+        "reducer": "last",
+        "refId": "B",
+        "settings": {
+         "mode": "dropNN"
+        },
+        "type": "reduce"
+       },
+       "refId": "B"
+      },
+      {
+       "datasourceUid": "__expr__",
+       "model": {
+        "conditions": [
+         {
+          "evaluator": {
+           "params": [
+            1
+           ],
+           "type": "lt"
+          }
+         }
+        ],
+        "expression": "B",
+        "refId": "C",
+        "type": "threshold"
+       },
+       "refId": "C"
+      }
+     ],
+     "execErrState": "Error",
+     "for": "2m",
+     "labels": {
+      "service": "gdx-rendezvous",
+      "severity": "critical"
+     },
+     "noDataState": "Alerting",
+     "title": "Rendezvous server down",
+     "uid": "gdx-down"
+    },
+    {
+     "annotations": {
+      "summary": "The UDP probe gets no correct answer from the server's public address (what consoles use)."
+     },
+     "condition": "C",
+     "data": [
+      {
+       "datasourceUid": "gdx-prom",
+       "model": {
+        "expr": "min(gdx_rv_probe_success) or vector(0)",
+        "instant": true,
+        "range": false,
+        "refId": "A"
+       },
+       "refId": "A",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       }
+      },
+      {
+       "datasourceUid": "__expr__",
+       "model": {
+        "expression": "A",
+        "reducer": "last",
+        "refId": "B",
+        "settings": {
+         "mode": "dropNN"
+        },
+        "type": "reduce"
+       },
+       "refId": "B"
+      },
+      {
+       "datasourceUid": "__expr__",
+       "model": {
+        "conditions": [
+         {
+          "evaluator": {
+           "params": [
+            1
+           ],
+           "type": "lt"
+          }
+         }
+        ],
+        "expression": "B",
+        "refId": "C",
+        "type": "threshold"
+       },
+       "refId": "C"
+      }
+     ],
+     "execErrState": "Error",
+     "for": "3m",
+     "labels": {
+      "service": "gdx-rendezvous",
+      "severity": "critical"
+     },
+     "noDataState": "Alerting",
+     "title": "Rendezvous probe failing",
+     "uid": "gdx-probe-fail"
+    },
+    {
+     "annotations": {
+      "summary": "Over 200 dropped datagrams/s for 10 min: junk, a flood, or a broken client."
+     },
+     "condition": "C",
+     "data": [
+      {
+       "datasourceUid": "gdx-prom",
+       "model": {
+        "expr": "sum(rate(gdx_rv_drops_total[5m])) or vector(0)",
+        "instant": true,
+        "range": false,
+        "refId": "A"
+       },
+       "refId": "A",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       }
+      },
+      {
+       "datasourceUid": "__expr__",
+       "model": {
+        "expression": "A",
+        "reducer": "last",
+        "refId": "B",
+        "settings": {
+         "mode": "dropNN"
+        },
+        "type": "reduce"
+       },
+       "refId": "B"
+      },
+      {
+       "datasourceUid": "__expr__",
+       "model": {
+        "conditions": [
+         {
+          "evaluator": {
+           "params": [
+            200
+           ],
+           "type": "gt"
+          }
+         }
+        ],
+        "expression": "B",
+        "refId": "C",
+        "type": "threshold"
+       },
+       "refId": "C"
+      }
+     ],
+     "execErrState": "Error",
+     "for": "10m",
+     "labels": {
+      "service": "gdx-rendezvous",
+      "severity": "warning"
+     },
+     "noDataState": "OK",
+     "title": "Rendezvous dropping a lot",
+     "uid": "gdx-drops-high"
+    },
+    {
+     "annotations": {
+      "summary": "Real relay traffic is being rate-limited (--relay-pps / --room-bps too low, or abuse)."
+     },
+     "condition": "C",
+     "data": [
+      {
+       "datasourceUid": "gdx-prom",
+       "model": {
+        "expr": "sum(rate(gdx_rv_ratelimit_total{limit=~\"member_relay|room_relay_bytes\"}[5m])) or vector(0)",
+        "instant": true,
+        "range": false,
+        "refId": "A"
+       },
+       "refId": "A",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       }
+      },
+      {
+       "datasourceUid": "__expr__",
+       "model": {
+        "expression": "A",
+        "reducer": "last",
+        "refId": "B",
+        "settings": {
+         "mode": "dropNN"
+        },
+        "type": "reduce"
+       },
+       "refId": "B"
+      },
+      {
+       "datasourceUid": "__expr__",
+       "model": {
+        "conditions": [
+         {
+          "evaluator": {
+           "params": [
+            1
+           ],
+           "type": "gt"
+          }
+         }
+        ],
+        "expression": "B",
+        "refId": "C",
+        "type": "threshold"
+       },
+       "refId": "C"
+      }
+     ],
+     "execErrState": "Error",
+     "for": "10m",
+     "labels": {
+      "service": "gdx-rendezvous",
+      "severity": "warning"
+     },
+     "noDataState": "OK",
+     "title": "Players hit the relay budget",
+     "uid": "gdx-relay-throttled"
+    },
+    {
+     "annotations": {
+      "summary": "CPU above 30% for 15 min: a burstable instance spends its credits."
+     },
+     "condition": "C",
+     "data": [
+      {
+       "datasourceUid": "gdx-prom",
+       "model": {
+        "expr": "(sum(rate(gdx_rv_host_cpu_seconds{mode!=\"idle\"}[5m])) / sum(rate(gdx_rv_host_cpu_seconds[5m]))) or vector(0)",
+        "instant": true,
+        "range": false,
+        "refId": "A"
+       },
+       "refId": "A",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       }
+      },
+      {
+       "datasourceUid": "__expr__",
+       "model": {
+        "expression": "A",
+        "reducer": "last",
+        "refId": "B",
+        "settings": {
+         "mode": "dropNN"
+        },
+        "type": "reduce"
+       },
+       "refId": "B"
+      },
+      {
+       "datasourceUid": "__expr__",
+       "model": {
+        "conditions": [
+         {
+          "evaluator": {
+           "params": [
+            0.3
+           ],
+           "type": "gt"
+          }
+         }
+        ],
+        "expression": "B",
+        "refId": "C",
+        "type": "threshold"
+       },
+       "refId": "C"
+      }
+     ],
+     "execErrState": "Error",
+     "for": "15m",
+     "labels": {
+      "service": "gdx-rendezvous",
+      "severity": "warning"
+     },
+     "noDataState": "OK",
+     "title": "Rendezvous host CPU high",
+     "uid": "gdx-cpu-high"
+    },
+    {
+     "annotations": {
+      "summary": "Less than 50 MB available on the server host."
+     },
+     "condition": "C",
+     "data": [
+      {
+       "datasourceUid": "gdx-prom",
+       "model": {
+        "expr": "min(gdx_rv_host_memory_bytes{kind=\"available\"}) or vector(1e12)",
+        "instant": true,
+        "range": false,
+        "refId": "A"
+       },
+       "refId": "A",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       }
+      },
+      {
+       "datasourceUid": "__expr__",
+       "model": {
+        "expression": "A",
+        "reducer": "last",
+        "refId": "B",
+        "settings": {
+         "mode": "dropNN"
+        },
+        "type": "reduce"
+       },
+       "refId": "B"
+      },
+      {
+       "datasourceUid": "__expr__",
+       "model": {
+        "conditions": [
+         {
+          "evaluator": {
+           "params": [
+            50000000.0
+           ],
+           "type": "lt"
+          }
+         }
+        ],
+        "expression": "B",
+        "refId": "C",
+        "type": "threshold"
+       },
+       "refId": "C"
+      }
+     ],
+     "execErrState": "Error",
+     "for": "10m",
+     "labels": {
+      "service": "gdx-rendezvous",
+      "severity": "warning"
+     },
+     "noDataState": "OK",
+     "title": "Rendezvous host memory low",
+     "uid": "gdx-mem-low"
+    },
+    {
+     "annotations": {
+      "summary": "The server cannot push event lines to Loki."
+     },
+     "condition": "C",
+     "data": [
+      {
+       "datasourceUid": "gdx-prom",
+       "model": {
+        "expr": "sum(rate(gdx_rv_loki_lines_total{outcome=~\"failed|dropped_queue\"}[10m])) or vector(0)",
+        "instant": true,
+        "range": false,
+        "refId": "A"
+       },
+       "refId": "A",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       }
+      },
+      {
+       "datasourceUid": "__expr__",
+       "model": {
+        "expression": "A",
+        "reducer": "last",
+        "refId": "B",
+        "settings": {
+         "mode": "dropNN"
+        },
+        "type": "reduce"
+       },
+       "refId": "B"
+      },
+      {
+       "datasourceUid": "__expr__",
+       "model": {
+        "conditions": [
+         {
+          "evaluator": {
+           "params": [
+            0
+           ],
+           "type": "gt"
+          }
+         }
+        ],
+        "expression": "B",
+        "refId": "C",
+        "type": "threshold"
+       },
+       "refId": "C"
+      }
+     ],
+     "execErrState": "Error",
+     "for": "15m",
+     "labels": {
+      "service": "gdx-rendezvous",
+      "severity": "warning"
+     },
+     "noDataState": "OK",
+     "title": "Access log shipping failing",
+     "uid": "gdx-logs-failing"
+    }
+   ]
+  }
+ ]
+}

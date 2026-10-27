@@ -1644,10 +1644,11 @@ int gdx3ds_audio_init(uint32_t bufferFrames) {
     sPrimeEnabled = gdx3ds_config_get_bool("debug", "audioprime", 1);
     ReadCrackleLevers();
     sStallSimMs = gdx3ds_config_get_int("debug", "audio_stallsim", 0);
-    /* n60-3d12: default ON on Old 3DS (card n60-3d11 "ALL", hardware-confirmed), off on New
-     * 3DS, unchanged. `audio_declick = 0` in the ini still forces the old hard-splice path on
-     * either model. */
-    sDeclickEnabled = gdx3ds_config_get_bool("debug", "audio_declick", gdx3ds_is_old3ds());
+    /* n60-3d12: default ON on Old 3DS (card n60-3d11 "ALL", hardware-confirmed). v1.0.1: default
+     * ON on New 3DS too -- it only touches the splice at a dropout edge, which is a hard click on
+     * any model. `audio_declick = 0` in the ini still forces the old hard-splice path on either
+     * model. */
+    sDeclickEnabled = gdx3ds_config_get_bool("debug", "audio_declick", 1);
     sInDropout = 0;
     /* [audiosched] levers. audio_producer_prio = 0 keeps the historical 0x18 (the drain's own
      * rung) byte for byte; any other value is clamped into the app-grantable band and applied

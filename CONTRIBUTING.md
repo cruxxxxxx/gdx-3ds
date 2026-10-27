@@ -38,7 +38,7 @@ The short version:
 
 | | |
 | --- | --- |
-| **Clone** | `git clone --recursive` — the build needs the submodules; a plain clone will not configure |
+| **Clone** | `git clone`, then `git submodule update --init libultraship decomp torch fzerox-expansion-kit` — the desktop build needs all four submodules; without them it will not configure |
 | **Windows** | Visual Studio 2022, CMake 3.24+, Python 3 |
 | **Linux** | CMake 3.24+, Ninja, a C++20 compiler, Python 3, and libultraship's dependencies from your distribution |
 
@@ -47,7 +47,9 @@ The short version:
 `tools/build-3ds.sh <o3ds|n3ds|o3ds-ek|n3ds-ek|all>` configures and builds with devkitPro, and
 collects the result in `dist/3ds/`. Full prerequisites, the four build targets, and the underlying
 CMake flags: [`README.md`](README.md#building-from-source) and
-[`docs/BUILDING.md`](docs/BUILDING.md). The `libultraship` submodule is not needed for this lane —
+[`docs/BUILDING.md`](docs/BUILDING.md). Initialise the submodules by name:
+`git submodule update --init decomp torch` for O3DS / N3DS, plus `fzerox-expansion-kit` for the
+`-ek` targets. The `libultraship` submodule is not needed for this lane —
 the sources the console compiles are vendored in-tree at `port/3ds/vendor/lus/`.
 
 ### Python

@@ -23,6 +23,7 @@
 
 /* port/gdx_hud_placement.c, compiled under GDX_HUD_PLACEMENT_HOST_TEST only. */
 void gdx_hud_placement_test_set_mode(int mode);
+void gdx_hud_placement_test_set_fullview(int on);
 
 static int sFailures = 0;
 
@@ -188,6 +189,25 @@ static void test_placement_name(void) {
     expect_eq("name(out of range)", strcmp(gdx_hud_placement_name(99), "ALL_TOP"), 0);
 }
 
+/* o3ds60 [ui] mp_hud_placement: an MP fullview frame (hook on) answers as 1P for every mode; with
+ * the hook off 2P still forces ALL_TOP; a 1P frame is unaffected either way. */
+static void test_mp_fullview_follows_placement(void) {
+    int mode;
+    for (mode = GDX_HUD_PLACEMENT_ALL_TOP; mode <= GDX_HUD_PLACEMENT_ALL_BOTTOM; mode++) {
+        unsigned oneP;
+        gdx_hud_placement_test_set_mode(mode);
+        gdx_hud_placement_test_set_fullview(0);
+        oneP = gdx_hud_top_element_mask(1);
+        expect_eq("fv off: 2P forced ALL_TOP", (int) (gdx_hud_top_element_mask(2) == ~0u), 1);
+        gdx_hud_placement_test_set_fullview(1);
+        expect_eq("fv on: 2P mask == 1P mask", (int) (gdx_hud_top_element_mask(2) == oneP), 1);
+        expect_eq("fv on: 1P mask unchanged", (int) (gdx_hud_top_element_mask(1) == oneP), 1);
+        expect_eq("fv on: 2P suppressed == 1P", gdx_hud_top_suppressed(2), gdx_hud_top_suppressed(1));
+    }
+    gdx_hud_placement_test_set_fullview(0);
+    gdx_hud_placement_test_set_mode(GDX_HUD_PLACEMENT_ALL_TOP);
+}
+
 int main(void) {
     test_modes_0_to_2_match_legacy();
     test_legacy_predicates_match_element_predicate();
@@ -198,6 +218,7 @@ int main(void) {
     test_custom_mask_ignored_above_1p();
     test_element_enum_numbering_is_pinned();
     test_placement_name();
+    test_mp_fullview_follows_placement();
 
     if (sFailures != 0) {
         printf("=== %d FAILURE(S) ===\n", sFailures);

@@ -1,0 +1,20 @@
+--- a/src/overlays/ovl_i6/main_menu.c
++++ b/src/overlays/ovl_i6/main_menu.c
+@@ -215,6 +215,17 @@
+                     break;
+             }
+ #else
++#if defined(PORT) && !defined(VERSION_JP)
++            /* hwfix-combined (hardware report "versus mode doesn't do anything"): the US arm above
++             * snaps the cursor off VS BATTLE while fewer than two controllers are connected; the EK
++             * arm never did, so on a 3DS (one pad) the cursor sat on VS, A opened the player-count
++             * step and case 1's clamp bounced it straight back with the cancel sound. Same rule as
++             * the US arm. gControllersConnected counts every port the input bridge reports
++             * connected, so [debug] pads=N and a multiplayer session still reach VS. */
++            if ((gSelectedMode == MODE_VS_BATTLE) && (gControllersConnected < 2)) {
++                gSelectedMode = MODE_DEATH_RACE;
++            }
++#endif
+             /* Course Edit and Machine Create are 64DD-disk-only: their overlays block in
+              * osRecvMesg(&gMFSMesgQ, ..., OS_MESG_BLOCK) on first disk access, and without a
+              * disk nothing ever posts. Refused at the menu rather than at every MFS call site,
