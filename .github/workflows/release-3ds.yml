@@ -3,14 +3,14 @@ name: Release (3DS, native renderer)
 # Builds everything a player needs without a compiler:
 #   * gdx-extract, the PC-side asset extractor tools/prebake drives (plus gdx-hudpack, its HUD bake),
 #     for Windows, macOS and Linux;
-#   * the three released console targets -- Old 3DS, New 3DS and the New 3DS Expansion Kit
-#     title -- as .3dsx/.cia/.elf from a clean checkout via tools/ci-3ds.sh plus the matching cmake flags,
+#   * the four released console targets -- Old 3DS, New 3DS and the Expansion Kit title for
+#     each (the Old 3DS one experimental) -- as .3dsx/.cia/.elf from a clean checkout via tools/ci-3ds.sh plus the matching cmake flags,
 #     each also packaged as a ready-to-drop-on-an-SD-card zip.
 #
 # Runs on every push and pull request against `main` (artifacts only, nothing attached, so a PR
 # shows green/red per console target) and on a `v*` tag or a manual dispatch naming an existing
 # release tag (builds AND attaches/updates the release). `workflow_dispatch` also takes an
-# optional `targets` input to build only some targets (or the unreleased o3ds-ek), for a one-off.
+# optional `targets` input to build only some targets, for a one-off.
 #
 #   * submodules are initialised BY NAME. The O3DS/N3DS targets need `decomp` and `torch` (for
 #     libmio0) -- the slice of libultraship the console compiles is vendored in-tree at
@@ -48,7 +48,7 @@ on:
         required: false
         default: ''
       targets:
-        description: 'Which console targets to build: "all" (the released three) or a comma/space list of o3ds, n3ds, n3ds-ek, o3ds-ek (experimental, never released)'
+        description: 'Which console targets to build: "all" or a comma/space list of o3ds, n3ds, n3ds-ek, o3ds-ek'
         required: false
         default: 'all'
 
@@ -145,10 +145,8 @@ jobs:
               {"name": "n3ds-ek", "suffix": "N3DS-EK"},
           ]
           by_name = {t["name"]: t for t in all_targets}
-          # Old 3DS + Expansion Kit boots, but its 64DD courses, music and editors are
-          # not playable yet on that console: it is built only when asked for by name
-          # and is never part of "all" or a tagged release.
-          released = [t for t in all_targets if t["name"] != "o3ds-ek"]
+          # o3ds-ek ships too, marked experimental in the release notes.
+          released = all_targets
 
           requested = os.environ.get("INPUT_TARGETS", "all").strip()
           if not requested or requested.lower() == "all":
@@ -380,9 +378,11 @@ jobs:
             '| Old 3DS / Old 2DS | `G-Diffuser-3DS-O3DS-v<ver>.zip` |' \
             '| New 3DS / New 2DS XL | `G-Diffuser-3DS-N3DS-v<ver>.zip` |' \
             '| New 3DS / New 2DS XL, with the Expansion Kit disk | `G-Diffuser-3DS-N3DS-EK-v<ver>.zip` |' \
+            '| Old 3DS / Old 2DS, with the Expansion Kit disk (**experimental**) | `G-Diffuser-3DS-O3DS-EK-v<ver>.zip` |' \
             '' \
-            'The Expansion Kit build is New 3DS only for now, and needs your own dump of the' \
-            'retail Japanese 64DD disk (`baserom.jp.ek.ndd`).' \
+            'The Expansion Kit builds need your own dump of the retail Japanese 64DD disk' \
+            '(`baserom.jp.ek.ndd`). O3DS-EK is experimental: on Old 3DS the 64DD courses are' \
+            'jittery, the disk music breaks up and the editors are laggy.' \
             '' \
             'Each zip contains the `.3dsx` (Homebrew Launcher), the `.cia` (HOME menu install) and a' \
             'README on where your own extracted game data goes, plus `LICENSE`,' \

@@ -53,14 +53,14 @@ vs. "how fast"). Full detail and sourcing: RELEASE-NOTES.md "Measured performanc
 
 ## Expansion Kit (64DD; needs your own disk dump)
 
-**Only the New 3DS Expansion Kit build (`N3DS-EK`) is released in v1.0.0.** The Old 3DS column
-below reflects an `o3ds-ek` build from source (❌ not released): on real Old 3DS hardware it
+**The Old 3DS Expansion Kit build (`O3DS-EK`) is released as experimental from v1.1.0** (v1.0.0
+shipped `N3DS-EK` only). On real Old 3DS hardware it
 boots and mounts the disk, but 64DD courses are jittery, the disk music breaks up, and the
 course editor, machine creator, and menus are very slow. See RELEASE-NOTES.md's Known issues.
 
 | Feature | Old 3DS / 2DS | New 3DS / New 2DS XL |
 |---|---|---|
-| Released in v1.0.0 | ❌ — experimental, from-source only (`o3ds-ek`) | ✅ |
+| Released | 🟡 experimental, from v1.1.0 (`O3DS-EK`) | ✅ |
 | Boots, reaches the main menu | ✅ | ✅ |
 | Course editor (loads, playable) | 🟡 boots and loads, but very laggy on real hardware; see note above | ⚪ emulator-verified with a disk image, not yet exercised on hardware with one |
 | Machine creator (loads, playable) | 🟡 boots and loads, but very laggy on real hardware; see note above | ⚪ same — emulator-verified only |
@@ -103,7 +103,7 @@ not supported in v1.0.0 (see Known open issues below).
 | Stereoscopic 3D not locked to 60 fps | Both consoles | Plays; a confirmed hardware frame-rate figure for this release isn't available yet. |
 | Not every mode tested on every console | Both | Coverage is broad (see tables above) but not exhaustive — multiplayer and 3D soak testing in particular. |
 | Expansion Kit gameplay content (course editor, machine creator, DD cups) is primarily emulator-verified | Both | The one real-hardware Expansion Kit session ran with no disk image mounted. A hardware pass with an actual disk image mounted hasn't been done yet for this release. |
-| Expansion Kit is New 3DS only | Old 3DS | Boots and mounts the disk, but 64DD courses stutter, the disk music breaks up, and the editors are very slow — `o3ds-ek` isn't released this time; see RELEASE-NOTES.md Known issues. |
+| Old 3DS Expansion Kit is experimental | Old 3DS | Boots and mounts the disk, but 64DD courses stutter, the disk music breaks up, and the editors are very slow — `O3DS-EK` ships marked experimental; see RELEASE-NOTES.md Known issues. |
 | Fan-translated Expansion Kit disk images can hang at boot | Both | Only the retail Japanese `baserom.jp.ek.ndd` is supported; see RELEASE-NOTES.md Known issues. |
 
 ## Where the documentation lives

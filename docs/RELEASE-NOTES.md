@@ -6,8 +6,9 @@ The multiplayer release: race friends over local wireless, on the same Wi-Fi, or
 internet, with each console showing its own racer full screen. Also faster native-renderer menus
 on both consoles, optional true widescreen races, new bottom-screen menus with a SETTINGS button,
 more Old 3DS performance work, and a change to how the bottom-screen HUD art gets onto your
-console (it is now built from your own game files). Same three downloads (O3DS, N3DS, N3DS-EK)
-and the same SD card layout: install it over v1.0.0 and your ini, archives and saves carry over.
+console (it is now built from your own game files). The same three downloads (O3DS, N3DS,
+N3DS-EK), plus a new, experimental Old 3DS Expansion Kit build (O3DS-EK). The SD card layout is
+unchanged: install it over v1.0.0 and your ini, archives and saves carry over.
 
 ### Highlights
 
@@ -27,6 +28,8 @@ and the same SD card layout: install it over v1.0.0 and your ini, archives and s
   longer compiled into the app: the game builds them on first boot from your own `fzerox.o2r`
   (see [HUD art](#hud-art-comes-from-your-own-game-files)).
 - **Closing from the HOME menu no longer hard-locks the Old 3DS.**
+- **Old 3DS Expansion Kit, experimental (O3DS-EK).** Now a download, with known performance
+  problems (see [Expansion Kit](#expansion-kit)).
 - **A 3DS unlock-everything code** that works on any 3DS (see [`CHEATS.md`](CHEATS.md)).
 
 ### Multiplayer
@@ -167,14 +170,17 @@ reproduce the old art byte for byte.
   them off with `[debug] adpcm_scale_clamp = 0` / `audio_declick = 0`. We haven't yet confirmed
   they remove the reported crackle; if you still hear it, please report it (see
   `3DS-HARDWARE.md` §13).
-- Expansion Kit (built from source for Old 3DS, still unreleased): disk music and sound load in
-  fewer, larger SD reads, off the audio thread.
+- Expansion Kit on Old 3DS: disk music and sound load in fewer, larger SD reads, off the audio
+  thread.
 
 ### Expansion Kit
 
-- The Expansion Kit build is still New 3DS only (N3DS-EK). You need your own dump of the retail
-  Japanese disk, `baserom.jp.ek.ndd`. Fan-translated images are still not supported.
-- Old 3DS EK (`o3ds-ek`) is still an experimental build you make from source, and isn't released.
+- **Old 3DS Expansion Kit (`O3DS-EK`) is now a download, marked experimental.** It boots,
+  mounts the disk and plays, but on Old 3DS the 64DD courses are jittery, the disk music breaks
+  up, and the course editor, machine creator and menus are laggy. On a New 3DS, use `N3DS-EK`.
+  It installs as the same "G-Diffuser EK" title as `N3DS-EK` and uses the same save file.
+- Both EK builds need your own dump of the retail Japanese disk, `baserom.jp.ek.ndd`.
+  Fan-translated images are still not supported.
 - Building from source: the `fzerox-expansion-kit` submodule now points at
   `github.com/cruxxxxxx/fzerox-expansion-kit` (see [Assets and licensing](#assets-and-licensing)).
   In an existing clone, run
@@ -260,6 +266,7 @@ The v1.0.0 downloads have been withdrawn from the releases page. v1.1.0 replaces
 - Multiplayer hasn't been soak-tested on every console pairing. If a race stops with RACE
   STOPPED, please attach the saved report and `log.txt` to a bug report.
 - Old 3DS multiplayer in 3D is capped at 30 fps.
+- `O3DS-EK` is experimental: jittery 64DD courses, breaking-up disk music, laggy editors.
 - New 3DS audio crackle: the fixes above are on, but not yet confirmed to cure it.
 - The hosted online server is temporary. A later release will require you to set
   `[net] rendezvous` yourself.

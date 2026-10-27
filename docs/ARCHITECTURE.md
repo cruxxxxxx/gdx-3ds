@@ -110,9 +110,8 @@ you touch `tools/gen_asset_bindings.py`.
 `port/CMakeLists.txt` is never edited for 3DS-specific sources. Cross-compiling needs devkitPro's
 toolchain file plus `-DGDX_PLATFORM_3DS=ON`; `tools/build-3ds.sh <target>` wraps this
 (§4.6). The four buildable console configurations are two independent choices multiplied
-together — only three (`o3ds`, `n3ds`, `n3ds-ek`) are released; `o3ds-ek` builds and runs but
-is experimental, not released, because 64DD courses, disk music, and the editors run too
-poorly on real Old 3DS hardware (see RELEASE-NOTES.md Known issues):
+together — all four are released, `o3ds-ek` as experimental because 64DD courses, disk music,
+and the editors run poorly on real Old 3DS hardware (see RELEASE-NOTES.md Known issues):
 
 | Flag | Default | Effect |
 |---|---|---|

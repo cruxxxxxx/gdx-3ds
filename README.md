@@ -18,13 +18,14 @@ Pick the file that matches your console from the
 | `O3DS` | Old 3DS / 2DS | F-Zero X | `G-Diffuser-3DS-O3DS.3dsx` / `.cia` |
 | `N3DS` | New 3DS / New 2DS XL | F-Zero X | `G-Diffuser-3DS-N3DS.3dsx` / `.cia` |
 | `N3DS-EK` | New 3DS | F-Zero X + Expansion Kit | `G-Diffuser-3DS-N3DS-EK.3dsx` / `.cia` |
+| `O3DS-EK` | Old 3DS / 2DS | F-Zero X + Expansion Kit (**experimental**) | `G-Diffuser-3DS-O3DS-EK.3dsx` / `.cia` |
 
 Easiest: grab the zip for your build, e.g. `G-Diffuser-3DS-O3DS-v1.1.0.zip`. It is laid out like
 an SD card (`3ds/…3dsx`, the `.cia` at the top, a short README.txt), so you unzip it onto the SD
 card's root.
 
 Use the build for your console — an `N3DS` build does not fit an Old 3DS's memory budget. The
-`N3DS-EK` build additionally needs your own 64DD disk dump — see [Expansion Kit](#expansion-kit)
+`-EK` builds additionally need your own 64DD disk dump — see [Expansion Kit](#expansion-kit)
 below for what happens without one. `.3dsx` runs from the Homebrew Launcher, `.cia` installs to
 the HOME menu (needs Luma3DS and sigpatches) — both come from the same build and share saves,
 settings and logs.
@@ -231,9 +232,10 @@ See [`docs/RELEASE-NOTES.md`](docs/RELEASE-NOTES.md#performance) for the measure
 
 ## Expansion Kit
 
-The `N3DS-EK` build adds the 64DD Expansion Kit — Course Edit, Create Machine, and the DD cups —
-on top of the normal game. The Expansion Kit is New 3DS only in this release — see
-[Known issues](#known-issues). It needs:
+The `N3DS-EK` and `O3DS-EK` builds add the 64DD Expansion Kit — Course Edit, Create Machine, and
+the DD cups — on top of the normal game. `O3DS-EK` is **experimental**: it runs, but on Old 3DS
+the 64DD courses are jittery, the disk music breaks up, and the editors are laggy — see
+[Known issues](#known-issues). Use `N3DS-EK` if you have a New 3DS. Either needs:
 
 - **Your own 64DD disk dump, the retail Japanese one.** Place it at
   `sdmc:/3ds/gdiffuser/media/baserom.jp.ek.ndd` — the only retail release of the disk, and the
@@ -249,7 +251,7 @@ on top of the normal game. The Expansion Kit is New 3DS only in this release —
 The image is streamed from the SD card — there's no large RAM copy. First boot runs a roughly
 one-minute whole-image integrity check and caches the result, so later boots skip it.
 
-Without a disk image, the `N3DS-EK` build still boots and plays the normal game; the EK-only menu
+Without a disk image, an EK build still boots and plays the normal game; the EK-only menu
 entries just don't open.
 
 An EK build installs as its own HOME-menu title ("G-Diffuser EK", separate from "G-Diffuser") with
@@ -261,16 +263,15 @@ folder for settings, archives and media.
 (For the file and architecture layout first, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).)
 
 The build wizard sets up the CMake flags for you — pass a target and it configures, builds, and
-collects the result. Targets are lowercase; the three released builds above are the same names,
-uppercase. `o3ds-ek` is a fourth target the wizard can still build — **experimental, not
-released** — see [Known issues](#known-issues).
+collects the result. Targets are lowercase; the four released builds above are the same names,
+uppercase (`o3ds-ek` is the experimental one — see [Known issues](#known-issues)).
 
 ```sh
 export DEVKITPRO=/opt/devkitpro
 tools/build-3ds.sh <o3ds|n3ds|o3ds-ek|n3ds-ek|all>
 ```
 
-`all` builds all four, including `o3ds-ek`. Output lands in `dist/3ds/` named the same as the
+`all` builds all four. Output lands in `dist/3ds/` named the same as the
 release downloads, with a `SHA256SUMS` file. Useful flags: `--list` (show the targets), `--jobs N`,
 `--out DIR`, `--no-cia` (skip the `.cia`, build only the `.3dsx`).
 
@@ -281,7 +282,7 @@ toolchain), if you'd rather configure by hand:
 |---|---|
 | `o3ds` | `-DGDX_3DS_O3DS=ON` |
 | `n3ds` | *(none — the default)* |
-| `o3ds-ek` | `-DGDX_3DS_O3DS=ON -DGDX_3DS_EXPANSION_KIT=ON` (experimental, not released — runs poorly on Old 3DS hardware) |
+| `o3ds-ek` | `-DGDX_3DS_O3DS=ON -DGDX_3DS_EXPANSION_KIT=ON` (experimental — runs poorly on Old 3DS hardware) |
 | `n3ds-ek` | `-DGDX_3DS_EXPANSION_KIT=ON` |
 
 Requires devkitPro (`devkitARM` + `libctru` + `citro3d`), CMake, and the `decomp` / `torch`
@@ -330,6 +331,8 @@ other buttons on the IN tab.
 - Brief audio gaps can occur during loads
 - Old 3DS has a tighter memory ceiling than New 3DS — some heavy content is tight on headroom
 - Hardware-tested, but not every mode has been run on every console model
+- The Old 3DS Expansion Kit build (`O3DS-EK`) is experimental: 64DD courses are jittery, the disk
+  music breaks up, and the course editor and machine creator are laggy
 
 See [`docs/RELEASE-NOTES.md`](docs/RELEASE-NOTES.md) for the full, honest list of what is and
 isn't verified.
@@ -340,7 +343,7 @@ Open an issue at [github.com/cruxxxxxx/gdx-3ds/issues](https://github.com/cruxxx
 and include `sdmc:/3ds/gdiffuser/log.txt` (`log-EK.txt` for an EK build; if it's missing, add
 `[debug]` / `filelog = 1` to `gdiffuser.ini` and reproduce again — there's no in-game toggle for
 this; see [`docs/DIAGNOSTICS.md`](docs/DIAGNOSTICS.md)) and `crash*.txt` if the game crashed, plus
-which build you're on (O3DS, N3DS, N3DS-EK, or the experimental o3ds-ek if you built it yourself)
+which build you're on (O3DS, N3DS, N3DS-EK or O3DS-EK)
 and your console model.
 
 ## Legal

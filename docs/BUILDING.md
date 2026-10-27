@@ -79,7 +79,7 @@ in `dist/3ds/`:
 |---|---|---|---|
 | `o3ds` | Old Nintendo 3DS / 2DS | F-Zero X | `G-Diffuser-3DS-O3DS.3dsx` / `.cia` |
 | `n3ds` | New Nintendo 3DS / New 2DS XL | F-Zero X | `G-Diffuser-3DS-N3DS.3dsx` / `.cia` |
-| `o3ds-ek` | Old Nintendo 3DS | F-Zero X + Expansion Kit | `G-Diffuser-3DS-O3DS-EK.3dsx` / `.cia` — **experimental, not released**: runs poorly on real Old 3DS hardware (jittery 64DD courses, breaking-up disk music, laggy editors) |
+| `o3ds-ek` | Old Nintendo 3DS | F-Zero X + Expansion Kit | `G-Diffuser-3DS-O3DS-EK.3dsx` / `.cia` — **experimental**: runs poorly on real Old 3DS hardware (jittery 64DD courses, breaking-up disk music, laggy editors) |
 | `n3ds-ek` | New Nintendo 3DS | F-Zero X + Expansion Kit | `G-Diffuser-3DS-N3DS-EK.3dsx` / `.cia` |
 
 `all` builds all four, including the experimental `o3ds-ek`. Useful flags:
