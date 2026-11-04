@@ -1,5 +1,58 @@
 # G-Diffuser 3DS — Release Notes
 
+## v1.2.0 — 2026-11-03
+
+The lobby release: online rooms can now be **public**, and PLAY ONLINE lists them, so you can
+find a race without swapping a code first. Private rooms work as before. Also a fix for the
+macOS extractor on Apple Silicon. Same four downloads (O3DS, N3DS, N3DS-EK, experimental
+O3DS-EK) and the same SD layout: install it over v1.1.0 and your ini, archives and saves carry
+over.
+
+### Highlights
+
+- **Public rooms and a room list.** PLAY ONLINE now opens a list of the public rooms you can
+  join right now, fullest first. Press **A** on one to join. Rooms only show while they have a
+  free slot and aren't racing, and only to consoles on the same version.
+- **PUBLIC or PRIVATE when you host.** HOST (**Y**) opens HOST ONLINE ROOM: pick **PUBLIC**
+  (listed for everyone) or **PRIVATE** (only people you give the code to can join), and the
+  room size. PUBLIC is the default.
+- **Join with a code**: CODE (**X**) on the same screen, as before.
+- **JOIN BY ADDRESS** stays: with `[net] mp_direct` set, it is a third button (ADDRESS) at the
+  top of PLAY ONLINE.
+- **macOS extractor fixed on Apple Silicon.** The v1.1.0 `gdx-extract-macos-universal` gave a
+  different archive on M-series Macs and failed `prebake.py`'s golden check (it passed under
+  Rosetta). This release's extractor matches on every Mac.
+
+### Upgrading from v1.1.0
+
+1. Replace the `.3dsx`, or install the new `.cia` over the old one. Your `gdiffuser.ini`, both
+   `.o2r` archives and your saves carry over (saves live on the SD card, not in the installed
+   title), so you don't need to prebake again.
+2. No ini keys were removed or renamed.
+3. **Everyone in a room needs v1.2.0.** A v1.1.0 console can still host and join code rooms
+   with other v1.1.0 consoles on the hosted server for now, but it can't share a room with a
+   v1.2.0 console, and it doesn't see the room list.
+
+### Known issues in v1.2.0
+
+- Everything in the [v1.1.0 known issues](#known-issues-in-v110) still applies.
+- The room list shows at most 6 rooms (the header shows the full count).
+- There is no quick match yet: pick a room from the list, or host one.
+
+### For self-hosters
+
+- **Server 2.2.0, client protocol 10.** New: the LIST / ROOMS messages and the public flag on
+  CREATE (`tools/mp-rendezvous/README.md`, "Public rooms"). LIST goes through the same
+  anti-spoofing cookie as CREATE / JOIN, and only cookie-proven rooms can be public. New
+  metrics: `gdx_rv_lists_total` and `gdx_rv_rooms_public`.
+- **Deploy order:** upgrade the server first and run it with `--min-client-proto 9` so v1.1.0
+  consoles keep working while players update; drop the flag later.
+- **Building `gdx-extract` yourself:** pass
+  `-DCMAKE_PROJECT_torch_INCLUDE=<repo>/tools/prebake/gdx-extract-fp.cmake` (see
+  `tools/prebake/README.md`). Without it, an arm64 build misses the golden archive hash.
+
+---
+
 ## v1.1.0 — 2026-10-26
 
 The multiplayer release: race friends over local wireless, on the same Wi-Fi, or over the

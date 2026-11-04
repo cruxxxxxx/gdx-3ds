@@ -6,7 +6,7 @@ machines can fill the rest of the field. There are three ways to play:
 | | Needs | Good for |
 |---|---|---|
 | **PLAY NEARBY** | consoles in the same room: the 3DS's **local wireless** (no router), or the **same Wi-Fi** | friends sitting together |
-| **PLAY ONLINE** with a room code | Wi-Fi and internet; an online server (one is set up for you) | friends anywhere |
+| **PLAY ONLINE**: public rooms, or private with a room code | Wi-Fi and internet; an online server (one is set up for you) | friends anywhere, or anyone online |
 | **JOIN BY ADDRESS** | the host forwards one UDP port on their router | online play with no server at all |
 
 All three work on a fresh install: you don't need to edit `gdiffuser.ini`.
@@ -33,11 +33,16 @@ screen stays where it is and the bottom screen opens **MULTIPLAYER**, with two c
 - **Join:** PLAY NEARBY. Rooms appear in the list as they're found. Tap one, then **JOIN**. A room
   shown greyed out runs a different build (see "Before you start").
 
-## Play online with a room code
+## Play online
 
-- **Host:** PLAY ONLINE → **HOST ONLINE ROOM**. The lobby shows a 5-character room code. Tell it
-  to your friends.
-- **Join:** PLAY ONLINE → **JOIN WITH CODE**, type the code on the keypad, and tap **JOIN**.
+PLAY ONLINE opens the list of **public rooms** you can join right now, fullest first. A room
+shows only while it has a free slot and isn't racing, and only to consoles on the same version.
+
+- **Join a public room:** pick it in the list and press **A**.
+- **Host:** **HOST** (or **Y**) opens HOST ONLINE ROOM. Choose **PUBLIC** (listed for everyone)
+  or **PRIVATE** (code only), and the room size, then **OPEN ROOM**. Either way the lobby shows a
+  5-character room code.
+- **Join a private room:** **CODE** (or **X**), type the code on the keypad, and tap **JOIN**.
 
 Consoles connect to each other directly where they can, and go through the server's relay when
 a router blocks that.
@@ -62,7 +67,7 @@ Running your own server takes one Python file and one open UDP port:
   **UDP port 27300** to their 3DS. Then: PLAY NEARBY → HOST A ROOM → **WIFI**. The lobby's title
   reads `ROOM <code>`.
 - **A joiner** sets `[net] mp_direct = <the host's public IPv4>:27300`, then PLAY ONLINE →
-  **JOIN BY ADDRESS**, types the room code, and joins.
+  **ADDRESS** (the third button at the top), types the room code, and joins.
 
 ```ini
 [net]
