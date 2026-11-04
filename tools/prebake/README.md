@@ -32,7 +32,7 @@ SHA-256/entry-count out).
 2. **`gdx-extract`**, the extractor binary. Easiest: download
    `gdx-extract-<your OS>.zip` from the
    [latest release](https://github.com/cruxxxxxx/gdx-3ds/releases/latest)
-   (Windows x64, macOS arm64 / x86_64, Linux x64), unzip it anywhere, and pass
+   (Windows x64, macOS universal, Linux x64), unzip it anywhere, and pass
    it with `--extractor`. No compiler needed.
 
    To build it yourself instead, only the Torch submodule is required:
@@ -40,13 +40,16 @@ SHA-256/entry-count out).
    ```
    git submodule update --init torch
    cmake -S torch -B build-extract -DUSE_STANDALONE=ON -DBUILD_STORMLIB=OFF \
-         -DGDX_DETERMINISTIC=ON -DGDX_OUTPUT_NAME=gdx-extract -DCMAKE_BUILD_TYPE=Release
+         -DGDX_DETERMINISTIC=ON -DGDX_OUTPUT_NAME=gdx-extract -DCMAKE_BUILD_TYPE=Release \
+         -DCMAKE_PROJECT_torch_INCLUDE="$PWD/tools/prebake/gdx-extract-fp.cmake"
    cmake --build build-extract --config Release
    cmake --install build-extract --config Release --prefix build-extract/install
    ```
 
    The binary lands in `build-extract/install/bin/`. (A full desktop build's
-   `--build-dir build` also works, as before.)
+   `--build-dir build` also works, as before.) Keep the
+   `CMAKE_PROJECT_torch_INCLUDE` line: without it an Apple Silicon (arm64)
+   build fuses float math differently and misses the golden SHA-256.
 
    The same zip also carries **`gdx-hudpack`**, which bakes the 3DS
    bottom-screen HUD (fonts, digits, portraits, chrome) from the archives
