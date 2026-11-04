@@ -146,6 +146,7 @@ typedef struct MpoConfig {
     int directHost;
     int haveDirect;
     GdxMpEndpoint direct;
+    int autoPublic;     /* [net] mp_public (test lever, default 0): mp_auto=host opens a public room */
     int relayHoldL;     /* [net] mp_relay_hold_l (test lever, default 0): L held on HOST ONLINE ROOM asks
                          * the server for a relay-only room (the CREATE flag): a forced-relay race in
                          * the same launch as a direct one */
@@ -221,6 +222,15 @@ static uint32_t sUiSeenMs = 0;     /* the MP tab painted us last (gdx3ds_mpo_ui)
  * nobody looks at NEARBY (hw 516011c listened from boot, two recvfrom()s a frame). */
 #define MPO_NEARBY_LINGER_MS 10000
 #define MPO_SOCKET_RETRY_MS 3000
+/* mp-lobby: the ONLINE list of public rooms. The socket opens while the list is on screen (as
+ * NEARBY's), and a LIST goes to the server this often while it is. */
+#define MPO_ONLINE_SEEN_MS 3000
+#define MPO_ONLINE_LIST_EVERY_MS 3000
+static uint32_t sOnlineSeenMs = 0;    /* the ONLINE list painted last (gdx3ds_mpo_ui_online_shown) */
+static uint32_t sOnlineListAtMs = 0;  /* the last LIST sent (0 = send one now) */
+static int sHostPublic = 1;           /* the next HOST ONLINE asks for a public room (the sheet defaults to PUBLIC) */
+static int sRoomPublic = 0;           /* the online room we are in is public (hosted or joined from the list) */
+static int sListAutoJoin = 0;         /* test lever mp_auto=qjoin: join the first listed room */
 static uint32_t sSocketRetryAtMs = 0; /* a failed lazy open waits this long before the next try */
 /* MPFIX: the [mpcost] receipt -- what multiplayer costs the main thread per frame, in a window of
  * [net] mp_cost_every frames: the frame tail's service (gdx3ds_mpo_after_tick) plus the race's
@@ -540,6 +550,7 @@ static void LoadConfig(void) {
     sCfg.o3dsExtraDelay = ClampInt(gdx3ds_config_get_int("net", "mp_o3ds_extra_delay", 0), 0, 4);
     LoadDirectConfig();
     sCfg.relayHoldL = ClampInt(gdx3ds_config_get_int("net", "mp_relay_hold_l", 0), 0, 2); /* 2 = as if held (scripted) */
+    sCfg.autoPublic = gdx3ds_config_get_bool("net", "mp_public", 0) ? 1 : 0;
     sCfg.onlineDiscOff = gdx3ds_config_get_bool("net", "mp_online_disc_off", 1) ? 1 : 0;
     sCfg.readySkip = gdx3ds_config_get_bool("net", "mp_ready_skip", 1) ? 1 : 0;
     sCfg.launchSyncO3ds = gdx3ds_config_get_int("debug", "filelog_launch_sync_o3ds", 0) != 0;
@@ -723,7 +734,11 @@ void gdx3ds_mpo_init(void) {
     /* MPFIX: no socket at boot. NEARBY opens its sockets when its list is first painted
      * (ServiceSockets), the room actions open them on demand (CanEnterRoomVia). */
     if (strcmp(sCfg.autoMode, "host") == 0) {
+        sHostPublic = sCfg.autoPublic;
         gdx3ds_mpo_ui_host();
+    } else if (strcmp(sCfg.autoMode, "qjoin") == 0) {
+        sListAutoJoin = 1; /* join the first public room the ONLINE list shows (ServiceOnlineList) */
+        gdx3ds_mpo_ui_online_shown();
     } else if (strcmp(sCfg.autoMode, "lanhost") == 0) {
         gdx3ds_mpo_ui_lan_host();
     } else if (strcmp(sCfg.autoMode, "udshost") == 0) {
@@ -976,6 +991,14 @@ static int EnsureSocket(void) {
     return 0;
 }
 
+/* mp-lobby: the ONLINE list is on screen (or the qjoin lever waits for it). */
+static int OnlineListWanted(uint32_t now) {
+    if (!sCfg.haveServer) {
+        return 0;
+    }
+    return sListAutoJoin || (sOnlineSeenMs != 0 && (int32_t) (now - sOnlineSeenMs) < MPO_ONLINE_SEEN_MS);
+}
+
 /* MPFIX: NEARBY's sockets live only while someone can use them. */
 static int NearbyWanted(uint32_t now) {
     if (!sCfg.lan) {
@@ -1009,7 +1032,7 @@ static void ServiceSockets(uint32_t now) {
     if (!quiet) {
         return;
     }
-    if (NearbyWanted(now)) {
+    if (NearbyWanted(now) || OnlineListWanted(now)) {
         if (!sSocketOpen && (sSocketRetryAtMs == 0 || (int32_t) (now - sSocketRetryAtMs) >= 0)) {
             sCost.opens++;
             if (EnsureSocket() != 0) {
@@ -1022,7 +1045,7 @@ static void ServiceSockets(uint32_t now) {
             }
         }
     } else if (sSocketOpen || sDiscOpen) {
-        CloseSockets("NEARBY off screen");
+        CloseSockets("NEARBY / ONLINE list off screen");
     }
 }
 
@@ -1140,9 +1163,13 @@ void gdx3ds_mpo_ui_host(void) {
         if (relayOnly) {
             MpoLog("[mpo] host: L held, asking for a relay-only room (mp_relay_hold_l)");
         }
+        gdx3ds_p2p_set_next_public(sHostPublic);
+        sRoomPublic = sHostPublic;
+        MpoLog("[mpo] host: a %s room of %d", sHostPublic ? "public" : "private", sCfg.maxPlayers);
         gdx3ds_p2p_host(sCfg.maxPlayers, sCfg.wantCode);
         SetPhase(GDX_MPO_CONNECTING);
-        SetMessage(relayOnly ? "creating a relay-only room..." : "creating a room...");
+        SetMessage(relayOnly ? "creating a relay-only room..."
+                             : (sHostPublic ? "creating a public room..." : "creating a room..."));
     }
 }
 
@@ -1204,6 +1231,7 @@ void gdx3ds_mpo_ui_join(const char* code) {
         return;
     }
     sLbInit = 0;
+    sRoomPublic = 0;
     RememberRejoin(MPO_REJOIN_ONLINE, c, NULL);
     gdx3ds_p2p_join(c);
     SetPhase(GDX_MPO_CONNECTING);
@@ -3736,6 +3764,7 @@ static void ServiceNearby(uint32_t now) {
 }
 
 static void AfterTick(void);
+static void ServiceOnlineList(uint32_t now);
 
 void gdx3ds_mpo_after_tick(void) {
     uint64_t t0;
@@ -3815,6 +3844,7 @@ static void RateReceipt(uint32_t now) {
 static void AfterTick(void) {
     ServiceSockets(NowMs());
     ServiceNearby(NowMs());
+    ServiceOnlineList(NowMs());
     if (sPhase == GDX_MPO_IDLE && sAutoJoinAtMs != 0 && (int32_t) (NowMs() - sAutoJoinAtMs) >= 0) {
         sAutoJoinAtMs = 0;
         MpoLog("[mpo] auto-join: retry %d of %d", sAutoJoinRetries, MPO_AUTOJOIN_RETRIES);
@@ -3879,6 +3909,61 @@ static void AfterTick(void) {
     if (sLoggedPhase != sPhase) {
         sLoggedPhase = sPhase;
     }
+}
+
+void gdx3ds_mpo_ui_online_shown(void) {
+    const uint32_t now = NowMs();
+    if (sOnlineSeenMs == 0 || (int32_t) (now - sOnlineSeenMs) >= MPO_ONLINE_SEEN_MS) {
+        sOnlineListAtMs = 0; /* (re)opened: ask at once */
+    }
+    sOnlineSeenMs = now != 0 ? now : 1;
+}
+
+void gdx3ds_mpo_ui_list_refresh(void) {
+    sOnlineListAtMs = 0;
+}
+
+void gdx3ds_mpo_ui_set_public(int on) {
+    sHostPublic = on ? 1 : 0;
+}
+
+int gdx3ds_mpo_ui_public(void) {
+    return sHostPublic;
+}
+
+/* Join row `row` of the ONLINE list by its code: the same JOIN as a typed code. */
+void gdx3ds_mpo_ui_list_join(int row) {
+    const GdxP2pStatus* st = sSocketOpen ? gdx3ds_p2p_status() : NULL;
+    char code[GDX_MPO_CODE_LEN + 1];
+    if (st == NULL || row < 0 || row >= st->list.count) {
+        return;
+    }
+    snprintf(code, sizeof(code), "%s", st->list.room[row].code);
+    MpoLog("[mpo] list: joining %s's public room %s (%d/%d)", st->list.room[row].name, code,
+           st->list.room[row].players, st->list.room[row].maxPlayers);
+    gdx3ds_mpo_ui_join(code);
+    if (sPhase == GDX_MPO_CONNECTING) {
+        sRoomPublic = 1;
+    }
+}
+
+/* While the ONLINE list is wanted and no room is open: a LIST every MPO_ONLINE_LIST_EVERY_MS. */
+static void ServiceOnlineList(uint32_t now) {
+    const GdxP2pStatus* st;
+    if (sPhase != GDX_MPO_IDLE || !sSocketOpen || !OnlineListWanted(now)) {
+        return;
+    }
+    st = gdx3ds_p2p_status();
+    if (sListAutoJoin && st->listState == GDX_P2P_LIST_OK && st->list.count > 0) {
+        sListAutoJoin = 0;
+        gdx3ds_mpo_ui_list_join(0);
+        return;
+    }
+    if (sOnlineListAtMs != 0 && (int32_t) (now - sOnlineListAtMs) < MPO_ONLINE_LIST_EVERY_MS) {
+        return;
+    }
+    sOnlineListAtMs = now != 0 ? now : 1;
+    gdx3ds_p2p_list();
 }
 
 void gdx3ds_mpo_ui_nearby_shown(void) {
@@ -3998,9 +4083,25 @@ void gdx3ds_mpo_ui(GdxMpoUi* out) {
         }
         out->nearbyCount = n;
     }
+    out->hostPublic = sHostPublic;
+    if (st != NULL && sCfg.haveServer) {
+        out->onlineList = st->listState;
+        out->onlineTotal = st->list.total;
+        out->onlineCount = st->list.count < GDX_MPO_UI_NEARBY ? st->list.count : GDX_MPO_UI_NEARBY;
+        for (s = 0; s < out->onlineCount; s++) {
+            const GdxMpRvListedRoom* r = &st->list.room[s];
+            GdxMpoUiOnline* u = &out->online[s];
+            snprintf(u->code, sizeof(u->code), "%s", r->code);
+            snprintf(u->name, sizeof(u->name), "%s", r->name);
+            u->players = r->players;
+            u->maxPlayers = r->maxPlayers;
+            u->relayOnly = r->relayOnly;
+        }
+    }
     if (st == NULL || !sLbInit || sPhase < GDX_MPO_ROOM) {
         return;
     }
+    out->isPublic = st->mode == GDX_P2P_MODE_ONLINE && sRoomPublic;
     out->isLan = st->mode != GDX_P2P_MODE_ONLINE;
     out->isUds = sUdsInRoom;
     out->relayOnly = st->forceRelay;

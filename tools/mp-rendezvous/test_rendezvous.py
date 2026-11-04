@@ -1100,6 +1100,136 @@ class OldServer(threading.Thread):
                 self.sock.sendto(pkt, dst)
 
 
+def parse_rooms(pkt):
+    """ROOMS -> (nonce, total, [(code, name, players, max, flags)])."""
+    assert pkt[4] == R.GXRV_VERSION_COOKIE and pkt[5] == R.T_ROOMS
+    nonce, total, count, rsv = struct.unpack_from("<IBBH", pkt, 8)
+    assert rsv == 0 and len(pkt) == R.ROOMS_MIN_LEN + count * R.ROOMS_ENTRY_LEN
+    rooms = []
+    for i in range(count):
+        o = R.ROOMS_MIN_LEN + i * R.ROOMS_ENTRY_LEN
+        code = pkt[o:o + 8].rstrip(b"\0").decode()
+        name = pkt[o + 8:o + 20].rstrip(b"\0").decode()
+        players, maxp, flags, z = struct.unpack_from("<BBBB", pkt, o + 20)
+        assert z == 0
+        rooms.append((code, name, players, maxp, flags))
+    return nonce, total, rooms
+
+
+class PublicListTests(unittest.TestCase):
+    """2.2.0: public rooms (CF_PUBLIC on CREATE) and LIST / ROOMS."""
+
+    def setUp(self):
+        self.srv = R.Rendezvous(rng=random.Random(21))
+        self.t = 9000.0
+        self.nonce = 100
+
+    def send(self, pkt, addr):
+        return self.srv.handle(pkt, addr, self.t)
+
+    def v2(self, t, addr, **kw):
+        self.nonce += 1
+        out = self.send(req2(t, nonce=self.nonce, **kw), addr)
+        n, cookie = parse_cookie(out[0][0])
+        self.assertEqual(n, self.nonce)
+        return self.send(req2(t, cookie=cookie, nonce=self.nonce, **kw), addr)
+
+    def host(self, addr, public=True, name="HOSTY", maxp=4, **kw):
+        out = self.v2(R.T_CREATE, addr, cflags=R.CF_PUBLIC if public else 0, name=name, maxp=maxp, **kw)
+        w = parse_welcome(out[0][0])
+        self.send(v2(keepalive(w["code"], 0, w["key"])), addr)
+        return w
+
+    def join(self, code, addr):
+        return parse_welcome(self.v2(R.T_JOIN, addr, code=code)[0][0])
+
+    def listing(self, addr=("203.0.113.50", 5000), **kw):
+        out = self.v2(R.T_LIST, addr, maxp=0, **kw)
+        self.assertEqual(len(out), 1)
+        nonce, total, rooms = parse_rooms(out[0][0])
+        self.assertEqual(nonce, self.nonce)
+        return total, rooms
+
+    def test_mirrors_the_console_header(self):
+        with open(os.path.join(ROOT, "port", "gdx_mp_online.h")) as f:
+            h = f.read()
+        self.assertIn("GDX_RV_LIST = %d" % R.T_LIST, h)
+        self.assertIn("GDX_RV_ROOMS = 0x%x" % R.T_ROOMS, h)
+        self.assertIn("#define GDX_RV_CFLAG_PUBLIC %d" % R.CF_PUBLIC, h)
+        self.assertIn("#define GDX_RV_LIST_MAX %d" % R.LIST_MAX, h)
+        self.assertIn("#define GDX_RV_ROOMS_ENTRY %d" % R.ROOMS_ENTRY_LEN, h)
+
+    def test_private_rooms_are_not_listed(self):
+        self.host(("198.51.100.1", 1), public=False)
+        self.assertEqual(self.listing(), (0, []))
+
+    def test_public_room_is_listed_with_its_host_and_count(self):
+        w = self.host(("198.51.100.1", 1), name="KENJI", maxp=3)
+        self.assertTrue(self.srv.rooms[w["code"]].public)
+        self.assertEqual(self.listing(), (1, [(w["code"], "KENJI", 1, 3, 0)]))
+        self.join(w["code"], ("198.51.100.2", 2))
+        self.assertEqual(self.listing()[1][0][2], 2)
+
+    def test_list_needs_the_cookie_and_never_amplifies_before_it(self):
+        self.host(("198.51.100.1", 1))
+        pkt = req2(R.T_LIST, nonce=7, maxp=0)
+        out = self.send(pkt, ("203.0.113.9", 9))
+        self.assertEqual(out[0][0][5], R.T_COOKIE)
+        self.assertLessEqual(len(out[0][0]), len(pkt))
+        # v1 LIST does not exist: junk, no answer
+        self.assertEqual(self.send(req(R.T_LIST, nonce=8, maxp=0), ("203.0.113.9", 9)), [])
+
+    def test_filters_full_locked_other_build_and_unconfirmed(self):
+        full = self.host(("198.51.100.1", 1), name="FULL", maxp=2)
+        self.join(full["code"], ("198.51.100.2", 2))
+        racing = self.host(("198.51.100.3", 3), name="RACING")
+        self.send(v2(auth(R.T_LOCK, racing["code"], 0, racing["key"], arg=1)), ("198.51.100.3", 3))
+        self.host(("198.51.100.4", 4), name="OTHER", build="other@build")
+        self.host(("198.51.100.5", 5), name="OTHERROM", content=0xBEEF)
+        self.host(("198.51.100.6", 6), name="NEWER", client_proto=R.CLIENT_PROTO - 0)  # same proto: listed
+        open_ = self.host(("198.51.100.7", 7), name="OPEN")
+        total, rooms = self.listing()
+        names = sorted(r[1] for r in rooms)
+        self.assertEqual(names, ["NEWER", "OPEN"])
+        self.assertEqual(total, 2)
+        self.assertIn(open_["code"], [r[0] for r in rooms])
+
+    def test_spoofed_v1_create_cannot_be_public(self):
+        srv = R.Rendezvous(rng=random.Random(3), require_cookie=False)
+        out = srv.handle(req(R.T_CREATE, nonce=5, cflags=R.CF_PUBLIC), ("198.51.100.3", 7), 1.0)
+        w = parse_welcome(out[0][0])
+        self.assertFalse(srv.rooms[w["code"]].public)
+
+    def test_fullest_first_capped_and_total_counts_all(self):
+        rooms = []
+        for i in range(R.LIST_MAX + 3):
+            rooms.append(self.host(("198.51.100.%d" % (10 + i), 1), name="H%d" % i))
+            self.t += 1
+        self.join(rooms[5]["code"], ("192.0.2.1", 1))
+        self.join(rooms[5]["code"], ("192.0.2.2", 1))
+        self.join(rooms[8]["code"], ("192.0.2.3", 1))
+        total, shown = self.listing()
+        self.assertEqual(total, R.LIST_MAX + 3)
+        self.assertEqual(len(shown), R.LIST_MAX)
+        self.assertEqual([r[1] for r in shown[:3]], ["H5", "H8", "H0"])
+        self.assertLessEqual(R.ROOMS_MIN_LEN + R.LIST_MAX * R.ROOMS_ENTRY_LEN, 160)
+
+    def test_orphaned_room_drops_out_and_old_client_gets_update(self):
+        w = self.host(("198.51.100.1", 1))
+        self.join(w["code"], ("198.51.100.2", 2))
+        self.join(w["code"], ("198.51.100.3", 3))
+        self.send(v2(auth(R.T_LEAVE, w["code"], 0, w["key"])), ("198.51.100.1", 1))
+        self.assertEqual(self.listing(), (0, []))
+        out = self.v2(R.T_LIST, ("203.0.113.1", 1), maxp=0, client_proto=R.CLIENT_PROTO - 1)
+        self.assertEqual(out[0][0][5], R.T_UPDATE)
+
+    def test_gauge_counts_public_rooms(self):
+        self.host(("198.51.100.1", 1))
+        self.host(("198.51.100.2", 1), public=False)
+        g = dict((name, rows) for name, _help, rows in self.srv.gauges(self.t))
+        self.assertEqual(g["gdx_rv_rooms_public"], [((), 1)])
+
+
 class InteropTest(unittest.TestCase):
     """The real server process + the console's own C protocol code over loopback: the default
     (cookie required), --allow-v1, and a stand-in for a server before 2.0.0."""
@@ -1170,6 +1300,12 @@ class InteropTest(unittest.TestCase):
                       (R.CLIENT_PROTO, R.CLIENT_PROTO - 1), out)
         self.assertIn("SERVER NEEDS AN UPDATE - it supports up to version %d (you have %d)" %
                       (R.CLIENT_PROTO, R.CLIENT_PROTO + 1), out)
+
+    def test_c_wire_probe_public_list(self):
+        """2.2.0: the console's LIST through the cookie state machine; public rooms only."""
+        out = self.probe(self.port, "list")
+        self.assertIn("listed: PUBHOST's room", out)
+        self.assertIn("locked (racing) room left the list", out)
 
     def test_c_wire_probe_allow_v1(self):
         self.probe(self.port_v1, "v1")

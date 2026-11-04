@@ -43,7 +43,10 @@ enum {
  * JOIN carries it to the server, which refuses a client below its --min-client-proto (or above
  * its --max-client-proto) with UPDATE. tools/mp-rendezvous/gdx_rendezvous.py CLIENT_PROTO mirrors
  * it (test_rendezvous.py asserts they match): bump both together. */
-#define GDX_MPO_PROTO 9
+#define GDX_MPO_PROTO 10
+/* 10 (mp-lobby): public rooms. CREATE flag GDX_RV_CFLAG_PUBLIC lists the room; LIST / ROOMS (GXRV
+ * v2, cookie-gated) return the public rooms of this build. A server before 2.2.0 answers a proto 10
+ * CREATE / JOIN with UPDATE (SERVER NEEDS AN UPDATE). */
 /* 9 (card-4 cookie): GXRV v2 CREATE / JOIN (the return-routability cookie + this number); the
  * server requires both by default. */
 /* 8 (mp-menus): START 108+2i carries each player's slot epoch (the roster's: which console held
@@ -74,6 +77,7 @@ enum {
     GDX_RV_RELAY = 5,
     GDX_RV_PUNCH_REQ = 6,
     GDX_RV_LOCK = 7,
+    GDX_RV_LIST = 8, /* version 2 only (server 2.2.0): the public room list */
     GDX_RV_WELCOME = 0x81,
     GDX_RV_ROSTER = 0x82,
     GDX_RV_PUNCH_NOW = 0x83,
@@ -81,6 +85,7 @@ enum {
     GDX_RV_KA_ACK = 0x85,
     GDX_RV_COOKIE = 0x86, /* version 2 only */
     GDX_RV_UPDATE = 0x87, /* version 2 only: this client's proto is outside the server's range */
+    GDX_RV_ROOMS = 0x88,  /* version 2 only: the answer to LIST */
 };
 enum {
     GDX_RV_E_BAD_REQUEST = 1,
@@ -108,6 +113,14 @@ enum {
 #define GDX_RV_COOKIE_BYTES 28                                         /* header, nonce, cookie */
 #define GDX_RV_UPDATE_BYTES 60 /* header, nonce, min, max, yours, 0, 40 text */
 #define GDX_RV_UPDATE_TEXT_LEN 40
+/* CREATE flags (request byte 23) */
+#define GDX_RV_CFLAG_RELAY 1
+#define GDX_RV_CFLAG_PUBLIC 2 /* listed by LIST (the server honours it on a v2 CREATE only) */
+/* ROOMS: header, nonce, total (u8), count (u8), 0 (u16), then count entries of code[8] name[12]
+ * players max flags 0 */
+#define GDX_RV_LIST_MAX 6
+#define GDX_RV_ROOMS_MIN 16
+#define GDX_RV_ROOMS_ENTRY 24
 
 typedef struct GdxMpEndpoint {
     uint8_t ip[4]; /* network order, a.b.c.d */
@@ -120,9 +133,10 @@ typedef struct GdxMpRvRequest {
     GdxMpEndpoint priv;
     uint8_t maxPlayers;
     uint8_t forceRelay;
+    uint8_t isPublic; /* CREATE: GDX_RV_CFLAG_PUBLIC */
     char build[GDX_MPO_BUILD_LEN + 1];
     char name[GDX_MPO_NAME_LEN + 1];
-    char code[GDX_MPO_CODE_LEN + 1]; /* JOIN: required; CREATE: "" = server picks */
+    char code[GDX_MPO_CODE_LEN + 1]; /* JOIN: required; CREATE: "" = server picks; LIST: "" */
     uint16_t clientProto;            /* v2 only: GDX_MPO_PROTO (a test lever may lower it) */
 } GdxMpRvRequest;
 
@@ -170,6 +184,22 @@ typedef struct GdxMpRvUpdate {
     char text[GDX_RV_UPDATE_TEXT_LEN + 1]; /* the server's --update-url ("" = none) */
 } GdxMpRvUpdate;
 
+/* One row of ROOMS: a public room this build could join when the server answered. */
+typedef struct GdxMpRvListedRoom {
+    char code[GDX_MPO_CODE_LEN + 1];
+    char name[GDX_MPO_NAME_LEN + 1]; /* the host's */
+    uint8_t players;
+    uint8_t maxPlayers;
+    uint8_t relayOnly;
+} GdxMpRvListedRoom;
+
+typedef struct GdxMpRvRoomList {
+    uint32_t nonce;
+    int total; /* public rooms that matched (may be more than count) */
+    int count;
+    GdxMpRvListedRoom room[GDX_RV_LIST_MAX];
+} GdxMpRvRoomList;
+
 /* Builders return the byte count, 0 on a bad argument or a too-small buffer. */
 int gdx_rv_build_request(int type, const GdxMpRvRequest* req, uint8_t* out, int cap);
 int gdx_rv_build_auth(int type, const char* code, int slot, int arg, uint64_t memberKey, uint8_t* out, int cap);
@@ -179,8 +209,8 @@ int gdx_rv_build_keepalive(const char* code, int slot, uint64_t memberKey, uint3
 int gdx_rv_build_relay(const char* code, int slot, int dstMask, uint64_t memberKey, const uint8_t* payload,
                        int len, uint8_t* out, int cap);
 
-/* v2 CREATE / JOIN: the 84-byte v1 body with header version 2, then the 16 cookie bytes (all zero
- * on the first try), then req->clientProto. 104 bytes, or 0. */
+/* v2 CREATE / JOIN / LIST: the 84-byte v1 body with header version 2, then the 16 cookie bytes
+ * (all zero on the first try), then req->clientProto. 104 bytes, or 0. LIST has no v1 form. */
 int gdx_rv_build_request_v2(int type, const GdxMpRvRequest* req, const uint8_t cookie[GDX_RV_COOKIE_LEN],
                             uint8_t* out, int cap);
 
@@ -191,6 +221,8 @@ int gdx_rv_peek_type(const uint8_t* pkt, int len);
 int gdx_rv_parse_cookie(const uint8_t* pkt, int len, uint32_t* nonce, uint8_t cookie[GDX_RV_COOKIE_LEN]);
 /* UPDATE (version 2, 60 bytes). 0 = ok. */
 int gdx_rv_parse_update(const uint8_t* pkt, int len, GdxMpRvUpdate* out);
+/* ROOMS (version 2, 16 + 24 per room). 0 = ok; a malformed row refuses the whole list. */
+int gdx_rv_parse_rooms(const uint8_t* pkt, int len, GdxMpRvRoomList* out);
 
 /* ---- version gating: what the player is told -------------------------------------------------- */
 enum {

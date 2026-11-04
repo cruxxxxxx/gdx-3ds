@@ -54,6 +54,14 @@ enum {
 /* GdxP2pStatus.errorCode of a request the server answered with UPDATE (version gating): the
  * numbers are in GdxP2pStatus.update; gdx_rv_update_message says it. */
 #define GDX_P2P_E_UPDATE (-20)
+/* GdxP2pStatus.listState: the public room list (LIST / ROOMS, server 2.2.0). */
+enum {
+    GDX_P2P_LIST_NONE = 0,      /* never asked */
+    GDX_P2P_LIST_WAITING = 1,   /* the first LIST is on its way (a refresh keeps the last list shown) */
+    GDX_P2P_LIST_OK = 2,        /* list holds the newest answer */
+    GDX_P2P_LIST_NO_ANSWER = 3, /* nothing came back (no server, or one before 2.2.0) */
+    GDX_P2P_LIST_UPDATE = 4,    /* the server answered UPDATE: update holds why */
+};
 #define GDX_P2P_HOST_SILENT_MS 10000
 #define GDX_P2P_SERVER_SILENT_MS 20000
 
@@ -105,6 +113,10 @@ typedef struct GdxP2pStatus {
     int clientProto;        /* the client proto that request carried (v2) */
     GdxMpRvUpdate update;   /* errorCode == GDX_P2P_E_UPDATE: the server's range */
     uint16_t errorHostProto; /* a BUILD / CONTENT mismatch: the host's proto (0 = unknown) */
+    /* mp-lobby: the public room list */
+    int listState;            /* GDX_P2P_LIST_* */
+    GdxMpRvRoomList list;     /* the newest ROOMS (listState OK, or a refresh WAITING after one) */
+    uint32_t listSerial;      /* bumps on every ROOMS taken */
     /* counters */
     uint32_t txDirect, txRelay, rxDirect, rxRelay, rxServer;
     uint32_t dropUnknown, dropBlocked, dropRate, dropBadRelay, dropSim;
@@ -129,6 +141,12 @@ void gdx3ds_p2p_host(int maxPlayers, const char* wantCode);
  * then tells every member to relay). Consumed by that host call. */
 void gdx3ds_p2p_set_next_relay_only(int on);
 void gdx3ds_p2p_join(const char* code);
+/* mp-lobby: the next gdx3ds_p2p_host asks for a public room (listed by LIST). Consumed by it. */
+void gdx3ds_p2p_set_next_public(int on);
+/* mp-lobby: ask the configured server for its public rooms (LIST: COOKIE -> resend -> ROOMS).
+ * Online mode, outside a room only; a LIST still in flight is replaced. The answer lands in
+ * GdxP2pStatus.list / listState. */
+void gdx3ds_p2p_list(void);
 /* NEARBY: host a room on this console (code = what the beacon advertises; entropy seeds the
  * room's keys), or join the LAN room at `host`. */
 void gdx3ds_p2p_lan_host(int maxPlayers, const char* code, uint64_t entropy);

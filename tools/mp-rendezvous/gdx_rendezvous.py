@@ -9,7 +9,10 @@ One UDP port, Python 3.8+ standard library only, no accounts, no disk state. It 
   3. hole punching: the roster goes to everyone at once, and PUNCH_REQ makes the server nudge one
      peer so both sides fire at each other at the same moment;
   4. relay fallback: RELAY forwards a game datagram VERBATIM to other members of the same room
-     (for symmetric / carrier-grade NAT, where no direct path opens).
+     (for symmetric / carrier-grade NAT, where no direct path opens);
+  5. the public room list (2.2.0): a host may CREATE its room public (CF_PUBLIC); LIST returns the
+     public rooms a console of the same build could join now. A private room is reachable by its
+     code only, as before.
 
 Everything that arrives is hostile until proven otherwise: exact sizes, magic/version/type,
 printable-ASCII build ids, a name whitelist, a code alphabet, per-IP and per-member token
@@ -35,6 +38,11 @@ the console's GDX_MPO_PROTO). Below --min-client-proto (default: this release's)
 (60 B: the range, the client's number and --update-url), and the console shows UPDATE REQUIRED or
 SERVER NEEDS AN UPDATE. A BUILD / CONTENT mismatch on JOIN tells a v2 joiner the host's proto, so it
 can say which side should update.
+
+Public rooms (2.2.0, client proto 10). LIST is v2 only and cookie-gated like CREATE / JOIN (its
+ROOMS answer is larger than the request, so the source address must be proven first). A room is
+listed only while its host is confirmed, it is not locked (racing) or orphaned, it has a free
+slot, and its build, content hash and host client proto equal the asker's.
 
 Operations: --metrics-port serves Prometheus text (/metrics, /healthz) on --metrics-bind; JSON
 event lines go to stdout (journald) and, with --loki-url, to a Loki push endpoint; --log-ip picks
@@ -68,12 +76,12 @@ import threading
 import time
 import urllib.request
 
-SERVER_VERSION = "2.1.0"
+SERVER_VERSION = "2.2.0"
 
 # THE CLIENT PROTOCOL VERSION this release speaks: a mirror of GDX_MPO_PROTO in
 # port/gdx_mp_online.h (test_rendezvous.py asserts they match). Bump both together, on any GXRV /
 # GXLB / GXMP-online or sim-affecting change.
-CLIENT_PROTO = 9
+CLIENT_PROTO = 10
 
 GXRV_MAGIC = b"GXRV"
 GXRV_VERSION = 1          # what every card shipped so far speaks
@@ -88,6 +96,7 @@ T_LEAVE = 4
 T_RELAY = 5
 T_PUNCH_REQ = 6
 T_LOCK = 7
+T_LIST = 8   # v2 only (2.2.0): the public room list
 # server -> client
 T_WELCOME = 0x81
 T_ROSTER = 0x82
@@ -96,11 +105,13 @@ T_ERROR = 0x84
 T_KA_ACK = 0x85
 T_COOKIE = 0x86  # v2 only
 T_UPDATE = 0x87  # v2 only: the client's proto is outside [--min-client-proto, --max-client-proto]
+T_ROOMS = 0x88   # v2 only (2.2.0): the answer to LIST
 
 TYPE_NAMES = {
     T_CREATE: "create", T_JOIN: "join", T_KEEPALIVE: "keepalive", T_LEAVE: "leave", T_RELAY: "relay",
-    T_PUNCH_REQ: "punch_req", T_LOCK: "lock", T_WELCOME: "welcome", T_ROSTER: "roster",
+    T_PUNCH_REQ: "punch_req", T_LOCK: "lock", T_LIST: "list", T_WELCOME: "welcome", T_ROSTER: "roster",
     T_PUNCH_NOW: "punch_now", T_ERROR: "error", T_KA_ACK: "ka_ack", T_COOKIE: "cookie", T_UPDATE: "update",
+    T_ROOMS: "rooms",
 }
 
 E_BAD_REQUEST = 1
@@ -136,6 +147,13 @@ UPDATE_TEXT_LEN = 40
 UPDATE_LEN = HDR + 12 + UPDATE_TEXT_LEN  # 60: header, nonce, min, max, yours, 0, text
 AUTH_LEN = 28         # KEEPALIVE / LEAVE / RELAY / PUNCH_REQ / LOCK prefix
 KEEPALIVE_LEN = 36
+# CREATE flags (request byte 21)
+CF_RELAY = 1   # every link through the relay
+CF_PUBLIC = 2  # 2.2.0: listed by LIST (a v2, cookie-proven CREATE only)
+# ROOMS: header, nonce, total, count, 0, then count entries of code[8] name[12] players max flags 0
+LIST_MAX = 6
+ROOMS_ENTRY_LEN = 24
+ROOMS_MIN_LEN = HDR + 8
 MAX_DATAGRAM = 1300
 MAX_RELAY_PAYLOAD = 1200
 MAX_PLAYERS = 4
@@ -207,6 +225,7 @@ METRIC_HELP = {
     "gdx_rv_cookies_rejected_total": ("counter", "v2 requests whose cookie was stale or forged"),
     "gdx_rv_unconfirmed_evicted_total": ("counter", "unconfirmed rooms evicted to make room"),
     "gdx_rv_probe_pings_total": ("counter", "health-probe pings answered or rate-limited"),
+    "gdx_rv_lists_total": ("counter", "cookie-proven LIST requests answered with ROOMS"),
     "gdx_rv_log_suppressed_total": ("counter", "event log lines dropped by the log rate limit"),
     "gdx_rv_loki_lines_total": ("counter", "event lines handed to Loki, by outcome"),
     "gdx_rv_handle_seconds": ("histogram", "time to process one datagram"),
@@ -374,7 +393,7 @@ class Member:
 class Room:
     __slots__ = ("code", "build", "content", "max_players", "secret", "members", "created",
                  "roster_ver", "locked", "force_relay", "creator_ip", "relay_bucket", "joins", "orphaned",
-                 "peak", "relay_bytes", "punches", "owner", "create_log")
+                 "peak", "relay_bytes", "punches", "owner", "create_log", "public")
 
     def __init__(self, code, build, content, max_players, force_relay, creator_ip, now, room_bps):
         self.code = code
@@ -396,6 +415,7 @@ class Room:
         self.punches = 0
         self.owner = None  # the IpState whose per-address room count this room uses
         self.create_log = None
+        self.public = False  # listed by LIST (CF_PUBLIC on a cookie-proven CREATE)
 
 
 class IpState:
@@ -537,6 +557,7 @@ class Rendezvous:
                              ("gdx_rv_update_required_total", {"why": "client_old"}),
                              ("gdx_rv_update_required_total", {"why": "server_old"}),
                              ("gdx_rv_unconfirmed_evicted_total", {}), ("gdx_rv_punch_requests_total", {}),
+                             ("gdx_rv_lists_total", {}),
                              ("gdx_rv_drops_total", {"reason": "header"}), ("gdx_rv_tx_failures_total", {})):
             self.metrics.inc(name, 0, **labels)
 
@@ -789,7 +810,7 @@ class Rendezvous:
         counters = self.metrics.counters
         counters[keys[0]] += 1
         counters[keys[1]] += n
-        if valid_hdr and proto == GXRV_VERSION_COOKIE and t in (T_CREATE, T_JOIN):
+        if valid_hdr and proto == GXRV_VERSION_COOKIE and t in (T_CREATE, T_JOIN, T_LIST):
             # The cookie path runs before the per-IP block: a spoofer can get a victim's address
             # blocked, but it cannot stop the victim from proving its own address.
             return self._cookie_request(data, addr, now, t)
@@ -873,9 +894,9 @@ class Rendezvous:
         return self._junk(st, now, "type", addr[0])
 
     def _cookie_request(self, data, addr, now, t):
-        """A v2 CREATE / JOIN: the 84-byte v1 body + a 16-byte cookie. No valid cookie: answer with
-        one (28 B for a 100 B request). A valid one proves the source address, so the request runs
-        on a separate per-address state ("v2:" + ip) that spoofed v1 traffic cannot poison."""
+        """A v2 CREATE / JOIN / LIST: the 84-byte v1 body + a 16-byte cookie. No valid cookie: answer
+        with one (28 B for a 104 B request). A valid one proves the source address, so the request
+        runs on a separate per-address state ("v2:" + ip) that spoofed v1 traffic cannot poison."""
         if len(data) != REQ2_LEN:
             self._drop("request")
             return []
@@ -914,7 +935,9 @@ class Rendezvous:
         why = self._client_proto_ok(client_proto)
         if why is not None:
             # Address-proven (the cookie checked out), so the answer goes where it was asked from.
-            return self._update("create" if t == T_CREATE else "join", req, addr, why)
+            return self._update(TYPE_NAMES[t], req, addr, why)
+        if t == T_LIST:
+            return self._list(req, addr, now)
         if t == T_CREATE:
             return self._create(req, addr, now, st, GXRV_VERSION_COOKIE)
         return self._join(req, addr, now, st, GXRV_VERSION_COOKIE)
@@ -963,7 +986,9 @@ class Rendezvous:
             if code is None:
                 return self._refuse("create", req, addr, E_SERVER_FULL, "", proto)
         room = Room(code, req["build"], req["content"], req["max_players"],
-                    self.force_relay or bool(req["cflags"] & 1), addr[0], now, self.room_bps)
+                    self.force_relay or bool(req["cflags"] & CF_RELAY), addr[0], now, self.room_bps)
+        # Only a cookie-proven host can list its room: a spoofed CREATE never shows up in LIST.
+        room.public = verified and bool(req["cflags"] & CF_PUBLIC)
         host = Member(0, addr, req["priv_ip"], req["priv_port"], req["name"], secrets.randbits(64) or 1,
                       req["nonce"], now, self.relay_pps, proto, confirmed=verified, client_proto=req["client_proto"])
         room.members[0] = host
@@ -978,7 +1003,7 @@ class Rendezvous:
         # The access-log line: at once for a v2 (cookie-proven) host, else when the host's first
         # authenticated message arrives, so spoofed CREATEs never reach the log.
         room.create_log = dict(code=code, build=req["build"], players=req["max_players"], ip=addr[0], port=addr[1],
-                               proto=proto, relay_only=room.force_relay)
+                               proto=proto, relay_only=room.force_relay, public=room.public)
         if verified:
             self.log("create", **room.create_log)
             room.create_log = None
@@ -1055,6 +1080,31 @@ class Rendezvous:
         # The existing members hear about the newcomer now; the newcomer itself gets the roster on
         # its first keepalive (its WELCOME is the only reply to an unauthenticated request).
         return self._welcome(room, m) + self._roster_to(room, [o for o in room.members.values() if o is not m])
+
+    def _listable(self, room, req):
+        """A room a LIST from this build may show: public, its host confirmed and present, not
+        racing (locked) or orphaned, a free slot, and the same build, content and client proto."""
+        host = room.members.get(0)
+        return (room.public and host is not None and room.code not in self.pending and not room.locked and
+                not room.orphaned and len(room.members) < room.max_players and room.build == req["build"] and
+                room.content == req["content"] and host.client_proto == req["client_proto"])
+
+    def _list(self, req, addr, now):
+        """LIST (2.2.0): the public rooms this console could join, fullest first (then oldest), at
+        most LIST_MAX. Cookie-proven, so ROOMS may be larger than the request (at most 160 B for
+        a 104 B one). A linear scan: max_rooms bounds it, and the per-address request bucket
+        bounds how often one source can ask."""
+        rooms = [r for r in self.rooms.values() if self._listable(r, req)]
+        rooms.sort(key=lambda r: (-len(r.members), r.created))
+        self.metrics.inc("gdx_rv_lists_total")
+        shown = rooms[:LIST_MAX]
+        pkt = self._hdr(T_ROOMS, GXRV_VERSION_COOKIE) + \
+            struct.pack("<IBBH", req["nonce"], min(len(rooms), 255), len(shown), 0)
+        for r in shown:
+            flags = 1 if r.force_relay else 0
+            pkt += pad_bytes(r.code, 8) + pad_bytes(r.members[0].name, 12) + \
+                struct.pack("<BBBB", len(r.members), r.max_players, flags, 0)
+        return [(pkt, addr, 0.0)]
 
     def _keepalive(self, room, m, data, addr, now):
         if len(data) != KEEPALIVE_LEN:
@@ -1202,7 +1252,10 @@ class Rendezvous:
         members = 0
         relaying = 0
         unconfirmed_members = 0
+        public = 0
         for code, room in self.rooms.items():
+            if room.public and code not in self.pending and not room.orphaned:
+                public += 1
             if code in self.pending:
                 states["unconfirmed"] += 1
             elif room.orphaned:
@@ -1221,6 +1274,7 @@ class Rendezvous:
         return [
             ("gdx_rv_rooms", "rooms by state (locked = a race in progress or the host locked it)",
              [((("state", s),), states.get(s, 0)) for s in ("open", "locked", "orphaned", "unconfirmed")]),
+            ("gdx_rv_rooms_public", "rooms LIST can show (public, not orphaned)", [((), public)]),
             ("gdx_rv_members", "members in all rooms", [((), members)]),
             ("gdx_rv_members_unconfirmed", "members whose address has not answered yet", [((), unconfirmed_members)]),
             ("gdx_rv_members_relaying", "members that relayed in the last 10 s", [((), relaying)]),

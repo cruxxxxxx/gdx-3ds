@@ -94,8 +94,8 @@ Grafana / Prometheus / Loki stack, a hardened systemd unit): **[SELF-HOST.md](SE
 | `--pending-timeout` | 10 s | a room / member whose address has not sent an authenticated message yet (a spoofed CREATE / JOIN) is dropped after this |
 | `--ip-pps` | 2000 | datagrams per second from one address, all types |
 | `--allow-v1` (`--no-require-cookie`) | off | legacy escape hatch: also admit GXRV v1 CREATE / JOIN (development builds from before the cookie). Off, a v1 console reads "version mismatch: host runs newer-version(GXRV-v2):PLEASE-UPDATE". `--require-cookie` (the old opt-in) is accepted and is the default |
-| `--min-client-proto` | this release's (9) | a v2 console below this client proto gets UPDATE ("UPDATE REQUIRED - this server needs version N (you have M)") |
-| `--max-client-proto` | this release's (9) | a v2 console above it is told the server needs an update; `0` = no ceiling |
+| `--min-client-proto` | this release's (10) | a v2 console below this client proto gets UPDATE ("UPDATE REQUIRED - this server needs version N (you have M)") |
+| `--max-client-proto` | this release's (10) | a v2 console above it is told the server needs an update; `0` = no ceiling |
 | `--update-url` | (none) | up to 40 printable ASCII characters shown with UPDATE REQUIRED (where to get the update) |
 | `--log-ip` | `full` | source addresses in the log: `full`, `prefix` (/24), `hash` (keyed, the key changes daily and at restart) or `none` |
 | `--metrics-port` / `--metrics-bind` | off / 127.0.0.1 | Prometheus text on `/metrics`, `/healthz` (`-1` = any port, with `--metrics-port-file`) |
@@ -187,6 +187,7 @@ The message types:
 | 5 | RELAY | c→s | 28 + payload (≤ 1200) |
 | 6 | PUNCH_REQ | c→s | 28 |
 | 7 | LOCK | c→s | 28 (host only) |
+| 8 | LIST | c→s | 104 (version 2 only, server 2.2.0) |
 | 0x81 | WELCOME | s→c | 48 |
 | 0x82 | ROSTER | s→c | 24 + 28 per member |
 | 0x83 | PUNCH_NOW | s→c | 20 |
@@ -194,6 +195,7 @@ The message types:
 | 0x85 | KA_ACK | s→c | 16 |
 | 0x86 | COOKIE | s→c | 28 (version 2 only) |
 | 0x87 | UPDATE | s→c | 60 (version 2 only) |
+| 0x88 | ROOMS | s→c | 16 + 24 per room, at most 160 (version 2 only, server 2.2.0) |
 
 **CREATE / JOIN:**
 
@@ -204,7 +206,7 @@ The message types:
 | 16 | 4 | private IPv4 |
 | 20 | 2 | private port |
 | 22 | 1 | max players (CREATE) |
-| 23 | 1 | flags (bit 0: relay only) |
+| 23 | 1 | flags (bit 0: relay only; bit 1: public, server 2.2.0, honoured on a v2 CREATE only) |
 | 24 | 40 | build id |
 | 64 | 12 | name |
 | 76 | 8 | code (JOIN: required; CREATE: empty = server picks) |
@@ -380,6 +382,34 @@ host upgrades, its default minimum refuses the previous release with UPDATE REQU
 consoles play during a transition, run it with `--min-client-proto <older>` (and v1 clients need
 `--allow-v1`); raise it again (or drop the flag) once players have updated. `--version` prints
 the server's `client_proto`.
+
+**Public rooms (server 2.2.0, client proto 10).** A host chooses PUBLIC or PRIVATE on its HOST
+ONLINE ROOM sheet. A PUBLIC room is a CREATE with flag bit 1 (only a cookie-proven v2 CREATE can be
+public, so a spoofed CREATE never shows up); a PRIVATE one is reachable by its code only, as before.
+LIST is the v2 CREATE / JOIN layout (104 bytes: build, content hash, cookie, client proto; the
+other fields are 0 / empty) with type 8. It goes through the same cookie exchange: without a valid
+cookie it gets COOKIE, a proto outside the range gets UPDATE, and a cookie-proven LIST gets ROOMS.
+That answer is larger than the request, which is why it needs the proven address. ROOMS lists the
+public rooms the asker could join now: host confirmed, not locked (racing) or orphaned, a free
+slot, same build, content hash and client proto. They are sorted fullest first, then oldest, and at
+most 6 are shown:
+
+| off | size | field |
+|---|---|---|
+| 8 | 4 | nonce |
+| 12 | 1 | total public rooms that matched (may exceed the count) |
+| 13 | 1 | count (0..6) |
+| 14 | 2 | 0 |
+| 16 + 24i | 8 | code |
+| 24 + 24i | 12 | host name |
+| 36 + 24i | 1 | players |
+| 37 + 24i | 1 | max players |
+| 38 + 24i | 1 | flags (bit 0: relay only) |
+| 39 + 24i | 1 | 0 |
+
+The console's ONLINE screen sends a LIST every 3 s while it is on screen (the socket opens with
+it and closes 10 s after it leaves) and joins a row by its code. The gauge
+`gdx_rv_rooms_public` counts listable rooms; `gdx_rv_lists_total` counts answered LISTs.
 
 **Unconfirmed rooms (version 1).** Without the cookie, a v1 CREATE / JOIN still creates state, but a
 room or member stays *unconfirmed* until the first authenticated message (the KEEPALIVE a console
