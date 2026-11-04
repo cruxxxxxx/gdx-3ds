@@ -584,6 +584,96 @@ static void TestVersionGating(void) {
     CHECK(strcmp(gdx_mpo_update_side(8, 9), "they need an update") == 0);
 }
 
+/* mp-lobby: the public flag on CREATE, LIST (v2 only) and the ROOMS parser against hostile input. */
+static void PutRoomsRow(uint8_t* p, const char* code, const char* name, int players, int maxPlayers, int flags) {
+    memset(p, 0, GDX_RV_ROOMS_ENTRY);
+    memcpy(p, code, strlen(code));
+    memcpy(p + 8, name, strlen(name));
+    p[20] = (uint8_t) players;
+    p[21] = (uint8_t) maxPlayers;
+    p[22] = (uint8_t) flags;
+}
+
+static int BuildRooms(uint8_t* p, uint32_t nonce, int total, int count) {
+    memcpy(p, "GXRV", 4);
+    p[4] = GDX_RV_VERSION_COOKIE;
+    p[5] = GDX_RV_ROOMS;
+    p[6] = p[7] = 0;
+    p[8] = (uint8_t) nonce;
+    p[9] = (uint8_t) (nonce >> 8);
+    p[10] = (uint8_t) (nonce >> 16);
+    p[11] = (uint8_t) (nonce >> 24);
+    p[12] = (uint8_t) total;
+    p[13] = (uint8_t) count;
+    p[14] = p[15] = 0;
+    return GDX_RV_ROOMS_MIN + count * GDX_RV_ROOMS_ENTRY;
+}
+
+static void TestPublicList(void) {
+    uint8_t pkt[256];
+    uint8_t cookie[GDX_RV_COOKIE_LEN];
+    GdxMpRvRequest r = CookieReq(91);
+    GdxMpRvRoomList l;
+    int n;
+    memset(cookie, 0, sizeof(cookie));
+    /* CREATE flags: relay bit 0, public bit 1 */
+    r.isPublic = 1;
+    CHECK(gdx_rv_build_request(GDX_RV_CREATE, &r, pkt, sizeof(pkt)) == GDX_RV_REQ_BYTES && pkt[23] == GDX_RV_CFLAG_PUBLIC);
+    r.forceRelay = 1;
+    CHECK(gdx_rv_build_request(GDX_RV_CREATE, &r, pkt, sizeof(pkt)) == GDX_RV_REQ_BYTES && pkt[23] == 3);
+    /* LIST: v2 only, same 104-byte layout */
+    CHECK(gdx_rv_build_request(GDX_RV_LIST, &r, pkt, sizeof(pkt)) == 0);
+    CHECK(gdx_rv_build_request_v2(GDX_RV_LIST, &r, cookie, pkt, sizeof(pkt)) == GDX_RV_REQ2_BYTES);
+    CHECK(pkt[4] == GDX_RV_VERSION_COOKIE && pkt[5] == GDX_RV_LIST);
+    {
+        GdxRvCookie ck;
+        gdx_rv_cookie_init(&ck, GDX_RV_COOKIE_MODE_V1);
+        gdx_rv_cookie_begin(&ck, 91, 0, 1);
+        CHECK(gdx_rv_cookie_build(&ck, GDX_RV_LIST, &r, 0, pkt, sizeof(pkt), NULL) == 0); /* v1 never lists */
+    }
+    /* the largest answer stays small */
+    CHECK(GDX_RV_ROOMS_MIN + GDX_RV_LIST_MAX * GDX_RV_ROOMS_ENTRY <= 160);
+    /* a good list */
+    n = BuildRooms(pkt, 0xA1B2C3D4u, 9, 2);
+    PutRoomsRow(pkt + 16, "ABCDE", "KENJI", 1, 4, 0);
+    PutRoomsRow(pkt + 40, "XYZ23", "MIKE ON 3DS", 3, 4, 1);
+    CHECK(gdx_rv_parse_rooms(pkt, n, &l) == 0 && l.nonce == 0xA1B2C3D4u && l.total == 9 && l.count == 2);
+    CHECK(strcmp(l.room[0].code, "ABCDE") == 0 && strcmp(l.room[0].name, "KENJI") == 0 && l.room[0].players == 1 &&
+          l.room[0].maxPlayers == 4 && !l.room[0].relayOnly);
+    CHECK(strcmp(l.room[1].name, "MIKE ON 3DS") == 0 && l.room[1].relayOnly);
+    CHECK(gdx_rv_parse_rooms(pkt, n - 1, &l) < 0 && gdx_rv_parse_rooms(pkt, n + 1, &l) < 0);
+    /* empty */
+    n = BuildRooms(pkt, 5, 0, 0);
+    CHECK(gdx_rv_parse_rooms(pkt, n, &l) == 0 && l.count == 0);
+    /* hostile: v1 header, too many rows, total below count, bad code / name, full room, junk flags */
+    n = BuildRooms(pkt, 5, 1, 1);
+    PutRoomsRow(pkt + 16, "ABCDE", "OK", 1, 2, 0);
+    CHECK(gdx_rv_parse_rooms(pkt, n, &l) == 0);
+    pkt[4] = GDX_RV_VERSION;
+    CHECK(gdx_rv_parse_rooms(pkt, n, &l) < 0);
+    pkt[4] = GDX_RV_VERSION_COOKIE;
+    pkt[12] = 0;
+    CHECK(gdx_rv_parse_rooms(pkt, n, &l) < 0);
+    pkt[12] = 1;
+    pkt[14] = 1;
+    CHECK(gdx_rv_parse_rooms(pkt, n, &l) < 0);
+    pkt[14] = 0;
+    PutRoomsRow(pkt + 16, "ABCD0", "OK", 1, 2, 0);
+    CHECK(gdx_rv_parse_rooms(pkt, n, &l) < 0);
+    PutRoomsRow(pkt + 16, "ABCDE", "", 1, 2, 0);
+    CHECK(gdx_rv_parse_rooms(pkt, n, &l) < 0);
+    PutRoomsRow(pkt + 16, "ABCDE", "<b>", 1, 2, 0);
+    CHECK(gdx_rv_parse_rooms(pkt, n, &l) < 0);
+    PutRoomsRow(pkt + 16, "ABCDE", "OK", 2, 2, 0);
+    CHECK(gdx_rv_parse_rooms(pkt, n, &l) < 0);
+    PutRoomsRow(pkt + 16, "ABCDE", "OK", 1, 5, 0);
+    CHECK(gdx_rv_parse_rooms(pkt, n, &l) < 0);
+    PutRoomsRow(pkt + 16, "ABCDE", "OK", 1, 2, 4);
+    CHECK(gdx_rv_parse_rooms(pkt, n, &l) < 0 && l.count == 0);
+    n = BuildRooms(pkt, 5, 7, GDX_RV_LIST_MAX + 1);
+    CHECK(gdx_rv_parse_rooms(pkt, n, &l) < 0);
+}
+
 static void TestCodesNames(void) {
     char c[16];
     char n[16];
@@ -2963,6 +3053,7 @@ int main(void) {
     TestRvCookieWire();
     TestRvCookieStateMachine();
     TestVersionGating();
+    TestPublicList();
     TestCodesNames();
     TestLobbyWire();
     TestDelay();

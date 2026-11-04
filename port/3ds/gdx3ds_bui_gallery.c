@@ -75,6 +75,10 @@ enum {
     G_SP_GUEST_LOBBY,
     G_HOST_SHEET_UDS_OFF,
     G_RESULTS_LAST_LEFT,
+    G_ONLINE_EMPTY,
+    G_ONLINE_NO_ANSWER,
+    G_HOST_SHEET_ONLINE,
+    G_LOBBY_HOST_PUBLIC,
     G_COUNT
 };
 
@@ -104,8 +108,8 @@ static const BuiGalleryEntry kEntries[G_COUNT] = {
     {"nearby-empty", "nearby-empty", "", 0x8572993Du, 0, {{0}}},
     {"nearby-radio-off", "nearby-radio-off", "", 0x68866CF3u, 0, {{0}}},
     {"host-sheet", "host-sheet", "", 0xB71FBDB7u, 0, {{0}}},
-    {"online", "online", "No server RTT before a room: the header badge says SERVER SET; the footer names the model.", 0x909DA437u, 2,
-     {{150, 0, 170, 24}, {200, 224, 120, 16}}},
+    {"online", NULL, "Changed (mp-lobby): ONLINE lists the server's public rooms (fullest first) under HOST A ROOM and USE A CODE.",
+     0x9845C931u, 0, {{0}}},
     {"code", "code", "", 0x59641DCAu, 0, {{0}}},
     {"name", NULL, "New: the [net] mp_name entry (the design's rename keyboard, mp_name's alphabet, 12 boxes).", 0xED62A955u, 0, {{0}}},
     {"connecting", "connecting", "The host's portrait is unknown before joining: the medium's icon (32 px) stands in.", 0x70CA3578u, 2,
@@ -156,7 +160,7 @@ static const BuiGalleryEntry kEntries[G_COUNT] = {
     {"results-cpu4", NULL, "New: four humans and CPUs: tighter rows and one line of CPU places.", 0x808DC93Bu, 0, {{0}}},
     {"e-host-lost", NULL, "New: the host stopped answering mid-race (the design's e-lost copy, over the results).", 0x7F37F048u, 0,
      {{0}}},
-    {"online-direct", NULL, "New (mp-online-hw): [net] mp_direct names a host: JOIN BY ADDRESS under the two server cards.", 0xD28C4930u,
+    {"online-direct", NULL, "Changed (mp-lobby): [net] mp_direct names a host: ADDRESS joins as a third top button; the list stays.", 0x460DB476u,
      0, {{0}}},
     {"lobby-direct-host", NULL, "New (mp-online-hw): a serverless host's WiFi room shows ROOM <code> for its joiners to type.",
      0xDD033996u, 0, {{0}}},
@@ -191,6 +195,11 @@ static const BuiGalleryEntry kEntries[G_COUNT] = {
     {"host-sheet-uds-off", NULL, "New (mpui): [net] mp_uds=0: the LOCAL card is off and says so in player words.", 0xF71E9655u, 0, {{0}}},
     {"results-last-left", NULL, "New (mpui): the others fell out, so the game ended the race with ANA still racing: no time, SURVIVED.",
      0x82BDC9A6u, 0, {{0}}},
+    {"online-empty", NULL, "New (mp-lobby): no public room open yet: host one, or use a friend's code.", 0xE8E5A84Du, 0, {{0}}},
+    {"online-no-answer", NULL, "New (mp-lobby): the server did not answer LIST (down, or before 2.2.0).", 0x496C5177u, 0, {{0}}},
+    {"host-sheet-online", NULL, "New (mp-lobby): HOST ONLINE ROOM: PUBLIC (listed) or PRIVATE (code only), and the size.", 0xC3CB5A03u, 0,
+     {{0}}},
+    {"lobby-host-public", NULL, "New (mp-lobby): a public room's lobby says PUBLIC where a private one says ONLINE.", 0x3B66F9ABu, 0, {{0}}},
 };
 
 int bui_gallery_count(void) {
@@ -244,6 +253,27 @@ static void NearbyRooms(BuiView* v) {
     v->mp.room[2].joinable = 0;
     snprintf(v->mp.room[2].whyNot, sizeof(v->mp.room[2].whyNot), "OTHER VERSION");
     v->focus = BUI_W_NEARBY_ROW0;
+}
+
+static void OnlineRoom(BuiRoomView* r, const char* host, const char* code, int players, int maxPlayers) {
+    Room(r, host, players, BUI_MODEL_UNKNOWN, 0, BUI_MEDIUM_ONLINE);
+    r->maxPlayers = (int8_t) maxPlayers;
+    snprintf(r->code, sizeof(r->code), "%s", code);
+}
+
+static void OnlineRooms(BuiView* v) {
+    v->screen = BUI_SCR_ONLINE;
+    v->anim = 2;
+    v->mp.onlineList = BUI_LIST_OK;
+    v->mp.onlineTotal = 4;
+    v->mp.roomCount = 4;
+    v->mp.pages = 2;
+    OnlineRoom(&v->mp.room[0], "KENJI", "K7Q2M", 3, 4);
+    OnlineRoom(&v->mp.room[1], "ANA", "BX4TR", 2, 4);
+    OnlineRoom(&v->mp.room[2], "LUCA", "M3PZW", 1, 2);
+    v->mp.room[2].relayOnly = 1;
+    OnlineRoom(&v->mp.room[3], "SAM", "HQ7DN", 1, 4);
+    v->focus = BUI_W_ONLINE_ROW0;
 }
 
 static void Slot(BuiSlotView* s, const char* name, int machine, int model, int ready, int rtt) {
@@ -632,8 +662,29 @@ void bui_gallery_view(int i, BuiView* v) {
             v->focus = BUI_W_HOST_LOCAL;
             break;
         case G_ONLINE:
+            OnlineRooms(v);
+            break;
+        case G_ONLINE_EMPTY:
             v->screen = BUI_SCR_ONLINE;
+            v->anim = 5;
+            v->mp.onlineList = BUI_LIST_OK;
             v->focus = BUI_W_ONLINE_HOST;
+            break;
+        case G_ONLINE_NO_ANSWER:
+            v->screen = BUI_SCR_ONLINE;
+            v->mp.onlineList = BUI_LIST_NO_ANSWER;
+            v->focus = BUI_W_ONLINE_JOIN;
+            break;
+        case G_HOST_SHEET_ONLINE:
+            v->screen = BUI_SCR_HOST;
+            v->hostOnline = 1;
+            v->hostPublic = 1;
+            v->roomSize = 4;
+            v->focus = BUI_W_HOST_PUBLIC;
+            break;
+        case G_LOBBY_HOST_PUBLIC:
+            LobbyHost(v);
+            v->mp.isPublic = 1;
             break;
         case G_CODE:
             v->screen = BUI_SCR_CODE;

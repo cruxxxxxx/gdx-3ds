@@ -964,6 +964,31 @@ static void TestHostSheetKeys(void) {
     CHECK(n.focus == BUI_W_HOST_LOCAL, "host: up again is the chosen connection");
 }
 
+/* mp-lobby: the online host sheet (PUBLIC | PRIVATE) and the ONLINE list's keys. */
+static void TestOnlineLobbyKeys(void) {
+    BuiView v;
+    BuiWidgets ws;
+    BuiNav n;
+    PaintGalleryView("host-sheet-online", &v, &ws);
+    CHECK(bui_screen_key(&v, BUI_KEY_A) == BUI_W_HOST_OPEN, "online host: A opens the room");
+    n = Press(&v, &ws, BUI_W_HOST_PUBLIC, 1, 0);
+    CHECK(n.focus == BUI_W_HOST_PRIVATE && n.activate == BUI_W_HOST_PRIVATE, "online host: right picks PRIVATE");
+    n = Press(&v, &ws, BUI_W_HOST_PRIVATE, -1, 0);
+    CHECK(n.focus == BUI_W_HOST_PUBLIC && n.activate == BUI_W_HOST_PUBLIC, "online host: left picks PUBLIC");
+    v.hostPublic = 0;
+    n = Press(&v, &ws, BUI_W_HOST_SIZE4, 0, -1);
+    CHECK(n.focus == BUI_W_HOST_PRIVATE, "online host: up lands on the chosen visibility (%d)", n.focus);
+    PaintGalleryView("online", &v, &ws);
+    CHECK(bui_screen_key(&v, BUI_KEY_Y) == BUI_W_ONLINE_HOST, "online: Y hosts");
+    CHECK(bui_screen_key(&v, BUI_KEY_X) == BUI_W_ONLINE_JOIN, "online: X types a code");
+    CHECK(bui_screen_key(&v, BUI_KEY_A) == BUI_W_ONLINE_ROW0, "online: A joins the focused room");
+    CHECK(bui_widgets_find(&ws, BUI_W_ONLINE_ROW0 + 2) != NULL && bui_widgets_find(&ws, BUI_W_ONLINE_DOWN) != NULL,
+          "online: three rows and the rail are widgets");
+    PaintGalleryView("online-direct", &v, &ws);
+    CHECK(bui_screen_key(&v, BUI_KEY_X) == BUI_W_ONLINE_JOIN, "online direct: the list stays, X types a code");
+    CHECK(bui_widgets_find(&ws, BUI_W_ONLINE_DIRECT) != NULL, "online direct: ADDRESS is a top button");
+}
+
 static void TestSettingsKeys(void) {
     BuiView v;
     BuiWidgets ws;
@@ -1129,6 +1154,7 @@ int main(void) {
     TestHintAudit();
     TestFocusGraphs();
     TestHostSheetKeys();
+    TestOnlineLobbyKeys();
     TestSettingsKeys();
     TestScreenNavFallback();
 #endif

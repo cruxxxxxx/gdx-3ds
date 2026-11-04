@@ -103,6 +103,7 @@ static int sScreen = BUI_SCR_NONE; /* the open flow; NONE = ambient (Home or the
 static int sFocus = BUI_W_NONE;
 static int sFocusMoved = 0;  /* the user moved the focus (d-pad / touch) since the screen opened */
 static int sNearbySeen = 0;  /* NEARBY: the room count last tick (FollowNearbyRooms) */
+static int sOnlineSeen = 0;  /* mp-lobby: ONLINE's public room count last tick (FollowNearbyRooms) */
 static int sShown = SHOWN_NONE;    /* what the live buffer holds: a screen id, the logo, or nothing known */
 static uint32_t sPaintedKey = 0;
 static BuiWidgets sWidgets;
@@ -137,6 +138,9 @@ static char sEntry[BUI_NAME_CAP + 1];
 static int sHostMedium = BUI_MEDIUM_WIFI;
 static int sRoomSize = 4;
 static int sNearbyPage = 1;
+static int sOnlinePage = 1;  /* mp-lobby: the ONLINE list's page */
+static int sHostOnline = 0;  /* mp-lobby: the HOST sheet is HOST ONLINE ROOM (public / private) */
+static int sHostPublic = 1;  /* ... and its pick (from gdx3ds_mpo_ui_public when it opens) */
 static int sCup = 0;
 static int sPickSlot = 0;
 static char sJoinName[BUI_NAME_CAP + 1];
@@ -390,7 +394,7 @@ static int IsRoomScreen(int s) {
 }
 
 static int HasSpinner(int s) {
-    return s == BUI_SCR_NEARBY || s == BUI_SCR_JOINING || s == BUI_SCR_LAUNCH;
+    return s == BUI_SCR_NEARBY || s == BUI_SCR_ONLINE || s == BUI_SCR_JOINING || s == BUI_SCR_LAUNCH;
 }
 
 /* ---- MP snapshot ------------------------------------------------------------------------- */
@@ -616,9 +620,15 @@ static int DefaultFocus(int screen) {
         case BUI_SCR_NEARBY:
             return sUi.nearbyCount > 0 ? BUI_W_NEARBY_ROW0 : BUI_W_NEARBY_HOST;
         case BUI_SCR_HOST:
+            if (sHostOnline) {
+                return sHostPublic ? BUI_W_HOST_PUBLIC : BUI_W_HOST_PRIVATE;
+            }
             return sHostMedium == BUI_MEDIUM_UDS ? BUI_W_HOST_LOCAL : BUI_W_HOST_WIFI;
         case BUI_SCR_ONLINE:
-            return sUi.haveServer ? BUI_W_ONLINE_HOST : BUI_W_ONLINE_DIRECT;
+            if (!sUi.haveServer) {
+                return BUI_W_ONLINE_DIRECT;
+            }
+            return sUi.onlineCount > 0 ? BUI_W_ONLINE_ROW0 : BUI_W_ONLINE_HOST;
         case BUI_SCR_CODE:
         case BUI_SCR_NAME:
             return BUI_W_KEY0;
@@ -674,6 +684,7 @@ static void Go(int screen) {
     sFocus = DefaultFocus(screen);
     sFocusMoved = 0;
     sNearbySeen = sUiValid ? sUi.nearbyCount : 0;
+    sOnlineSeen = sUiValid ? sUi.onlineCount : 0;
     sRepeatKey = 0;
 }
 
@@ -688,6 +699,13 @@ static void FollowNearbyRooms(void) {
         BuiLog("[bui] nearby: first room found, focus -> the first room");
     }
     sNearbySeen = count;
+    /* mp-lobby: the same on ONLINE when the first public room is listed */
+    if (sScreen == BUI_SCR_ONLINE && sDialog == BUI_DLG_NONE && sOnlineSeen == 0 && sUiValid &&
+        sUi.onlineCount > 0 && !sFocusMoved && sFocus == BUI_W_ONLINE_HOST) {
+        sFocus = BUI_W_ONLINE_ROW0;
+        BuiLog("[bui] online: first public room listed, focus -> the first room");
+    }
+    sOnlineSeen = sUiValid ? sUi.onlineCount : 0;
 }
 
 static void CloseFlow(void) {
@@ -828,6 +846,39 @@ static void JoinRow(int row) {
     BuiLog("[bui] join row %d (%s)", abs, sJoinName);
 }
 
+/* mp-lobby: join row `row` (on the page) of the ONLINE list, by its code. */
+static void JoinOnlineRow(int row) {
+    const int abs = (sOnlinePage - 1) * BUI_ROOMS_PER_PAGE + row;
+    const GdxMpoUiOnline* r;
+    if (abs < 0 || abs >= sUi.onlineCount) {
+        return;
+    }
+    r = &sUi.online[abs];
+    CopyCaps(sJoinName, sizeof(sJoinName), r->name);
+    snprintf(sJoinCode, sizeof(sJoinCode), "%s", r->code);
+    sJoinMedium = BUI_MEDIUM_ONLINE;
+    sReturnScreen = BUI_SCR_ONLINE;
+    sLastOnline = ONLINE_JOIN;
+    snprintf(sLastOnlineCode, sizeof(sLastOnlineCode), "%s", r->code);
+    gdx3ds_mpo_ui_list_join(abs);
+    sUiDirty = 1;
+    BuiLog("[bui] join public row %d (%s, %s)", abs, sJoinName, sJoinCode);
+}
+
+/* mp-lobby: HOST ONLINE ROOM with the sheet's size and WHO CAN JOIN. */
+static void HostOnlineRoom(void) {
+    gdx3ds_mpo_ui_set_room_size(sRoomSize);
+    gdx3ds_mpo_ui_set_public(sHostPublic);
+    CopyCaps(sJoinName, sizeof(sJoinName), sUi.myName);
+    sJoinCode[0] = '\0';
+    sJoinMedium = BUI_MEDIUM_ONLINE;
+    sReturnScreen = BUI_SCR_ONLINE;
+    sLastOnline = ONLINE_HOST;
+    gdx3ds_mpo_ui_host();
+    sUiDirty = 1;
+    BuiLog("[bui] host online %s size=%d", sHostPublic ? "public" : "private", sRoomSize);
+}
+
 static void LeaveRoom(void) {
     gdx3ds_mpo_ui_leave();
     sUiDirty = 1;
@@ -882,9 +933,24 @@ static void OpenNearby(void) {
 }
 
 static void OpenHostSheet(void) {
+    sHostOnline = 0;
     sHostMedium = (sUi.uds && sUi.udsError == 0) ? BUI_MEDIUM_UDS : BUI_MEDIUM_WIFI;
     sRoomSize = gdx3ds_mpo_ui_room_size();
     Go(BUI_SCR_HOST);
+}
+
+static void OpenOnlineHostSheet(void) {
+    sHostOnline = 1;
+    sHostPublic = gdx3ds_mpo_ui_public();
+    sRoomSize = gdx3ds_mpo_ui_room_size();
+    Go(BUI_SCR_HOST);
+}
+
+static void OpenOnline(void) {
+    sOnlinePage = 1;
+    sReturnScreen = BUI_SCR_ONLINE;
+    gdx3ds_mpo_ui_online_shown();
+    Go(BUI_SCR_ONLINE);
 }
 
 static void OpenMachine(void) {
@@ -1109,8 +1175,7 @@ static void ActivateChoose(int id) {
     if (id == BUI_W_CHOOSE_NEARBY && sUi.lan) {
         OpenNearby();
     } else if (id == BUI_W_CHOOSE_ONLINE && (sUi.haveServer || sUi.haveDirect)) {
-        sReturnScreen = BUI_SCR_ONLINE;
-        Go(BUI_SCR_ONLINE);
+        OpenOnline();
     } else if (id == BUI_W_CHOOSE_NAME) {
         CopyCaps(sEntry, sizeof(sEntry), sUi.myName);
         Go(BUI_SCR_NAME);
@@ -1134,7 +1199,11 @@ static void ActivateNearby(int id) {
 }
 
 static void ActivateHost(int id) {
-    if (id == BUI_W_HOST_LOCAL && sUi.uds) {
+    if (sHostOnline && (id == BUI_W_HOST_PUBLIC || id == BUI_W_HOST_PRIVATE)) {
+        sHostPublic = id == BUI_W_HOST_PUBLIC;
+    } else if (sHostOnline && id == BUI_W_HOST_OPEN) {
+        HostOnlineRoom();
+    } else if (id == BUI_W_HOST_LOCAL && sUi.uds) {
         sHostMedium = BUI_MEDIUM_UDS;
     } else if (id == BUI_W_HOST_WIFI) {
         sHostMedium = BUI_MEDIUM_WIFI;
@@ -1148,13 +1217,15 @@ static void ActivateHost(int id) {
 }
 
 static void ActivateOnline(int id) {
-    if (id == BUI_W_ONLINE_HOST) {
-        CopyCaps(sJoinName, sizeof(sJoinName), sUi.myName);
-        sJoinMedium = BUI_MEDIUM_ONLINE;
-        sReturnScreen = BUI_SCR_ONLINE;
-        sLastOnline = ONLINE_HOST;
-        gdx3ds_mpo_ui_host();
-        sUiDirty = 1;
+    const int pages = sUi.onlineCount > 0 ? (sUi.onlineCount + BUI_ROOMS_PER_PAGE - 1) / BUI_ROOMS_PER_PAGE : 1;
+    if (id == BUI_W_ONLINE_HOST && sUi.haveServer) {
+        OpenOnlineHostSheet();
+    } else if (id == BUI_W_ONLINE_UP && sOnlinePage > 1) {
+        sOnlinePage--;
+    } else if (id == BUI_W_ONLINE_DOWN && sOnlinePage < pages) {
+        sOnlinePage++;
+    } else if (id >= BUI_W_ONLINE_ROW0 && id < BUI_W_ONLINE_ROW0 + BUI_ROOMS_PER_PAGE) {
+        JoinOnlineRow(id - BUI_W_ONLINE_ROW0);
     } else if (id == BUI_W_ONLINE_JOIN) {
         sEntry[0] = '\0';
         sCodeDirect = 0;
@@ -1448,7 +1519,7 @@ static void Back(void) {
         case BUI_SCR_MP_CHOOSE: CloseFlow(); break;
         case BUI_SCR_NEARBY:
         case BUI_SCR_ONLINE: Go(BUI_SCR_MP_CHOOSE); break;
-        case BUI_SCR_HOST: Go(BUI_SCR_NEARBY); break;
+        case BUI_SCR_HOST: Go(sHostOnline ? BUI_SCR_ONLINE : BUI_SCR_NEARBY); break;
         case BUI_SCR_CODE:
             if (sEntry[0] != '\0') {
                 EntryDelete();
@@ -1799,6 +1870,32 @@ static void FillRooms(BuiMpView* mp) {
     }
 }
 
+/* mp-lobby: ONLINE shows the public room list in room[] (NEARBY's rows are not on that screen). */
+static void FillOnlineRooms(BuiMpView* mp) {
+    int i;
+    memset(mp->room, 0, sizeof(mp->room));
+    mp->onlineList = (int8_t) sUi.onlineList;
+    mp->onlineTotal = (int8_t) (sUi.onlineTotal > 99 ? 99 : sUi.onlineTotal);
+    mp->roomCount = (int8_t) (sUi.onlineCount < BUI_ROOMS_MAX ? sUi.onlineCount : BUI_ROOMS_MAX);
+    mp->pages = (int8_t) (mp->roomCount > 0 ? (mp->roomCount + BUI_ROOMS_PER_PAGE - 1) / BUI_ROOMS_PER_PAGE : 1);
+    if (sOnlinePage > mp->pages) {
+        sOnlinePage = mp->pages;
+    }
+    mp->page = (int8_t) sOnlinePage;
+    for (i = 0; i < mp->roomCount; i++) {
+        const GdxMpoUiOnline* o = &sUi.online[i];
+        BuiRoomView* r = &mp->room[i];
+        CopyCaps(r->host, sizeof(r->host), o->name);
+        snprintf(r->code, sizeof(r->code), "%s", o->code);
+        r->players = (int8_t) o->players;
+        r->maxPlayers = (int8_t) o->maxPlayers;
+        r->medium = BUI_MEDIUM_ONLINE;
+        r->joinable = 1;
+        r->compatible = 1;
+        r->relayOnly = (int8_t) o->relayOnly;
+    }
+}
+
 static void FillSlots(BuiMpView* mp) {
     int s;
     for (s = 0; s < 4 && s < GDX_MPO_MAX_SLOTS; s++) {
@@ -1914,6 +2011,7 @@ static void FillMp(BuiMpView* mp) {
     mp->joinMedium = (int8_t) sJoinMedium;
     mp->haveDirect = (int8_t) sUi.haveDirect;
     mp->relayOnly = (int8_t) sUi.relayOnly;
+    mp->isPublic = (int8_t) sUi.isPublic;
     mp->showCode = (int8_t) sUi.showCode;
     gdx3ds_mpo_direct_addr(mp->directAddr, (int) sizeof(mp->directAddr));
     mp->awayStartable = (int8_t) sUi.awayStartable;
@@ -1990,6 +2088,11 @@ static void BuildView(BuiView* v, int screen) {
     if (screen != BUI_SCR_HOME) {
         FillMp(&v->mp);
     }
+    if (screen == BUI_SCR_ONLINE && sUiValid) {
+        FillOnlineRooms(&v->mp);
+    }
+    v->hostOnline = (int8_t) (screen == BUI_SCR_HOST && sHostOnline);
+    v->hostPublic = (int8_t) sHostPublic;
     if (screen == BUI_SCR_RESULTS && sUiValid) {
         FillResults(&v->mp);
     }
@@ -2370,6 +2473,8 @@ void gdx3ds_bui_tick(uint16_t* fb, uint32_t held, uint32_t prevHeld, int touchin
     sPrevTouching = touching;
     if (sScreen == BUI_SCR_NEARBY) {
         gdx3ds_mpo_ui_nearby_shown();
+    } else if (sScreen == BUI_SCR_ONLINE || (sScreen == BUI_SCR_HOST && sHostOnline)) {
+        gdx3ds_mpo_ui_online_shown();
     }
     PollMp(0);
     FollowPhase();

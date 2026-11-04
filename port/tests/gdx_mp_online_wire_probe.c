@@ -18,6 +18,8 @@
  *      the maximum (SERVER NEEDS AN UPDATE).
  *   old (a server before 2.0.0: every v2 datagram dropped): auto falls back to v1 after two tries
  *      and gets in; mode 1 never gets an answer.
+ *   list (a 2.2.0 server): a public and a private room; LIST (zeros -> COOKIE -> resend -> ROOMS)
+ *      shows the public one only, its count follows a JOIN, and a locked (racing) room drops out.
  * Prints "WIRE PROBE PASS" and exits 0 on success. */
 #include "gdx_mp_lobby.h"
 #include "gdx_mp_online.h"
@@ -98,6 +100,7 @@ typedef struct ProbeAnswer {
     GdxMpRvWelcome w;
     GdxMpRvError e;
     GdxMpRvUpdate u;
+    GdxMpRvRoomList rooms;
     int version; /* the answer's header version */
     int cookies;
     int fellBack;
@@ -143,6 +146,8 @@ static ProbeAnswer Request(int fd, GdxRvCookie* ck, int type, GdxMpRvRequest* r,
             } else if (t == GDX_RV_WELCOME && gdx_rv_parse_welcome(b, got, &a.w) == 0 && a.w.nonce == r->nonce) {
                 a.type = t;
             } else if (t == GDX_RV_UPDATE && gdx_rv_parse_update(b, got, &a.u) == 0 && a.u.nonce == r->nonce) {
+                a.type = t;
+            } else if (t == GDX_RV_ROOMS && gdx_rv_parse_rooms(b, got, &a.rooms) == 0 && a.rooms.nonce == r->nonce) {
                 a.type = t;
             } else if (t == GDX_RV_ERROR && gdx_rv_parse_error(b, got, &a.e) == 0 && a.e.nonce == r->nonce) {
                 if (gdx_rv_cookie_on_error(ck, &a.e) == GDX_RV_CK_RETRY_V2) {
@@ -264,6 +269,58 @@ static int ModeOld(void) {
     return 0;
 }
 
+static GdxMpRvRoomList ListRooms(int fd, uint32_t nonce) {
+    GdxRvCookie ck;
+    GdxMpRvRequest r = Req("mp-online@probe", "BROWSER", "", nonce);
+    ProbeAnswer a;
+    r.maxPlayers = 0;
+    gdx_rv_cookie_init(&ck, GDX_RV_COOKIE_MODE_V2);
+    a = Request(fd, &ck, GDX_RV_LIST, &r, 0);
+    EXPECT(a.type == GDX_RV_ROOMS && a.version == 2 && a.cookies == 1);
+    return a.rooms;
+}
+
+static int ModeList(void) {
+    const int host = OpenClient();
+    const int quiet = OpenClient();
+    const int guest = OpenClient();
+    const int browser = OpenClient();
+    GdxRvCookie ck;
+    GdxMpRvRequest r = Req("mp-online@probe", "PUBHOST", "", 7001);
+    ProbeAnswer pub;
+    ProbeAnswer priv;
+    GdxMpRvRoomList l;
+    uint8_t b[256];
+    int n;
+    gdx_rv_cookie_init(&ck, GDX_RV_COOKIE_MODE_V2);
+    r.isPublic = 1;
+    r.maxPlayers = 3;
+    pub = Request(host, &ck, GDX_RV_CREATE, &r, 0);
+    EXPECT(pub.type == GDX_RV_WELCOME);
+    r = Req("mp-online@probe", "SECRET", "", 7002);
+    priv = Request(quiet, &ck, GDX_RV_CREATE, &r, 0);
+    EXPECT(priv.type == GDX_RV_WELCOME);
+    l = ListRooms(browser, 7003);
+    EXPECT(l.count == 1 && l.total == 1 && strcmp(l.room[0].code, pub.w.code) == 0);
+    EXPECT(strcmp(l.room[0].name, "PUBHOST") == 0 && l.room[0].players == 1 && l.room[0].maxPlayers == 3);
+    printf("  listed: %s's room %s %d/%d\n", l.room[0].name, l.room[0].code, l.room[0].players, l.room[0].maxPlayers);
+    r = Req("mp-online@probe", "GUEST", l.room[0].code, 7004);
+    EXPECT(Request(guest, &ck, GDX_RV_JOIN, &r, 0).type == GDX_RV_WELCOME);
+    l = ListRooms(browser, 7005);
+    EXPECT(l.count == 1 && l.room[0].players == 2);
+    n = gdx_rv_build_auth(GDX_RV_LOCK, pub.w.code, 0, 1, pub.w.memberKey, b, sizeof(b));
+    Send(host, b, n);
+    EXPECT(RecvType(host, GDX_RV_ROSTER, b, sizeof(b), 2000) > 0);
+    l = ListRooms(browser, 7006);
+    EXPECT(l.count == 0 && l.total == 0);
+    printf("  locked (racing) room left the list\n");
+    close(host);
+    close(quiet);
+    close(guest);
+    close(browser);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     int fd[5];
     GdxMpRvWelcome w[5];
@@ -275,16 +332,18 @@ int main(int argc, char** argv) {
     const int ckMode = strcmp(mode, "v1") == 0 ? GDX_RV_COOKIE_MODE_V1 : GDX_RV_COOKIE_MODE_V2;
     GdxRvCookie ck[5];
     if (argc < 2) {
-        fprintf(stderr, "usage: %s <server-port> [v2|v1|refused|old]\n", argv[0]);
+        fprintf(stderr, "usage: %s <server-port> [v2|v1|refused|old|list]\n", argv[0]);
         return 2;
     }
     memset(&sServer, 0, sizeof(sServer));
     sServer.sin_family = AF_INET;
     sServer.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     sServer.sin_port = htons((uint16_t) atoi(argv[1]));
-    if (strcmp(mode, "refused") == 0 || strcmp(mode, "old") == 0) {
+    if (strcmp(mode, "refused") == 0 || strcmp(mode, "old") == 0 || strcmp(mode, "list") == 0) {
         if (strcmp(mode, "refused") == 0) {
             ModeRefused();
+        } else if (strcmp(mode, "list") == 0) {
+            ModeList();
         } else {
             ModeOld();
         }

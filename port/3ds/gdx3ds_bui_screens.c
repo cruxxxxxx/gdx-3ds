@@ -564,16 +564,49 @@ static void HostOption(const BuiView* v, int x, int medium, BuiWidgets* ws) {
     bui_widgets_add(ws, x, 42, 152, 80, id, BUI_WF_FOCUS | (off ? BUI_WF_DISABLED : 0));
 }
 
+/* mp-lobby: the online sheet's WHO CAN JOIN cards, in HostOption's shape. */
+static void VisibilityOption(const BuiView* v, int x, int isPublic, BuiWidgets* ws) {
+    const int sel = (v->hostPublic != 0) == isPublic;
+    const int id = isPublic ? BUI_W_HOST_PUBLIC : BUI_W_HOST_PRIVATE;
+    const char* const lines[3] = {isPublic ? "LISTED ONLINE" : "CODE ONLY", isPublic ? "ANYONE ON THIS" : "SHARE YOUR CODE",
+                                  isPublic ? "VERSION CAN JOIN" : "WITH FRIENDS"};
+    BuiText t;
+    int i;
+    bui_fill(x, 42, 152, 80, sel ? BUI_TK_SEL_FILL : BUI_TK_DEEP);
+    bui_stroke(x, 42, 152, 80, sel ? BUI_TK_PINK : BUI_TK_LINE, sel ? 2 : 1);
+    if (Focused(v, id)) {
+        bui_stroke(x - 2, 40, 156, 84, BUI_TK_FOCUS, 2);
+    }
+    bui_icon(isPublic ? BUI_ICON_GLOBE : BUI_ICON_LOCK, x + 8, 50, isPublic ? BUI_TK_CYAN : BUI_TK_PINK, 1);
+    memset(&t, 0, sizeof(t));
+    bui_text(BUI_F1, isPublic ? "PUBLIC" : "PRIVATE", x + 30, 50, &t);
+    if (sel) {
+        bui_badge(x + 152 - 8 - bui_badge_width("✓"), 50, "✓", BUI_BADGE_PINK);
+    }
+    for (i = 0; i < 3; i++) {
+        const BuiText l = Txt(BUI_TK_TEXT2, 1, BUI_ALIGN_LEFT);
+        bui_text(BUI_F2, lines[i], x + 8, 76 + i * 12, &l);
+    }
+    bui_widgets_add(ws, x, 42, 152, 80, id, BUI_WF_FOCUS);
+}
+
 static void PaintHost(const BuiView* v, BuiWidgets* ws) {
     static const char* const kSizes[3] = {"2", "3", "4"};
     BuiSeg seg;
     BuiButton b;
     int i;
     Background();
-    Header("HOST A ROOM", 0, NULL, 0, ws);
-    Label("CONNECTION", 8, 30, 0);
-    HostOption(v, 4, BUI_MEDIUM_UDS, ws);
-    HostOption(v, 164, BUI_MEDIUM_WIFI, ws);
+    if (v->hostOnline) {
+        Header("HOST ONLINE ROOM", 0, NULL, 0, ws);
+        Label("WHO CAN JOIN", 8, 30, 0);
+        VisibilityOption(v, 4, 1, ws);
+        VisibilityOption(v, 164, 0, ws);
+    } else {
+        Header("HOST A ROOM", 0, NULL, 0, ws);
+        Label("CONNECTION", 8, 30, 0);
+        HostOption(v, 4, BUI_MEDIUM_UDS, ws);
+        HostOption(v, 164, BUI_MEDIUM_WIFI, ws);
+    }
     Label("ROOM SIZE", 8, 132, 0);
     memset(&seg, 0, sizeof(seg));
     seg.focus = Focused(v, BUI_W_HOST_SIZE2) || Focused(v, BUI_W_HOST_SIZE3) || Focused(v, BUI_W_HOST_SIZE4);
@@ -599,77 +632,132 @@ static void PaintHost(const BuiView* v, BuiWidgets* ws) {
 
 /* ---- ONLINE ------------------------------------------------------------------------------- */
 
-/* mp-online-hw: with [net] mp_direct naming a host, ONLINE shows three shorter cards: the two server
- * cards (off without a server) and JOIN BY ADDRESS. */
-static void PaintOnlineDirect(const BuiView* v, BuiWidgets* ws) {
+/* One of ONLINE's top buttons; `glyph` (may be NULL) is its face-button shortcut. */
+static void OnlineTopButton(const BuiView* v, int x, int w, int id, int icon, BuiRgb iconColor, const char* label,
+                            const char* glyph, int off, BuiWidgets* ws) {
+    BuiButton b;
+    memset(&b, 0, sizeof(b));
+    b.icon = icon;
+    b.iconColor = iconColor;
+    b.font = BUI_F2;
+    b.state = off ? BUI_BTN_DISABLED : 0;
+    b.focus = Focused(v, id);
+    bui_button(x, 28, w, 40, label, &b);
+    if (glyph != NULL) {
+        bui_btn_glyph(x + w - 16, 42, glyph, 0, 0);
+    }
+    bui_widgets_add(ws, x, 28, w, 40, id, BUI_WF_FOCUS | (off ? BUI_WF_DISABLED : 0));
+}
+
+/* mp-lobby: ONLINE is the public room list. HOST A ROOM (public or private, on the host sheet)
+ * and JOIN WITH CODE (a private room) sit above it, as HOST A ROOM sits above NEARBY's; with
+ * [net] mp_direct naming a host, ADDRESS (join that host directly) is a third button. */
+static void OnlineTopButtons(const BuiView* v, int w, BuiWidgets* ws) {
+    const int off = !v->mp.haveServer;
+    if (v->mp.haveDirect) {
+        const int third = (w - 8) / 3;
+        OnlineTopButton(v, 4, third, BUI_W_ONLINE_HOST, BUI_ICON_PLUS, BUI_TK_GREEN, "HOST", "Y", off, ws);
+        OnlineTopButton(v, 8 + third, third, BUI_W_ONLINE_JOIN, BUI_ICON_LOCK, BUI_TK_PINK, "CODE", "X", off, ws);
+        OnlineTopButton(v, 12 + 2 * third, w - 8 - 2 * third, BUI_W_ONLINE_DIRECT, BUI_ICON_WIFI, BUI_TK_CYAN,
+                        "ADDRESS", NULL, 0, ws);
+    } else {
+        const int half = (w - 4) / 2;
+        const int narrow = w < 300; /* beside the list's rail: the short labels clear the key glyphs */
+        OnlineTopButton(v, 4, half, BUI_W_ONLINE_HOST, BUI_ICON_PLUS, BUI_TK_GREEN, narrow ? "HOST ROOM" : "HOST A ROOM",
+                        "Y", off, ws);
+        OnlineTopButton(v, 8 + half, w - 4 - half, BUI_W_ONLINE_JOIN, BUI_ICON_LOCK, BUI_TK_PINK,
+                        narrow ? "USE CODE" : "USE A CODE", "X", off, ws);
+    }
+}
+
+static void OnlineRow(const BuiView* v, const BuiRoomView* rm, int y, int index, BuiWidgets* ws) {
+    char title[32];
+    char meta[40];
+    BuiRowBadge badge;
+    BuiRow r;
+    const int id = BUI_W_ONLINE_ROW0 + index;
+    memset(&r, 0, sizeof(r));
+    snprintf(title, sizeof(title), "%s'S ROOM", rm->host);
+    snprintf(meta, sizeof(meta), "%d/%d PLAYERS · CODE %s", rm->players, rm->maxPlayers, rm->code);
+    r.icon = BUI_ICON_GLOBE;
+    r.title = title;
+    r.meta = meta;
+    r.focus = Focused(v, id);
+    badge.text = rm->relayOnly ? "RELAY" : "PUBLIC";
+    badge.kind = BUI_BADGE_CYANLINE;
+    r.badges = &badge;
+    r.badgeCount = 1;
+    bui_row(4, y, 272, 40, &r);
+    bui_widgets_add(ws, 4, y, 272, 40, id, BUI_WF_FOCUS);
+}
+
+static void OnlineList(const BuiView* v, BuiWidgets* ws) {
     const BuiMpView* mp = &v->mp;
-    char addr[40];
-    BuiHeaderItem right[1];
-    Card c;
-    char who[32];
-    Background();
-    right[0] = Badge(mp->haveServer ? "SERVER SET" : "NO SERVER", BUI_BADGE_INFO);
-    Header("ONLINE", 0, right, 1, ws);
-    memset(&c, 0, sizeof(c));
-    c.icon = BUI_ICON_GLOBE;
-    c.title = "HOST ONLINE ROOM";
-    c.lines[0] = mp->haveServer ? "YOU GET A 5-LETTER CODE" : "NEEDS A SERVER";
-    c.off = !mp->haveServer;
-    c.focus = Focused(v, BUI_W_ONLINE_HOST);
-    PaintCard(8, 30, 304, 52, &c);
-    bui_widgets_add(ws, 8, 30, 304, 52, BUI_W_ONLINE_HOST, BUI_WF_FOCUS | (mp->haveServer ? 0 : BUI_WF_DISABLED));
-    memset(&c, 0, sizeof(c));
-    c.icon = BUI_ICON_CHAIN;
-    c.iconColor = BUI_TK_PINK;
-    c.title = "JOIN WITH CODE";
-    c.lines[0] = mp->haveServer ? "THROUGH THE SERVER" : "NEEDS A SERVER";
-    c.off = !mp->haveServer;
-    c.focus = Focused(v, BUI_W_ONLINE_JOIN);
-    PaintCard(8, 86, 304, 52, &c);
-    bui_widgets_add(ws, 8, 86, 304, 52, BUI_W_ONLINE_JOIN, BUI_WF_FOCUS | (mp->haveServer ? 0 : BUI_WF_DISABLED));
-    memset(&c, 0, sizeof(c));
-    snprintf(addr, sizeof(addr), "HOST %s", mp->directAddr);
-    c.icon = BUI_ICON_WIFI;
-    c.title = "JOIN BY ADDRESS";
-    c.lines[0] = addr;
-    c.lines[1] = "TYPE THE CODE ON ITS LOBBY";
-    c.focus = Focused(v, BUI_W_ONLINE_DIRECT);
-    PaintCard(8, 142, 304, 52, &c);
-    bui_widgets_add(ws, 8, 142, 304, 52, BUI_W_ONLINE_DIRECT, BUI_WF_FOCUS);
-    snprintf(who, sizeof(who), "%s · %s", v->name, ModelBadge(v->model));
-    Footer2("A", "OPEN", "B", "BACK", NULL, NULL, who);
+    BuiHeaderItem right[2];
+    char rooms[16];
+    const int first = (mp->page - 1) * BUI_ROOMS_PER_PAGE;
+    int i;
+    snprintf(rooms, sizeof(rooms), "%d ROOM%s", mp->onlineTotal, mp->onlineTotal == 1 ? "" : "S");
+    right[0] = Spin(v->anim);
+    right[1] = Badge(rooms, BUI_BADGE_MUTED);
+    Header("ONLINE", 0, right, 2, ws);
+    OnlineTopButtons(v, 272, ws);
+    for (i = 0; i < BUI_ROOMS_PER_PAGE && first + i < mp->roomCount; i++) {
+        OnlineRow(v, &mp->room[first + i], 72 + i * 42, i, ws);
+    }
+    RailIds(280, 28, 168, mp->page, mp->pages, BUI_W_ONLINE_UP, BUI_W_ONLINE_DOWN, ws);
+    Centred(BUI_F2, "PUBLIC ROOMS ON THIS VERSION · FULLEST FIRST", 160, 206, BUI_TK_MUTE, 1);
+    Footer2("A", "JOIN", "Y", "HOST", "X", "CODE", NULL);
+}
+
+/* No list to show: still looking, none open, or the server did not answer / is out of date. */
+static void OnlineEmpty(const BuiView* v, BuiWidgets* ws) {
+    const BuiMpView* mp = &v->mp;
+    const int noAnswer = mp->onlineList == BUI_LIST_NO_ANSWER;
+    const int update = mp->onlineList == BUI_LIST_UPDATE;
+    const int looking = mp->onlineList == BUI_LIST_NONE || mp->onlineList == BUI_LIST_WAITING;
+    const int noServer = !mp->haveServer;
+    BuiHeaderItem right[2];
+    int n = 0;
+    if (!noAnswer && !update && !noServer) {
+        right[n++] = Spin(v->anim);
+    }
+    right[n++] = noServer ? Badge("NO SERVER", BUI_BADGE_MUTED)
+                 : noAnswer ? Badge("NO ANSWER", BUI_BADGE_BAD)
+                          : update ? Badge("VERSION", BUI_BADGE_BAD) : Badge(looking ? "SEARCHING" : "0 ROOMS", BUI_BADGE_MUTED);
+    Header("ONLINE", 0, right, n, ws);
+    OnlineTopButtons(v, 312, ws);
+    bui_fill(4, 76, 312, 140, BUI_TK_DEEP);
+    bui_stroke(4, 76, 312, 140, (noAnswer || update) ? BUI_TK_RED : BUI_TK_LINE, 1);
+    if (noServer) {
+        Centred(BUI_F1, "NO SERVER SET", 160, 116, 0, 0);
+        Centred(BUI_F2, "ONLINE ROOMS NEED [NET] RENDEZVOUS.", 160, 144, BUI_TK_TEXT2, 1);
+        Centred(BUI_F2, "ADDRESS JOINS YOUR MP_DIRECT HOST.", 160, 156, BUI_TK_TEXT2, 1);
+    } else if (noAnswer || update) {
+        bui_icon(BUI_ICON_WARN, 144, 84, BUI_TK_ORANGE, 2);
+        Centred(BUI_F1, noAnswer ? "NO ROOM LIST" : "ROOM LIST OFF", 160, 120, 0, 0);
+        Centred(BUI_F2, noAnswer ? "THE SERVER DID NOT ANSWER." : "THE SERVER RUNS ANOTHER VERSION.", 160, 142,
+                BUI_TK_TEXT2, 1);
+        Centred(BUI_F2, noAnswer ? "CHECK WIFI. IT TRIES AGAIN BY ITSELF." : "ONE OF YOU NEEDS AN UPDATE.", 160, 154,
+                BUI_TK_MUTE, 1);
+    } else {
+        bui_spinner(160, 100, (v->anim + 6) & 7);
+        Centred(BUI_F1, looking ? "LOOKING FOR ROOMS" : "NO PUBLIC ROOMS", 160, 116, 0, 0);
+        Centred(BUI_F2, "HOST A PUBLIC ROOM AND OTHERS", 160, 144, BUI_TK_TEXT2, 1);
+        Centred(BUI_F2, "SEE IT HERE. FRIENDS: USE A CODE.", 160, 156, BUI_TK_TEXT2, 1);
+    }
+    Centred(BUI_F2, "EVERYONE NEEDS THIS SAME VERSION:", 160, 178, BUI_TK_MUTE, 1);
+    bui_badge(160 - bui_badge_width(v->version) / 2, 192, v->version, BUI_BADGE_MODEL);
+    Footer2("Y", "HOST", "X", "CODE", "B", "BACK", NULL);
 }
 
 static void PaintOnline(const BuiView* v, BuiWidgets* ws) {
-    BuiHeaderItem right[1];
-    Card c;
-    char who[32];
-    if (v->mp.haveDirect) {
-        PaintOnlineDirect(v, ws);
-        return;
-    }
     Background();
-    right[0] = Badge("SERVER SET", BUI_BADGE_INFO);
-    Header("ONLINE", 0, right, 1, ws);
-    memset(&c, 0, sizeof(c));
-    c.icon = BUI_ICON_GLOBE;
-    c.title = "HOST ONLINE ROOM";
-    c.lines[0] = "YOU GET A 5-LETTER CODE";
-    c.lines[1] = "TELL IT TO YOUR FRIENDS";
-    c.focus = Focused(v, BUI_W_ONLINE_HOST);
-    PaintCard(8, 32, 304, 76, &c);
-    bui_widgets_add(ws, 8, 32, 304, 76, BUI_W_ONLINE_HOST, BUI_WF_FOCUS);
-    memset(&c, 0, sizeof(c));
-    c.icon = BUI_ICON_CHAIN;
-    c.iconColor = BUI_TK_PINK;
-    c.title = "JOIN WITH CODE";
-    c.lines[0] = "TYPE THE CODE YOUR FRIEND";
-    c.lines[1] = "SEES ON THEIR BOTTOM SCREEN";
-    c.focus = Focused(v, BUI_W_ONLINE_JOIN);
-    PaintCard(8, 116, 304, 76, &c);
-    bui_widgets_add(ws, 8, 116, 304, 76, BUI_W_ONLINE_JOIN, BUI_WF_FOCUS);
-    snprintf(who, sizeof(who), "%s · %s", v->name, ModelBadge(v->model));
-    Footer2("A", "OPEN", "B", "BACK", NULL, NULL, who);
+    if (v->mp.roomCount > 0) {
+        OnlineList(v, ws);
+    } else {
+        OnlineEmpty(v, ws);
+    }
 }
 
 /* ---- ROOM CODE / YOUR NAME entry ---------------------------------------------------------- */
@@ -1246,7 +1334,8 @@ static void PaintLobby(const BuiView* v, BuiWidgets* ws) {
     }
     snprintf(count, sizeof(count), "%d/%d", CountPresent(mp), mp->maxPlayers);
     right[0] = mp->isUds ? Badge("LOCAL", BUI_BADGE_INFO)
-                         : Badge(mp->isLan ? "WIFI" : (mp->relayOnly ? "RELAY" : "ONLINE"), BUI_BADGE_CYANLINE);
+                         : Badge(mp->isLan ? "WIFI" : (mp->relayOnly ? "RELAY" : (mp->isPublic ? "PUBLIC" : "ONLINE")),
+                                 BUI_BADGE_CYANLINE);
     right[1] = Badge(count, BUI_BADGE_MUTED);
     Header(title, 0, right, 2, ws);
     for (s = 0; s < 4; s++) {
@@ -2214,6 +2303,9 @@ static int BKey(const BuiView* v) {
 }
 
 static int XKey(const BuiView* v) {
+    if (v->screen == BUI_SCR_ONLINE && v->mp.haveServer) {
+        return BUI_W_ONLINE_JOIN;
+    }
     if (v->screen == BUI_SCR_LOBBY) {
         return BUI_W_LOBBY_SIDE;
     }
@@ -2229,6 +2321,9 @@ static int YKey(const BuiView* v) {
     }
     if (v->screen == BUI_SCR_NEARBY && !v->mp.radioOff) {
         return BUI_W_NEARBY_HOST;
+    }
+    if (v->screen == BUI_SCR_ONLINE && v->mp.haveServer) {
+        return BUI_W_ONLINE_HOST;
     }
     if (v->screen == BUI_SCR_RESULTS && v->mp.isHost && !v->mp.roomClosed) {
         return BUI_W_RESULTS_MACHINES;
@@ -2269,9 +2364,10 @@ int bui_screen_key(const BuiView* v, int key) {
 
 static const int kSetRacerValues[5] = {0, 4, 8, 16, 30};
 
-/* HOST: rows CONNECTION (LOCAL | WIFI), ROOM SIZE (2 | 3 | 4), and the CANCEL | OPEN ROOM bar. */
+/* HOST: rows CONNECTION (LOCAL | WIFI) or, online, WHO CAN JOIN (PUBLIC | PRIVATE), ROOM SIZE
+ * (2 | 3 | 4), and the CANCEL | OPEN ROOM bar. */
 static int HostRow(int id) {
-    if (id == BUI_W_HOST_LOCAL || id == BUI_W_HOST_WIFI) {
+    if (id == BUI_W_HOST_LOCAL || id == BUI_W_HOST_WIFI || id == BUI_W_HOST_PUBLIC || id == BUI_W_HOST_PRIVATE) {
         return 0;
     }
     if (id >= BUI_W_HOST_SIZE2 && id <= BUI_W_HOST_SIZE4) {
@@ -2284,6 +2380,9 @@ static int HostRow(int id) {
 }
 
 static int HostRowWidget(const BuiView* v, int row) {
+    if (row == 0 && v->hostOnline) {
+        return v->hostPublic ? BUI_W_HOST_PUBLIC : BUI_W_HOST_PRIVATE;
+    }
     if (row == 0) {
         return v->hostMedium == BUI_MEDIUM_UDS ? BUI_W_HOST_LOCAL : BUI_W_HOST_WIFI;
     }
@@ -2301,6 +2400,11 @@ static int HostNav(const BuiView* v, int dx, int dy, BuiNav* out) {
     if (dy != 0) {
         const int to = row + dy;
         out->focus = (to >= 0 && to <= 2) ? HostRowWidget(v, to) : v->focus;
+        return 1;
+    }
+    if (row == 0 && v->hostOnline) {
+        out->focus = dx > 0 ? BUI_W_HOST_PRIVATE : BUI_W_HOST_PUBLIC;
+        out->activate = out->focus;
         return 1;
     }
     if (row == 0) {

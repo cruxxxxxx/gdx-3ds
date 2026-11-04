@@ -28,7 +28,8 @@
  *
  * TWO WAYS IN (the MP tab's NEARBY | ONLINE): NEARBY = rooms on the same WiFi, found by beacon
  * (gdx3ds_mp_discovery.h) and hosted by the host console itself (port/gdx_mp_lan.h); ONLINE = a
- * room code on a rendezvous server. Both lead to the same lobby, lockstep and removal.
+ * room on a rendezvous server: PUBLIC rooms are listed (LIST, server 2.2.0) and joined from the
+ * list, PRIVATE ones by their code only. Both lead to the same lobby, lockstep and removal.
  *
  * ini keys ([net]):
  *   rendezvous   (hosted)   host:port of a tools/mp-rendezvous server (dotted IPv4; :27200 default).
@@ -99,9 +100,11 @@
  *                           pick (5000..120000; 0 = no limit)
  *   test levers (emulator lane / hardware smoke tests):
  *   mp_auto      ""         host | join: host a room / join `room` at boot, and be ready;
+ *                           qjoin: join the first public room the ONLINE list shows;
  *                           lanhost | lanjoin: the same over NEARBY (lanjoin = the first
  *                           joinable room heard); udshost | udsjoin: over local wireless
  *   mp_code      ""         mp_auto=host: ask for this code (only a --allow-custom-codes server)
+ *   mp_public    0          mp_auto=host: open a public room (listed on every ONLINE list)
  *   mp_autostart 0          host: start as soon as N players are in, live and ready
  *   mp_races     1          host with mp_autostart: start again after each race, N races in all
  *   mp_course    -1         host: the race's course (else the host's current course)
@@ -208,6 +211,23 @@ typedef struct GdxMpoUiNearby {
     char whyNot[16];
 } GdxMpoUiNearby;
 
+/* mp-lobby: GdxMpoUi.onlineList (the values of gdx3ds_mp_p2p.h GDX_P2P_LIST_*). */
+enum {
+    GDX_MPO_LIST_NONE = 0,      /* not asked yet (the socket opens with the list) */
+    GDX_MPO_LIST_WAITING = 1,
+    GDX_MPO_LIST_OK = 2,
+    GDX_MPO_LIST_NO_ANSWER = 3, /* the server did not answer (down, or before 2.2.0) */
+    GDX_MPO_LIST_UPDATE = 4,    /* the server answered UPDATE (this console or the server is out of date) */
+};
+
+/* One public room on the ONLINE list. */
+typedef struct GdxMpoUiOnline {
+    char code[GDX_MPO_CODE_LEN + 1];
+    char name[GDX_MPO_NAME_LEN + 1]; /* the host's */
+    int players, maxPlayers;
+    int relayOnly;
+} GdxMpoUiOnline;
+
 typedef struct GdxMpoUi {
     int phase;
     int isHost;
@@ -269,6 +289,13 @@ typedef struct GdxMpoUi {
     signed char fieldChar[GDX_MPO_FIELD_MAX];    /* by finishing place: the character */
     signed char fieldSlot[GDX_MPO_FIELD_MAX];    /* ... a human's slot, -1 = a CPU */
     GdxMpoUiPlayer player[GDX_MPO_MAX_SLOTS];
+    /* mp-lobby: the ONLINE list and public rooms */
+    int onlineList;         /* GDX_MPO_LIST_* */
+    int onlineTotal;        /* public rooms the server matched (may exceed onlineCount) */
+    int onlineCount;
+    GdxMpoUiOnline online[GDX_MPO_UI_NEARBY];
+    int hostPublic;         /* the next HOST ONLINE is public (gdx3ds_mpo_ui_set_public) */
+    int isPublic;           /* in an online room that is listed (we host it public, or joined it from the list) */
 } GdxMpoUi;
 
 /* The multiplayer race dash's view of the running race (gdx3ds_bui_race.c). */
@@ -373,6 +400,15 @@ void gdx3ds_mpo_ui_uds_host(void);
 /* The NEARBY list is on screen (call on every paint of it): the local-wireless scan runs only
  * while it is, and while no room is open. */
 void gdx3ds_mpo_ui_nearby_shown(void);
+/* mp-lobby: the ONLINE list is on screen (call on every paint of it): the socket stays open and a
+ * LIST goes to the server every few seconds while it is. list_refresh: ask again now. set_public:
+ * the next gdx3ds_mpo_ui_host asks for a public room (listed) or a private one (code only).
+ * list_join: join row `row` of online[] (by its code). */
+void gdx3ds_mpo_ui_online_shown(void);
+void gdx3ds_mpo_ui_list_refresh(void);
+void gdx3ds_mpo_ui_set_public(int on);
+int gdx3ds_mpo_ui_public(void);
+void gdx3ds_mpo_ui_list_join(int row);
 /* Bottom-screen product menus (gdx3ds_bui.c). set_name: outside a room only; sets [net]
  * mp_name in the loaded config (the caller saves the ini); 0 = refused. set_room_size: the next
  * HOST's room size (2..4). set_vscom: host, in a room: CPU racers on/off for the next START. */

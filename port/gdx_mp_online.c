@@ -117,8 +117,8 @@ static void PutHeader(uint8_t* out, int type) {
 }
 
 /* ---- GXRV builders -------------------------------------------------------------------------- */
-int gdx_rv_build_request(int type, const GdxMpRvRequest* req, uint8_t* out, int cap) {
-    if ((type != GDX_RV_CREATE && type != GDX_RV_JOIN) || req == NULL || cap < GDX_RV_REQ_BYTES) {
+static int BuildRequestBody(int type, const GdxMpRvRequest* req, uint8_t* out, int cap) {
+    if (req == NULL || cap < GDX_RV_REQ_BYTES) {
         return 0;
     }
     PutHeader(out, type);
@@ -127,16 +127,26 @@ int gdx_rv_build_request(int type, const GdxMpRvRequest* req, uint8_t* out, int 
     memcpy(out + 16, req->priv.ip, 4);
     PutU16(out + 20, req->priv.port);
     out[22] = req->maxPlayers;
-    out[23] = (uint8_t) (req->forceRelay ? 1 : 0);
+    out[23] = (uint8_t) ((req->forceRelay ? GDX_RV_CFLAG_RELAY : 0) | (req->isPublic ? GDX_RV_CFLAG_PUBLIC : 0));
     PutFixed(out + 24, req->build, GDX_MPO_BUILD_LEN);
     PutFixed(out + 64, req->name, GDX_MPO_NAME_LEN);
     PutFixed(out + 76, req->code, 8);
     return GDX_RV_REQ_BYTES;
 }
 
+int gdx_rv_build_request(int type, const GdxMpRvRequest* req, uint8_t* out, int cap) {
+    if (type != GDX_RV_CREATE && type != GDX_RV_JOIN) {
+        return 0;
+    }
+    return BuildRequestBody(type, req, out, cap);
+}
+
 int gdx_rv_build_request_v2(int type, const GdxMpRvRequest* req, const uint8_t cookie[GDX_RV_COOKIE_LEN],
                             uint8_t* out, int cap) {
-    if (cap < GDX_RV_REQ2_BYTES || cookie == NULL || gdx_rv_build_request(type, req, out, cap) != GDX_RV_REQ_BYTES) {
+    if (type != GDX_RV_CREATE && type != GDX_RV_JOIN && type != GDX_RV_LIST) {
+        return 0;
+    }
+    if (cap < GDX_RV_REQ2_BYTES || cookie == NULL || BuildRequestBody(type, req, out, cap) != GDX_RV_REQ_BYTES) {
         return 0;
     }
     out[4] = GDX_RV_VERSION_COOKIE;
@@ -214,6 +224,44 @@ int gdx_rv_parse_update(const uint8_t* pkt, int len, GdxMpRvUpdate* out) {
     if (GetFixed(pkt + 20, GDX_RV_UPDATE_TEXT_LEN, out->text, 3) < 0) {
         out->text[0] = '\0'; /* display text: dropped when malformed, never trusted */
     }
+    return 0;
+}
+
+static int ParseListedRoom(const uint8_t* p, GdxMpRvListedRoom* out) {
+    if (GetFixed(p, 8, out->code, 2) != GDX_MPO_CODE_LEN || GetFixed(p + 8, GDX_MPO_NAME_LEN, out->name, 1) <= 0) {
+        return -1;
+    }
+    out->players = p[20];
+    out->maxPlayers = p[21];
+    out->relayOnly = (uint8_t) (p[22] & 1);
+    if (out->maxPlayers < 2 || out->maxPlayers > GDX_MPO_MAX_SLOTS || out->players < 1 ||
+        out->players >= out->maxPlayers || (p[22] & ~1) != 0 || p[23] != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int gdx_rv_parse_rooms(const uint8_t* pkt, int len, GdxMpRvRoomList* out) {
+    int count;
+    int i;
+    if (gdx_rv_peek_type(pkt, len) != GDX_RV_ROOMS || pkt[4] != GDX_RV_VERSION_COOKIE || len < GDX_RV_ROOMS_MIN) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    count = pkt[13];
+    if (count > GDX_RV_LIST_MAX || pkt[12] < count || GetU16(pkt + 14) != 0 ||
+        len != GDX_RV_ROOMS_MIN + count * GDX_RV_ROOMS_ENTRY) {
+        return -1;
+    }
+    out->nonce = GetU32(pkt + 8);
+    out->total = pkt[12];
+    for (i = 0; i < count; i++) {
+        if (ParseListedRoom(pkt + GDX_RV_ROOMS_MIN + i * GDX_RV_ROOMS_ENTRY, &out->room[i]) != 0) {
+            memset(out, 0, sizeof(*out));
+            return -1;
+        }
+    }
+    out->count = count;
     return 0;
 }
 

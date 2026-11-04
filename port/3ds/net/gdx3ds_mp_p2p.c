@@ -30,6 +30,7 @@
 #define P2P_GHOST_RETRY_MS 8000
 #define P2P_BIND_TRIES 8
 #define P2P_RX_GUARD 96
+#define P2P_LIST_GIVE_UP_MS 4000
 
 static int sFd = -1;
 static GdxP2pConfig sCfg;
@@ -46,6 +47,13 @@ static GdxRvCookie sCk; /* GXRV v2 ([net] mp_rv_cookie): the request's version a
 static int sReqType = 0;
 static int sReqRelayOnly = 0;  /* this request asks for a relay-only room (gdx3ds_p2p_set_next_relay_only) */
 static int sNextRelayOnly = 0;
+static int sReqPublic = 0;     /* this request asks for a public room (gdx3ds_p2p_set_next_public) */
+static int sNextPublic = 0;
+/* mp-lobby: the LIST in flight (its own nonce and cookie, beside any CREATE / JOIN) */
+static GdxRvCookie sListCk;
+static int sListPending = 0;
+static uint32_t sListFirstMs = 0;
+static uint32_t sListLastMs = 0;
 static int sReqHeldError = 0;  /* a ROOM_FULL / CODE_TAKEN being retried (P2P_GHOST_RETRY_MS) */
 static char sReqHeldDetail[GDX_MPO_BUILD_LEN + 1];
 static char sReqCode[GDX_MPO_CODE_LEN + 1];
@@ -260,6 +268,7 @@ int gdx3ds_p2p_open(const GdxP2pConfig* cfg) {
     }
     sNonce = (uint32_t) svcGetSystemTick() ^ 0x9E3779B9u;
     gdx_rv_cookie_init(&sCk, cfg->rvCookie);
+    sListPending = 0;
     sSt.clientProto = cfg->clientProto > 0 ? cfg->clientProto : GDX_MPO_PROTO;
     return 0;
 }
@@ -283,6 +292,7 @@ static void SendRequest(uint32_t nowMs) {
     r.priv = gdx3ds_p2p_local_endpoint();
     r.maxPlayers = (uint8_t) sSt.maxPlayers;
     r.forceRelay = (uint8_t) ((sCfg.forceRelay || sReqRelayOnly) ? 1 : 0);
+    r.isPublic = (uint8_t) (sReqPublic ? 1 : 0);
     snprintf(r.build, sizeof(r.build), "%s", sBuild);
     snprintf(r.name, sizeof(r.name), "%s", sName);
     snprintf(r.code, sizeof(r.code), "%s", sReqCode);
@@ -326,8 +336,10 @@ static void StartRequest(int type, int maxPlayers, const char* code) {
     const uint32_t now = NowMs();
     ForgetRoom();
     if (type != GDX_RV_CREATE || sMode != GDX_P2P_MODE_ONLINE) {
-        sReqRelayOnly = 0; /* only an online CREATE carries it (gdx3ds_p2p_host sets it first) */
+        sReqRelayOnly = 0; /* only an online CREATE carries these (gdx3ds_p2p_host sets them first) */
+        sReqPublic = 0;
     }
+    sListPending = 0; /* a room on its way: the list is done with */
     sNonce = sNonce * 1664525u + 1013904223u;
     sReqType = type;
     snprintf(sReqCode, sizeof(sReqCode), "%s", code != NULL ? code : "");
@@ -394,9 +406,15 @@ void gdx3ds_p2p_set_next_relay_only(int on) {
     sNextRelayOnly = on ? 1 : 0;
 }
 
+void gdx3ds_p2p_set_next_public(int on) {
+    sNextPublic = on ? 1 : 0;
+}
+
 void gdx3ds_p2p_host(int maxPlayers, const char* wantCode) {
     const int relayOnly = sNextRelayOnly;
+    const int isPublic = sNextPublic;
     sNextRelayOnly = 0;
+    sNextPublic = 0;
     EndLanMode();
     if (maxPlayers < 2) {
         maxPlayers = 2;
@@ -404,6 +422,7 @@ void gdx3ds_p2p_host(int maxPlayers, const char* wantCode) {
         maxPlayers = GDX_MPO_MAX_SLOTS;
     }
     sReqRelayOnly = relayOnly;
+    sReqPublic = isPublic;
     StartRequest(GDX_RV_CREATE, maxPlayers, wantCode);
 }
 
@@ -442,6 +461,86 @@ void gdx3ds_p2p_lock_room(int locked) {
     n = gdx_rv_build_auth(GDX_RV_LOCK, sSt.code, 0, locked ? 1 : 0, sMemberKey, pkt, sizeof(pkt));
     if (n > 0) {
         SendTo(&sCfg.server, pkt, n);
+    }
+}
+
+/* ---- mp-lobby: the public room list -------------------------------------------------------- */
+static void SendList(uint32_t nowMs) {
+    GdxMpRvRequest r;
+    uint8_t pkt[GDX_RV_REQ2_BYTES];
+    int n;
+    memset(&r, 0, sizeof(r));
+    r.nonce = sListCk.nonce;
+    r.contentHash = sCfg.contentHash;
+    snprintf(r.build, sizeof(r.build), "%s", sBuild);
+    snprintf(r.name, sizeof(r.name), "%s", sName);
+    r.clientProto = (uint16_t) sSt.clientProto;
+    n = gdx_rv_cookie_build(&sListCk, GDX_RV_LIST, &r, nowMs, pkt, sizeof(pkt), NULL);
+    if (n > 0) {
+        SendTo(&sOnlineServer, pkt, n);
+    }
+    sListLastMs = nowMs;
+}
+
+void gdx3ds_p2p_list(void) {
+    const uint32_t now = NowMs();
+    if (sFd < 0 || sMode != GDX_P2P_MODE_ONLINE || sSt.phase == GDX_P2P_REQUESTING || sSt.phase == GDX_P2P_IN_ROOM) {
+        return;
+    }
+    sNonce = sNonce * 1664525u + 1013904223u;
+    gdx_rv_cookie_init(&sListCk, GDX_RV_COOKIE_MODE_V2); /* LIST has no v1 form */
+    gdx_rv_cookie_begin(&sListCk, sNonce, now, 1);
+    sListPending = 1;
+    sListFirstMs = now;
+    if (sSt.listState != GDX_P2P_LIST_OK) {
+        sSt.listState = GDX_P2P_LIST_WAITING;
+    }
+    SendList(now);
+}
+
+/* A server datagram for the LIST in flight: 1 = taken. */
+static int HandleListReply(const uint8_t* pkt, int n, int t, uint32_t nowMs) {
+    if (gdx_rv_cookie_on_reply(&sListCk, pkt, n, nowMs) == GDX_RV_CK_RESEND) {
+        SendList(nowMs);
+        return 1;
+    }
+    if (t == GDX_RV_ROOMS) {
+        GdxMpRvRoomList l;
+        if (gdx_rv_parse_rooms(pkt, n, &l) != 0 || l.nonce != sListCk.nonce) {
+            return 0;
+        }
+        sSt.list = l;
+        sSt.listState = GDX_P2P_LIST_OK;
+        sSt.listSerial++;
+        sListPending = 0;
+        return 1;
+    }
+    if (t == GDX_RV_UPDATE) {
+        GdxMpRvUpdate u;
+        if (gdx_rv_parse_update(pkt, n, &u) != 0 || u.nonce != sListCk.nonce) {
+            return 0;
+        }
+        sSt.update = u;
+        sSt.listState = GDX_P2P_LIST_UPDATE;
+        sListPending = 0;
+        P2P_LOG("[mpo] list: the server answered UPDATE (its range %u..%u, have %d)", (unsigned) u.minProto,
+                (unsigned) u.maxProto, sSt.clientProto);
+        return 1;
+    }
+    return 0;
+}
+
+static void ServiceList(uint32_t nowMs) {
+    if (!sListPending) {
+        return;
+    }
+    if ((int32_t) (nowMs - sListFirstMs) > P2P_LIST_GIVE_UP_MS) {
+        sListPending = 0;
+        sSt.listState = GDX_P2P_LIST_NO_ANSWER;
+        memset(&sSt.list, 0, sizeof(sSt.list));
+        P2P_LOG("[mpo] list: no answer from the server in %d ms", P2P_LIST_GIVE_UP_MS);
+    } else if ((int32_t) (nowMs - sListLastMs) >= P2P_REQUEST_RETRY_MS) {
+        SendList(nowMs);
     }
 }
 
@@ -505,6 +604,9 @@ static void HandleServer(const uint8_t* pkt, int n, uint32_t nowMs) {
     const int t = gdx_rv_peek_type(pkt, n);
     sSt.rxServer++;
     sSt.lastServerRxMs = nowMs;
+    if (sListPending && sMode == GDX_P2P_MODE_ONLINE && HandleListReply(pkt, n, t, nowMs)) {
+        return;
+    }
     if (sSt.phase == GDX_P2P_REQUESTING && gdx_rv_cookie_on_reply(&sCk, pkt, n, nowMs) == GDX_RV_CK_RESEND) {
         SendRequest(nowMs); /* the same request, same nonce, now with the cookie */
         return;
@@ -651,6 +753,7 @@ void gdx3ds_p2p_service(uint32_t nowMs) {
         gdx_lan_room_expire(&sLanRoom, nowMs, LanEmit, NULL);
         DrainLoopback(nowMs);
     }
+    ServiceList(nowMs);
     if (sSt.phase == GDX_P2P_REQUESTING) {
         if (sReqHeldError != 0 && (int32_t) (nowMs - sReqFirstMs) >= P2P_GHOST_RETRY_MS) {
             Fail(sReqHeldError, sReqHeldDetail);

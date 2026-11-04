@@ -91,9 +91,14 @@ enum BuiWidgetId {
     BUI_W_HOST_SIZE4,
     BUI_W_HOST_CANCEL,
     BUI_W_HOST_OPEN,
+    BUI_W_HOST_PUBLIC,  /* mp-lobby: the online host sheet's WHO CAN JOIN row */
+    BUI_W_HOST_PRIVATE,
     BUI_W_ONLINE_HOST = 40,
     BUI_W_ONLINE_JOIN,
     BUI_W_ONLINE_DIRECT, /* mp-online-hw: JOIN BY ADDRESS ([net] mp_direct = a.b.c.d[:port]) */
+    BUI_W_ONLINE_UP,     /* mp-lobby: the public room list's rail */
+    BUI_W_ONLINE_DOWN,
+    BUI_W_ONLINE_ROW0, /* + row on the page (0..2) */
     BUI_W_KEY0 = 50, /* + key index (code: 32 keys, name: 40 keys) */
     BUI_W_ENTRY_DEL = 95,
     BUI_W_ENTRY_CLEAR,
@@ -141,6 +146,8 @@ enum BuiKey { BUI_KEY_NONE = 0, BUI_KEY_A, BUI_KEY_B, BUI_KEY_X, BUI_KEY_Y, BUI_
 #define BUI_MACHINES 30
 
 enum { BUI_MEDIUM_WIFI = 0, BUI_MEDIUM_UDS = 1, BUI_MEDIUM_ONLINE = 2 };
+/* mp-lobby: the ONLINE list's state (gdx3ds_mp_online.h GDX_MPO_LIST_*) */
+enum { BUI_LIST_NONE = 0, BUI_LIST_WAITING, BUI_LIST_OK, BUI_LIST_NO_ANSWER, BUI_LIST_UPDATE };
 enum { BUI_MODEL_UNKNOWN = 0, BUI_MODEL_O3DS = 1, BUI_MODEL_N3DS = 2 };
 
 typedef struct BuiRoomView {
@@ -152,6 +159,9 @@ typedef struct BuiRoomView {
     int8_t joinable;
     int8_t compatible;
     char whyNot[16];
+    /* mp-lobby: an ONLINE list row (medium BUI_MEDIUM_ONLINE) */
+    char code[BUI_CODE_CAP + 1];
+    int8_t relayOnly;
 } BuiRoomView;
 
 typedef struct BuiSlotView {
@@ -234,6 +244,11 @@ typedef struct BuiMpView {
     char closedWhy[24];   /* ... why ("THE HOST LEFT") */
     int8_t raceWait;      /* JOINING: in the room, but it is racing: in when the race ends */
     char endedBy[BUI_NAME_CAP + 1]; /* #10: the race was ended from the pause menu by ("" = none) */
+    /* mp-lobby (zero = the views and goldens before it). On ONLINE, room[] / roomCount / page /
+     * pages hold the public room list instead of NEARBY's. */
+    int8_t onlineList;  /* BUI_LIST_* */
+    int8_t onlineTotal; /* public rooms the server matched (roomCount shows at most BUI_ROOMS_MAX) */
+    int8_t isPublic;    /* the lobby: this online room is listed */
 } BuiMpView;
 
 /* mp-menus: the course editor's import (gdx3ds_course_share.c's GdxCsUi as the screens see it). */
@@ -323,6 +338,9 @@ typedef struct BuiView {
     char dialogExtra[44]; /* "%" in a dialog line: the server's --update-url */
     /* release (zero = the views and goldens before it) */
     int8_t settingsButton; /* Home shows the SETTINGS button (the player settings, gdx3ds_menu.c) */
+    /* mp-lobby (zero = the views and goldens before it) */
+    int8_t hostOnline; /* HOST is the online sheet: WHO CAN JOIN (public / private), not the connection */
+    int8_t hostPublic; /* ... and its pick */
 } BuiView;
 
 /* Zeroes a view with no focus, no dialog. */
