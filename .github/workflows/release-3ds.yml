@@ -64,8 +64,10 @@ jobs:
       matrix:
         include:
           - { os: windows-2022, name: windows-x64,   exe: gdx-extract.exe }
-          - { os: macos-14,     name: macos-universal, exe: gdx-extract, extra: '"-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0' }
-          - { os: ubuntu-22.04, name: linux-x64,     exe: gdx-extract }
+          # fp: no FMA contraction (tools/prebake/gdx-extract-fp.cmake); without it the arm64 slice
+          # misses the golden. MSVC never contracts, so Windows needs none.
+          - { os: macos-14,     name: macos-universal, exe: gdx-extract, fp: true, extra: '"-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0' }
+          - { os: ubuntu-22.04, name: linux-x64,     exe: gdx-extract, fp: true }
     steps:
       - uses: actions/checkout@v4
       - name: Fetch the Torch submodule only
@@ -76,6 +78,7 @@ jobs:
           -DUSE_STANDALONE=ON -DBUILD_STORMLIB=OFF -DGDX_DETERMINISTIC=ON
           -DGDX_OUTPUT_NAME=gdx-extract -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_POLICY_DEFAULT_CMP0091=NEW ${{ matrix.extra }}
+          ${{ matrix.fp && format('-DCMAKE_PROJECT_torch_INCLUDE={0}/tools/prebake/gdx-extract-fp.cmake', github.workspace) || '' }}
       - name: Build
         run: cmake --build build-extract --config Release --parallel 4
       - name: Install
@@ -97,7 +100,17 @@ jobs:
           # accompany the binary: ship the repo's license set with every extractor zip.
           cp LICENSE THIRD_PARTY_NOTICES.md pkg/
           cp -R LICENSES pkg/LICENSES
-          if command -v lipo >/dev/null; then lipo -info "pkg/${{ matrix.exe }}" pkg/gdx-hudpack; fi
+          if command -v lipo >/dev/null; then
+            lipo -info "pkg/${{ matrix.exe }}" pkg/gdx-hudpack
+            # Guard: the arm64 slice's course checksum must not use fused multiply-add.
+            otool -arch arm64 -tV "pkg/${{ matrix.exe }}" \
+              | awk '/CalculateChecksum.*:$/{f=1;print;next} f&&/:$/{f=0} f' > checksum.s
+            fused=$(grep -ciE 'fmadd|fmsub|fnmadd|fnmsub' checksum.s || true)
+            echo "arm64 CalculateChecksum: $(wc -l < checksum.s) lines, ${fused} fused ops"
+            if [ ! -s checksum.s ]; then echo "::error::CalculateChecksum not found in the arm64 slice"; exit 1; fi
+            if [ "${fused}" != "0" ]; then echo "::error::arm64 slice uses FMA in CalculateChecksum"; exit 1; fi
+            rm -f checksum.s
+          fi
           cat > pkg/README.txt <<'TXT'
           gdx-extract: the PC-side asset extractor for the G-Diffuser 3DS port.
           Use it with tools/prebake/prebake.py from the repository:

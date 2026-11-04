@@ -264,7 +264,8 @@ add_custom_command(TARGET G-Diffuser POST_BUILD
 # Torch pulls its own spdlog/fmt/yaml-cpp via FetchContent, and out-of-tree prevents ODR/version
 # clashes with libultraship's spdlog/fmt (docs/investigation/.../W0_TORCH_DEPENDENCIES.md).
 # GDX_DETERMINISTIC=ON => byte-identical archives for identical ROM + recipes. CMP0091=NEW lets
-# Torch's /MT runtime take effect so the exe needs no VC++ redist.
+# Torch's /MT runtime take effect so the exe needs no VC++ redist. gdx-extract-fp.cmake turns off
+# FMA contraction, without which an arm64 build misses the golden (see that file).
 include(ExternalProject)
 
 set(GDX_EXTRACT_SRC_DIR "${CMAKE_SOURCE_DIR}/torch")
@@ -280,6 +281,7 @@ ExternalProject_Add(gdx_extract_ext
         -DUSE_STANDALONE:BOOL=ON
         -DBUILD_STORMLIB:BOOL=OFF
         -DGDX_DETERMINISTIC:BOOL=ON
+        -DCMAKE_PROJECT_torch_INCLUDE:FILEPATH=${CMAKE_SOURCE_DIR}/tools/prebake/gdx-extract-fp.cmake
         -DGDX_OUTPUT_NAME:STRING=gdx-extract
         -DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
         -DCMAKE_BUILD_TYPE:STRING=${CMAKE_BUILD_TYPE}
