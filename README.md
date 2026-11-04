@@ -20,7 +20,7 @@ Pick the file that matches your console from the
 | `N3DS-EK` | New 3DS | F-Zero X + Expansion Kit | `G-Diffuser-3DS-N3DS-EK.3dsx` / `.cia` |
 | `O3DS-EK` | Old 3DS / 2DS | F-Zero X + Expansion Kit (**experimental**) | `G-Diffuser-3DS-O3DS-EK.3dsx` / `.cia` |
 
-Easiest: grab the zip for your build, e.g. `G-Diffuser-3DS-O3DS-v1.1.0.zip`. It is laid out like
+Easiest: grab the zip for your build, e.g. `G-Diffuser-3DS-O3DS-v1.2.0.zip`. It is laid out like
 an SD card (`3ds/…3dsx`, the `.cia` at the top, a short README.txt), so you unzip it onto the SD
 card's root.
 
@@ -239,7 +239,7 @@ the 64DD courses are jittery, the disk music breaks up, and the editors are lagg
 
 - **Your own 64DD disk dump, the retail Japanese one.** Place it at
   `sdmc:/3ds/gdiffuser/media/baserom.jp.ek.ndd` — the only retail release of the disk, and the
-  only one supported in v1.1.0. It should be about 64.9 MB; anything under 60 MB is rejected as
+  only one supported in v1.2.0. It should be about 64.9 MB; anything under 60 MB is rejected as
   truncated. If you dumped your disk in MAME's DD format rather than as a raw `.ndd` image,
   convert your dump first with `tools/dev/mame2ndd.py`. A fan English translation of this disk
   exists (Zoinkity's translation, adapted to disk form by LuigiBlood) but isn't supported yet — see
